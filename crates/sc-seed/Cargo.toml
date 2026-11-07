@@ -2,6 +2,7 @@
 name = "sc-seed"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "The seed bundle of a game build, and handing it to the owners: sc-admin writes one, sc-seeder applies it"
 
