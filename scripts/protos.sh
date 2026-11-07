@@ -28,6 +28,7 @@ fi
 dump=tools/protodump/target/x86_64-unknown-linux-gnu/release/protodump
 
 # Written to a scratch folder first: a failed or partial run never replaces a good proto/sc/.
+mkdir -p "$repo/target"
 work=$(mktemp -d "$repo/target/protos.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 "$dump" "$exe" "$work" proto/vendor
