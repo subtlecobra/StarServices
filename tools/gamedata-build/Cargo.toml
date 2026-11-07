@@ -10,9 +10,9 @@ publish = false
 # `cargo build --release --target x86_64-unknown-linux-gnu`. It runs on a workstation, never in an image.
 
 [dependencies]
-p4k-formats = { path = "../../../P4kTools/crates/formats" }
-p4k = { path = "../../../P4kTools/crates/p4k" }
-p4k-scene = { path = "../../../P4kTools/crates/scene" }
+p4k-formats = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
+p4k = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
+p4k-scene = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
 flate2 = "1"
 meshopt = "0.7"
 serde = { version = "1", features = ["derive"] }

@@ -43,7 +43,8 @@ the protocol notes, kept with the reverse-engineering work outside this reposito
 ## Run it
 
 Building needs the `x86_64-unknown-linux-musl` target and gcc. The tools that read the game archive (`sc-admin`,
-`gamedata-build`) also need P4kTools checked out next to this repository (`../P4kTools`).
+`gamedata-build`) also need the `p4k` crates, which Cargo fetches from
+<https://github.com/subtlecobra/p4ktools> (pinned in their `Cargo.lock`).
 
 ### Game files
 

@@ -8,8 +8,8 @@ publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
-p4k-formats = { path = "../../../P4kTools/crates/formats" }
-p4k = { path = "../../../P4kTools/crates/p4k" }
+p4k-formats = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
+p4k = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
 prost = "0.14"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 sc-seed = { path = "../../crates/sc-seed" }

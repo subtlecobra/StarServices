@@ -975,6 +975,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "p4k"
 version = "0.1.0"
+source = "git+https://github.com/subtlecobra/p4ktools.git?branch=main#6dc1dae7b51d30e70fd40e37f9c26481b985873f"
 dependencies = [
  "flate2",
  "memmap2",
@@ -985,6 +986,7 @@ dependencies = [
 [[package]]
 name = "p4k-formats"
 version = "0.1.0"
+source = "git+https://github.com/subtlecobra/p4ktools.git?branch=main#6dc1dae7b51d30e70fd40e37f9c26481b985873f"
 dependencies = [
  "flate2",
  "indexmap",
