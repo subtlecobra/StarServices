@@ -1,0 +1,16 @@
+[package]
+name = "sc-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+prost.workspace = true
+prost-types.workspace = true
+tonic.workspace = true
+tonic-prost = "0.14"
+
+[build-dependencies]
+prost.workspace = true
+protox = "0.9"
+tonic-prost-build = "0.14"

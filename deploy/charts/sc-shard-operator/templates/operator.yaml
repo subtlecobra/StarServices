@@ -1,0 +1,356 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}
+rules:
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardclusters"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardtemplates"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardclusters/status", "shards/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["scbackend.io"]
+    resources: ["shards"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # The Secret with state.json, copied into each region for its sc-entitygraph.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.entityDb.dataSecret | quote }}]
+    verbs: ["get"]
+  # The gateway's route to the region marked clientRoute, here because the Gateway takes routes from its own namespace.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["grpcroutes"]
+    verbs: ["get", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}
+    namespace: {{ .Release.Namespace }}
+---
+# Each shard has a namespace of its own, whose name is not known here, so these rights cannot be limited by namespace
+# or name. The operator only deletes namespaces labelled as a shard's.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-shards
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["list", "create", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["list", "create", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["list", "create"]
+---
+# ShardRegions are cluster-scoped, and each has a namespace of its own: scbackend-region-<name>, with its game data (the
+# Valkey cluster gamedata-valkey: ConfigMap, headless Service, NetworkPolicy, StatefulSet and the Job that forms it; and
+# the sc-gamedata Deployment and Service), applied server-side. The StatefulSet controller makes and deletes the Valkey
+# volumes; the operator deletes those of the former sc-gamedata StatefulSet, and that StatefulSet.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-regions
+rules:
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardregions"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardregions/status"]
+    verbs: ["get", "patch", "update"]
+  # Owner references that block deletion of their owner need this where admission enforces it.
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardregions/finalizers"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["list", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "create", "patch"]
+  # The region's entity database: kube-arangodb's operator for the namespace, the ArangoDeployment, which goes before
+  # the region's finalizer does, and sc-entitygraph with the gateway's grant to reach it. Names are fixed where the
+  # API can check them; creating cannot be limited by name.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.entityDb.dataSecret | quote }}]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["arango-operator"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames: ["arango-operator", "arango-member"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["get", "create", "patch"]
+  # Binding a role needs its rights or this; only these three.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames:
+      - {{ include "sc-shard-operator.arangoRole" . }}
+      - {{ include "sc-shard-operator.arangoRole" . }}-cluster
+      - {{ include "sc-shard-operator.arangoRole" . }}-member
+    verbs: ["bind"]
+  - apiGroups: ["database.arangodb.com"]
+    resources: ["arangodeployments"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["referencegrants"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-regions
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-regions
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-shards
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-shards
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}
+    namespace: {{ .Release.Namespace }}
+---
+# Helm leaves CRDs alone after the first install, so the operator applies its own. See the init container.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-crds
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["shardclusters.scbackend.io", "shardtemplates.scbackend.io", "shards.scbackend.io", "shardregions.scbackend.io"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-crds
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Namespace }}-{{ .Release.Name }}-crds
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+    app.kubernetes.io/part-of: scbackend
+spec:
+  # Reservations live in memory, so there is exactly one.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Release.Name }}
+        app.kubernetes.io/part-of: scbackend
+      annotations:
+        checksum/templates: {{ toYaml .Values.shardTemplates | sha256sum }}
+        checksum/regions: {{ include "sc-shard-operator.regions" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: templates
+          configMap:
+            name: {{ .Release.Name }}-templates
+      initContainers:
+        - name: install
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["install", "--templates", "/templates/templates.yaml", "--regions", "/templates/regions.yaml"]
+          volumeMounts:
+            - name: templates
+              mountPath: /templates
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            - name: NO_COLOR
+              value: "1"
+            - name: SCBACKEND_NAMESPACE
+              value: {{ .Release.Namespace }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: operator
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            - name: NO_COLOR
+              value: "1"
+            - name: SCBACKEND_HEALTH
+              value: "0.0.0.0:8080"
+            - name: SCBACKEND_NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: SCBACKEND_DGS_IMAGE
+              value: "{{ .Values.dgsImage.registry | default .Values.shardImage.registry }}/{{ .Values.dgsImage.name }}:{{ .Values.dgsImage.tag | default .Values.shardImage.tag }}"
+            - name: SCBACKEND_DGS_CUSTOMIZER
+              value: {{ .Values.dgsCustomizer | quote }}
+            - name: SCBACKEND_GAMEDATA_IMAGE
+              value: "{{ .Values.gamedataImage.registry | default .Values.shardImage.registry }}/{{ .Values.gamedataImage.name }}:{{ .Values.gamedataImage.tag | default .Values.shardImage.tag }}"
+            - name: SCBACKEND_GAMEDATA_REGISTRY
+              value: {{ .Values.gamedata.registry | default .Values.shardImage.registry | quote }}
+            - name: SCBACKEND_GAMEDATA_REPOSITORY
+              value: {{ .Values.gamedata.repository | quote }}
+            - name: SCBACKEND_GAMEDATA_PLAIN_HTTP
+              value: {{ .Values.gamedata.plainHttp | quote }}
+            - name: SCBACKEND_GAMEDATA_REGISTRY_IP
+              value: {{ .Values.gamedata.registryIp | default "" | quote }}
+            - name: SCBACKEND_VALKEY_IMAGE
+              value: {{ .Values.gamedata.valkeyImage | quote }}
+            - name: SCBACKEND_ENTITYGRAPH_IMAGE
+              value: "{{ .Values.entitygraphImage.registry | default .Values.shardImage.registry }}/{{ .Values.entitygraphImage.name }}:{{ .Values.entitygraphImage.tag | default .Values.shardImage.tag }}"
+            - name: SCBACKEND_ARANGO_IMAGE
+              value: {{ .Values.entityDb.arangoImage | quote }}
+            - name: SCBACKEND_ARANGO_OPERATOR_IMAGE
+              value: {{ .Values.entityDb.operatorImage | quote }}
+            - name: SCBACKEND_ENTITYGRAPH_PUSH
+              value: {{ .Values.entityDb.push | default (printf "http://sc-push.%s.svc:50051" .Release.Namespace) | quote }}
+            - name: SCBACKEND_REGION_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: SCBACKEND_REGION_DATA_SECRET
+              value: {{ .Values.entityDb.dataSecret | quote }}
+            - name: SCBACKEND_ARANGO_OPERATOR_ROLE
+              value: {{ include "sc-shard-operator.arangoRole" . }}
+            - name: SCBACKEND_ARANGO_OPERATOR_CLUSTER_ROLE
+              value: {{ include "sc-shard-operator.arangoRole" . }}-cluster
+            - name: SCBACKEND_ARANGO_MEMBER_ROLE
+              value: {{ include "sc-shard-operator.arangoRole" . }}-member
+            - name: SCBACKEND_GATEWAY
+              value: {{ .Values.entityDb.gateway | quote }}
+            - name: SCBACKEND_GATEWAY_LISTENER
+              value: {{ .Values.entityDb.listener | quote }}
+          ports:
+            - name: grpc
+              containerPort: 50051
+            - name: health
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Release.Name }}
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc

@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "sc-service.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "sc-service.selector" . | nindent 4 }}
+  ports:
+    {{- range .Values.ports }}
+    {{- if not .internal }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol }}
+      {{- if and (eq $.Values.service.type "NodePort") .nodePort }}
+      nodePort: {{ .nodePort }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+{{- $internal := list }}
+{{- range .Values.ports }}{{ if .internal }}{{ $internal = append $internal . }}{{ end }}{{ end }}
+{{- if $internal }}
+---
+# The ports marked internal, at <release>-internal: only reachable inside the cluster, whatever the type of the main
+# Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-internal
+  labels:
+    {{- include "sc-service.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "sc-service.selector" . | nindent 4 }}
+  ports:
+    {{- range $internal }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .name }}
+      protocol: {{ .protocol }}
+    {{- end }}
+{{- end }}
+{{- if .Values.headless }}
+---
+# Resolves to every replica, for services whose replicas talk to each other.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-peers
+  labels:
+    {{- include "sc-service.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    {{- include "sc-service.selector" . | nindent 4 }}
+  ports:
+    {{- range .Values.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      protocol: {{ .protocol }}
+    {{- end }}
+{{- end }}

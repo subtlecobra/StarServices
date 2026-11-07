@@ -1,0 +1,29 @@
+# The port the game connects to, and the node port kind maps it from.
+grpcPort: 50051
+nodePort: 30051
+
+# kubernetes.io/tls Secret with the certificate the game trusts through client.crt.
+tlsSecret: scbackend-tls
+
+# The website's HTTPS listener, apart from the game's: port, the node port kind maps it from, and the
+# kubernetes.io/tls Secret with its certificate (self-signed by BackendDeploySC's cluster-up.sh in dev).
+site:
+  port: 443
+  nodePort: 30443
+  tlsSecret: scbackend-site-tls
+
+# Browser traffic on the site listener: one HTTPRoute per entry, sending exact paths and path prefixes to a Service
+# in this namespace. The longest matching prefix wins, so /admin goes to the admin pages and the rest to the portal.
+httpRoutes:
+  # The admin pages (StarServices services/admin).
+  - name: sc-admin-web
+    service: sc-admin-web
+    port: 8080
+    exactPaths: []
+    pathPrefixes: [/admin]
+  # The public website and JSON API (StarServices services/portal).
+  - name: sc-portal
+    service: sc-portal
+    port: 8080
+    exactPaths: []
+    pathPrefixes: [/]

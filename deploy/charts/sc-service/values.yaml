@@ -1,0 +1,51 @@
+# Pulled as <registry>/<name>:<tag>.
+image:
+  registry: localhost:5001
+  name: scbackend/sc-service
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+# Adds a <release>-peers headless Service that resolves to every replica.
+headless: false
+
+# Service port list. `nodePort` is only used when `service.type` is NodePort. A port with `internal: true` is left out of
+# the main Service and goes on a ClusterIP Service `<release>-internal`.
+ports:
+  - name: grpc
+    port: 50051
+    protocol: TCP
+
+service:
+  type: ClusterIP
+
+# Client-facing gRPC services this release owns. `catchAll` takes every service with no route of its
+# own. Internal services, such as PushPublisher, are left out so the game cannot reach them.
+grpcRoute:
+  gateway: sc-edge
+  # The game's listener; the website's HTTPS listener never carries gRPC.
+  listener: grpc
+  services: []
+  catchAll: false
+
+databases:
+  postgres: postgres://yugabyte@yb-tservers.scbackend-data:5433/yugabyte
+  arango: http://arangodb.scbackend-data:8529
+
+# Extra container environment, as name: value.
+env: {}
+
+# Secret with state.json, certificates and destinations.json, mounted read-only at /data.
+dataSecret: scbackend-data
+
+healthPort: 8080
+
+logLevel: info
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 128Mi

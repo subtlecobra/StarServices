@@ -1,0 +1,40 @@
+target/
+/.venv
+/data
+__pycache__/
+/TODO.md
+/local.env
+/CLAUDE.local.md
+
+# Secrets and machine state: never commit these, wherever they appear.
+*.key
+*.pem
+*.p12
+*.pfx
+*.htpasswd
+registry.password
+state.json
+LoginData.json
+loginData.json
+kubeconfig
+*.kubeconfig
+.env
+.env.*
+
+# Editor, OS and tool leftovers.
+*.log
+*.bak
+*.orig
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Files from the game, generated from your copy of it by scripts/game-files.sh: the game's own protocol definitions,
+# the DGS's test data (tables and a hangar's collision) and the golden files written from them.
+/proto/sc/
+/services/dgs/testdata/
+/services/pu-frontend/testdata/golden_binds.tsv
+/services/pu-frontend/testdata/golden_binds.build

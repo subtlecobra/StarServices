@@ -1,0 +1,8 @@
+*
+!.cargo
+!Cargo.toml
+!Cargo.lock
+!crates
+!services
+!proto
+services/*/testdata

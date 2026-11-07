@@ -1,0 +1,26 @@
+[package]
+name = "sc-seed"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The seed bundle of a game build, and handing it to the owners: sc-admin writes one, sc-seeder applies it"
+
+[features]
+# The fake owners of `fakes`, for other crates' tests.
+fakes = ["dep:futures-util", "tokio/net", "tokio-stream/net"]
+
+[dependencies]
+futures-util = { workspace = true, optional = true }
+prost.workspace = true
+sc-proto.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.11"
+tokio = { workspace = true, features = ["fs"] }
+tokio-stream.workspace = true
+tonic.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-stream = { workspace = true, features = ["net"] }

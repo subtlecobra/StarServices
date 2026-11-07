@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sc-shard-operator
+description: Opens and closes shards for each ShardCluster as player demand changes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

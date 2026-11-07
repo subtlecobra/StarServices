@@ -1,0 +1,181 @@
+# Pulled as <registry>/<name>:<tag>.
+image:
+  registry: localhost:5001
+  name: scbackend/sc-shard-operator
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# The PU frontend image shards run.
+shardImage:
+  registry: localhost:5001
+  name: scbackend/sc-pu-frontend
+  tag: dev
+
+# The sc-dgs image of the DGS pods. Registry and tag follow shardImage unless set here.
+dgsImage:
+  registry: ""
+  name: scbackend/sc-dgs
+  tag: ""
+
+# sc-character-customizer as DGS pods reach it, for saved characters. Each shard has a namespace of its own, so this
+# must be a full service name. DGS pods have no database access; they reach their region's sc-entitygraph, which the
+# operator runs, for the containers of their area.
+dgsCustomizer: http://sc-character-customizer.scbackend.svc:50051
+
+# The sc-entitygraph image each ShardRegion runs in front of its entity database. Registry and tag follow shardImage
+# unless set here.
+entitygraphImage:
+  registry: ""
+  name: scbackend/sc-entitygraph
+  tag: ""
+
+# Every region's entity database: an ArangoDeployment `arangodb` in scbackend-region-<name>, run by a kube-arangodb
+# operator of its own (it only watches its namespace), and sc-entitygraph in front of it. The cluster needs the
+# kube-arangodb CRDs, which its cluster-wide release installs; operatorImage is that release's version. Each region's
+# layout is its spec.entityDb (see the ShardRegion CRD).
+entityDb:
+  # ArangoDB, where a region sets no entityDb.image.
+  arangoImage: docker.io/library/arangodb:3.12.13
+  operatorImage: docker.io/arangodb/kube-arangodb:1.4.7
+  # sc-push's internal publisher as sc-entitygraph reaches it. Empty: sc-push in this release's namespace.
+  push: ""
+  # The Secret with state.json here, copied into each region for the token secret.
+  dataSecret: scbackend-data
+  # The Gateway and listener, in this namespace, that the game's gRPC calls come through. The region with
+  # entityDb.clientRoute gets the route for EntityGraphService.
+  gateway: sc-edge
+  listener: grpc
+
+# The sc-gamedata image of each ShardRegion's game data. Registry and tag follow shardImage unless set here.
+gamedataImage:
+  registry: ""
+  name: scbackend/sc-gamedata
+  tag: ""
+
+# Where each region's sc-gamedata loads game builds from, as <registry>/<repository>:<build>, unless a region says
+# otherwise. The registry is as pods reach it (default: shardImage.registry). registryIp: the address its host resolves
+# to in the sc-gamedata pods, for a name only the nodes know. valkeyImage: each region's Valkey cluster, unless its
+# spec.gamedata.cache.image says otherwise.
+gamedata:
+  registry: ""
+  repository: scbackend/gamedata
+  plainHttp: true
+  registryIp: ""
+  valkeyImage: docker.io/valkey/valkey:9.0
+
+# Game build the shards serve. Shard ids look like pub_<shard cluster>_<build>_<number>.
+build: "0"
+
+# One ShardRegion per entry, with the spec of the CRD. A ShardCluster's region names its ShardRegion, and a shard opens
+# only once its build and the region's entity database are ready there. A region with no gameBuilds gets `build`. A
+# build that shards still run on is kept until they close, so after a patch only the new one needs listing.
+# gamedata.cache is the region's Valkey cluster: primaries (at least 3; raising it adds nodes, lowering it is refused),
+# replicasPerPrimary, memory per node, and the storageClass and size of each node's volume, which are fixed once its
+# StatefulSet exists, as replicasPerPrimary is once the cluster is formed. gamedata.serviceReplicas is sc-gamedata's.
+# entityDb.mode and its storage are fixed once its ArangoDeployment exists. Deleting a region deletes its game data and
+# its entity database. One region at a time sets entityDb.clientRoute, which sends the game's EntityGraphService calls
+# there.
+shardRegions:
+  - name: usa
+    spec:
+      gamedata:
+        serviceReplicas: 2
+        cache:
+          primaries: 3
+          replicasPerPrimary: 1
+          memory: 512Mi
+          size: 2Gi
+      entityDb:
+        clientRoute: true
+
+# Address clients use to reach shards.
+publicAddress: 127.0.0.2
+
+logLevel: info
+
+# One ShardCluster per entry. Each serves a region, and needs its own port ranges. Set shardTemplate to use a
+# template other than `default`.
+shardClusters:
+  - name: usa
+    region: usa
+    warmShards: 1
+    maxShards: 10
+    playersPerShard: 50
+    publicPortBase: 64090
+    nodePortBase: 30090
+    scaleDownDelaySeconds: 300
+
+# One ShardTemplate per entry: the DGSs of a shard and the area each has authority over. See docs/DGS_ZONES.md.
+# A root names containers of the system, and takes everything under them except what a deeper root claims.
+shardTemplates:
+  - name: default
+    spec:
+      systems:
+        - name: stanton
+          dgs:
+            - name: stanton-1
+              roots: [stanton1]
+            - name: stanton-2
+              roots: [stanton1a, stanton1c, stanton1d]
+            - name: stanton-3
+              roots: [stanton2, stanton2_l1, stanton2_l2, stanton2_l3, stanton2_l4, stanton2_l5]
+            - name: stanton-4
+              roots:
+                - stanton2b
+                - stanton2c
+                - jumppoint_stanton_terra
+                - stanton1_l1
+                - stanton1_l2
+                - stanton1_l3
+                - stanton1_l4
+                - stanton1_l5
+            - name: stanton-5
+              roots: [stanton4]
+            - name: stanton-6
+              roots:
+                - stanton4a
+                - stanton4c
+                - jumppoint_stanton_pyro
+                - jumppoint_stanton_magnus
+                - stanton4_l1
+                - stanton4_l2
+                - stanton4_l3
+                - stanton4_l4
+                - stanton4_l5
+                - stanton3_l1
+                - stanton3_l2
+                - stanton3_l3
+                - stanton3_l4
+                - stanton3_l5
+            # stantonsystem takes what no other root claims.
+            - name: stanton-7
+              roots: [stantonsystem, stanton3]
+        - name: pyro
+          dgs:
+            # pyrosystem takes what no other root claims.
+            - name: pyro-1
+              roots: [pyrosystem, pyro1, pyro2, pyro3]
+            - name: pyro-2
+              roots:
+                - pyro5
+                - pyro6
+                - jumppoint_pyro_stanton
+                - jumppoint_pyro_nyx
+                - ab_pyro_final_set_shared_03_001
+                - ab_pyro_final_set_shared_02_001
+                - ab_pyro_final_set_encounter-001
+                - ab_mine_pyro_cloud_sml_001
+                - pyro5_l1
+                - pyro5_l2
+                - pyro5_l3
+                - pyro5_l4
+                - pyro5_l5
+                - pyro6_l1
+                - pyro6_l2
+                - pyro6_l3
+                - pyro6_l4
+                - pyro6_l5
+        - name: nyx
+          dgs:
+            - name: nyx-1
+              roots: [nyxsystem]

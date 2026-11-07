@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sc-edge
+description: The Envoy Gateway entry point for the game's gRPC traffic.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

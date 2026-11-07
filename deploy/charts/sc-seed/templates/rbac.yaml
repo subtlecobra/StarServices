@@ -1,0 +1,35 @@
+{{- if include "sc-seed.discovers" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "sc-seed.labels" . | nindent 4 }}
+---
+# ShardRegions are cluster-scoped: the Job reads them to find each region's sc-entitygraph, and nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sc-seed.clusterName" . }}
+  labels:
+    {{- include "sc-seed.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["scbackend.io"]
+    resources: ["shardregions"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "sc-seed.clusterName" . }}
+  labels:
+    {{- include "sc-seed.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "sc-seed.clusterName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

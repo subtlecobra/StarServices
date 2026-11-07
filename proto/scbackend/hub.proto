@@ -1,0 +1,56 @@
+// Hub (Diffusion/CRYNUB) messages. These are not in the binary's descriptor tables: the client links
+// them as lite messages, so this file is hand-written from decompilation of 4.10.2 (CL 12913470).
+syntax = "proto3";
+package scbackend.hub;
+
+// `account_login`, sender 0x147413b70: field 1 is the login token.
+message AccountLogin {
+  string token = 1;
+  string value = 2;
+}
+
+// `cmsg_ls_goto_loc`, sent when the player launches into a system.
+message GotoLocation {
+  uint64 location_id = 1;
+}
+
+// `cmsg_set_region_id`. The client sends 08 01 10 00 18 00; the last two fields are not understood yet.
+message RegionSelection {
+  uint64 region_id = 1;
+}
+
+// RE repo: Proto/location_services.proto and Proto/service_party_join.proto.
+message InstanceEntry {
+  string instance_id = 1;
+  int32 max_players = 2;
+  int32 num_players = 3;
+  repeated string party_members = 4;
+  string owner_name = 5;
+}
+
+message LocationServicesDestination {
+  uint64 location_id = 1;
+  string location_name = 2;
+  repeated InstanceEntry instance_list = 3;
+  uint64 instance_owner = 4;
+}
+
+message LocationServicesDestinationList {
+  repeated LocationServicesDestination list = 1;
+}
+
+message ServerPortInfo {
+  int32 port = 1;
+  int32 usage = 2;
+}
+
+// `smsg_do_join_instance`
+message MatchMakerUpdate {
+  string group_id = 1;
+  int32 status = 2;
+  string game_ip = 3;
+  int32 game_port = 4;
+  uint64 game_location = 5;
+  repeated ServerPortInfo server_ports = 6;
+  string target_shard_id = 7;
+}

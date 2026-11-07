@@ -1,0 +1,42 @@
+:root { color-scheme: light dark; --line: #8884; --accent: #2f6fdf; --bad: #c0392b; --ok: #2e8b57; }
+body { font: 14px/1.45 system-ui, sans-serif; margin: 0; }
+header { display: flex; gap: 1em; align-items: center; padding: .6em 1.2em; border-bottom: 1px solid var(--line); }
+header .brand { font-weight: 700; }
+header .who { margin-left: auto; opacity: .7; }
+main { padding: 1em 1.2em 3em; max-width: 1200px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 1.4em; margin: .2em 0 .6em; }
+h2 { font-size: 1.1em; margin: 1.6em 0 .5em; }
+table { border-collapse: collapse; width: 100%; margin: .4em 0; }
+th, td { text-align: left; padding: .3em .5em; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; }
+td code, .mono { font-family: ui-monospace, monospace; font-size: .92em; word-break: break-all; }
+.tabs { display: flex; gap: .3em; flex-wrap: wrap; margin-bottom: 1em; border-bottom: 1px solid var(--line); }
+.tabs a { padding: .35em .8em; border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; }
+.tabs a.current { border-color: var(--line); font-weight: 600; }
+form { margin: .4em 0; }
+form.inline { display: inline-flex; gap: .4em; align-items: center; flex-wrap: wrap; }
+fieldset { border: 1px solid var(--line); border-radius: 4px; padding: .6em .9em; margin: .6em 0; }
+legend { font-weight: 600; }
+label { display: inline-flex; gap: .3em; align-items: center; }
+input, select, button { font: inherit; padding: .25em .45em; }
+button { cursor: pointer; }
+.notice { padding: .5em .8em; border-left: 4px solid var(--ok); background: #2e8b5718; }
+.notice.error { border-color: var(--bad); background: #c0392b18; }
+.warn { padding: .5em .8em; border-left: 4px solid #d4a017; background: #d4a01718; }
+.muted { opacity: .65; }
+.narrow { width: 5em; }
+section.inventory { border-left: 2px solid var(--line); padding-left: .8em; margin: .8em 0; }
+section.inventory h3 { font-size: 1em; margin: .3em 0; }
+section.depth-1 { margin-left: 1.5em; }
+section.depth-2 { margin-left: 3em; }
+section.depth-3 { margin-left: 4.5em; }
+section.depth-4 { margin-left: 6em; }
+section.depth-5 { margin-left: 7.5em; }
+section.depth-6 { margin-left: 9em; }
+.online { color: var(--ok); font-weight: 600; }
+.offline { opacity: .7; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .2em 1em; }
+dt { font-weight: 600; }
+dd { margin: 0; }

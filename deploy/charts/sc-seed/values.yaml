@@ -1,0 +1,53 @@
+# The game build whose seed bundle the Job applies, such as "12913470". Required. The Job's name has it, so a new
+# build is a new Job, which seeds again; the same build and settings render the same Job.
+build: ""
+
+# The registry with the seed bundles, as pods reach it (they pull the bundle themselves, over the OCI distribution
+# API), host[:port]. scripts/seed-publish.sh pushes <registry>/<repository>:<build> there.
+registry: localhost:5001
+repository: scbackend/seed
+# true: plain HTTP. false: HTTPS, trusted through the system CAs of the image.
+plainHttp: true
+# The address of the registry's host name, for a name only the deploy host's /etc/hosts defines (a hostAlias). Empty:
+# resolved by the cluster's DNS.
+registryIp: ""
+
+# The sc-seeder image, as the nodes pull it: <registry>/<name>:<tag>. A string is taken as the whole reference.
+image:
+  registry: localhost:5001
+  name: scbackend/sc-seeder
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# The ShardRegions to seed. Empty: every one the Kubernetes API lists, through a ServiceAccount that may only get and
+# list ShardRegions. The Job waits until each one's entity database is Ready.
+regions: []
+# Instead of asking the API: `name=address` of each region's sc-entitygraph. Then no ServiceAccount rights are made.
+entitygraph: []
+
+# The global owners of the other tables, as addresses in the release's namespace.
+owners:
+  entitlement: http://sc-entitlement:50051
+  reputation: http://sc-reputation:50051
+  blueprintLibrary: http://sc-blueprint-library:50051
+  missionScenario: http://sc-mission-scenario:50051
+  contractBroker: http://sc-contract-broker:50051
+  shop: http://sc-solar-system-shop:50051
+
+# How long the Job waits for the regions' entity databases and the owners, in seconds, before it fails (and is tried
+# again, up to backoffLimit).
+waitSeconds: 1800
+backoffLimit: 4
+# A finished Job (and its pods' logs) is deleted this long after it ends.
+ttlSecondsAfterFinished: 86400
+# Scratch space for the pulled bundle (about 30 MiB for 4.10.2, with its layer).
+workSize: 512Mi
+
+logLevel: info
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

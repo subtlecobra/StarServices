@@ -1,0 +1,61 @@
+// Hub messages with required fields, hand-written from decompilation of 4.10.2 (CL 12913470).
+//
+// This file is proto2 because a message missing a required field fails to parse in the client with
+// no log line. proto3 cannot express that, since it never writes a zero value.
+syntax = "proto2";
+package scbackend.hub;
+
+// Frame payload, vtable 0x1480456a8. IsInitialized 0x140fc0930 demands all three fields, and
+// OnWireMessage 0x147420db0 drops the frame otherwise. Replies normally use id 0, so a frame that
+// left id out would never reach any handler.
+message Envelope {
+  required string key = 1;
+  required bytes payload = 2;
+  required uint64 id = 3;
+}
+
+// Serializer 0x140fd67c0, parser 0x140fd4bd0, vtable 0x148048c08. No field is required at this level.
+// Field 1 and fields 8-12 are nested messages that the login path does not read, so they are left out.
+message AccountRecord {
+  optional string session = 2;  // copied to CDiffusionCryClient+0x1d0, given to the session manager
+  optional int32 account_id = 3;
+  optional string display_name = 4;
+  optional string handle = 5;  // logged as "User Login Success - Handle[...]"
+  optional string field6 = 6;
+  optional string field7 = 7;
+  optional uint64 geid = 13;
+}
+
+// `account_login_response`, serializer 0x14144aa30, handler 0x147423f40, IsInitialized 0x14144a5f0.
+message AccountLoginResponse {
+  required int32 result = 1;  // 1 = success
+  optional AccountRecord account = 2;
+  optional int32 field4 = 4;
+  // Positive makes the client wait for login_queue_status (cmp at 0x147424328); zero completes.
+  required int32 queue_wait = 5;
+  required int32 field6 = 6;
+}
+
+// Both halves are required: IsInitialized 0x140fc6230.
+message RpcGuid {
+  required uint64 high = 1;
+  required uint64 low = 2;
+}
+
+// `diff.rpc.request`, as observed from the client. Field 5 counts up from 10000.
+message RpcRequest {
+  optional string method = 1;
+  optional string body = 2;  // JSON
+  optional uint64 call_id = 5;
+  optional RpcGuid source = 6;
+}
+
+// `diff.rpc.response`, vtable 0x148045b70, serializer 0x140fc3a50, receive handler 0x147424d10.
+// IsInitialized 0x140fc3570 demands all five fields. The client finds the pending call by `call_id`.
+message RpcResponse {
+  required string body = 1;
+  required uint64 call_id = 2;
+  required int32 code = 3;  // 0 = success
+  required string message = 4;
+  required RpcGuid destination = 5;
+}

@@ -1,0 +1,94 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: sc-edge
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: {{ .Values.grpcPort }}
+                  nodePort: {{ .Values.nodePort }}
+                - port: {{ .Values.site.port }}
+                  nodePort: {{ .Values.site.nodePort }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: sc-edge
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: sc-edge
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: sc-edge
+spec:
+  gatewayClassName: sc-edge
+  listeners:
+    - name: grpc
+      protocol: HTTPS
+      port: {{ .Values.grpcPort }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ .Values.tlsSecret }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+        kinds:
+          - kind: GRPCRoute
+    # The website (portal and admin), for browsers: its own port and certificate, and HTTPRoutes only.
+    - name: https
+      protocol: HTTPS
+      port: {{ .Values.site.port }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ .Values.site.tlsSecret }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+        kinds:
+          - kind: HTTPRoute
+---
+# The game holds PushService.Listen and WatchConfig open for a whole session, often with nothing to
+# send, so the default 5 minute stream idle timeout would cut them.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: sc-edge
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: sc-edge
+  timeout:
+    http:
+      streamIdleTimeout: 0s
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: sc-edge
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: sc-edge
+  timeout:
+    http:
+      requestTimeout: 0s

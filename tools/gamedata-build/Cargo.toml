@@ -1,0 +1,21 @@
+[package]
+name = "gamedata-build"
+version = "0.1.0"
+edition = "2021"
+description = "Converts Data.p4k into the game files of one build that the region caches serve"
+publish = false
+
+# meshoptimizer is C++ and the repository's default target is musl, which has no g++ here: build it for the host,
+# `cargo build --release --target x86_64-unknown-linux-gnu`. It runs on a workstation, never in an image.
+
+[dependencies]
+p4k-formats = { path = "../../../P4kTools/crates/formats" }
+p4k = { path = "../../../P4kTools/crates/p4k" }
+p4k-scene = { path = "../../../P4kTools/crates/scene" }
+flate2 = "1"
+meshopt = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[workspace]

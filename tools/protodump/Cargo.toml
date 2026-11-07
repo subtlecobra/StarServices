@@ -1,0 +1,13 @@
+[package]
+name = "protodump"
+version = "0.1.0"
+edition = "2021"
+description = "Dev tool: recovers the .proto tree from the descriptors embedded in StarCitizen.exe"
+publish = false
+
+[dependencies]
+prost = "0.14"
+prost-types = "0.14"
+protox = "0.9"
+
+[workspace]
