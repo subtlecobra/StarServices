@@ -149,6 +149,6 @@ Not covered:
    `sc-entitygraph`: sc-admin-web reads the player from `AccountSummary.geid` and asks entitygraph's admin RPCs, which
    older ones lack (an older sc-identity answers GEID 0, which the site shows as no player).
 2. `sc-portal` (the helmfile makes it need sc-identity) and `sc-admin-web`.
-3. `sc-edge`, for the HTTPRoutes, and BackendDeploySC's `cluster-up.sh`, which also creates the `scbackend-public`
+3. `sc-edge`, for the HTTPRoutes, and StarServices-CN's `cluster-up.sh`, which also creates the `scbackend-public`
    Secret the portal mounts.
 4. `scripts/identity-admin.sh grant-role <handle> admin` for the first admin.

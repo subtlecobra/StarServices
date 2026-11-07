@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Everything a deploy takes from this repository, run before BackendDeploySC's scripts/cluster-up.sh:
+# Everything a deploy takes from this repository, run before StarServices-CN's scripts/cluster-up.sh:
 #   1. builds sc-admin and runs `sc-admin init`, which creates or updates the backend state in data/
 #      (accounts, certificates, destinations), which cluster-up.sh hands to the pods as Secrets;
 #   2. builds and pushes the service images (scripts/build-images.sh);

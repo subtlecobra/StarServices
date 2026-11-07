@@ -6,7 +6,7 @@ nodePort: 30051
 tlsSecret: scbackend-tls
 
 # The website's HTTPS listener, apart from the game's: port, the node port kind maps it from, and the
-# kubernetes.io/tls Secret with its certificate (self-signed by BackendDeploySC's cluster-up.sh in dev).
+# kubernetes.io/tls Secret with its certificate (self-signed by StarServices-CN's cluster-up.sh in dev).
 site:
   port: 443
   nodePort: 30443

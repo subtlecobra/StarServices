@@ -16,7 +16,7 @@ browser ─ HTTPS ──> Envoy Gateway ──┬─> sc-portal       register, 
 ```
 
 - **Envoy Gateway** is the single gRPC endpoint the game requires. It terminates TLS and routes by gRPC
-  service. Each service declares its routes in its values in BackendDeploySC (`values/`). `sc-hub` and `sc-pu-frontend` use
+  service. Each service declares its routes in its values in StarServices-CN (`values/`). `sc-hub` and `sc-pu-frontend` use
   NodePorts: `TCPRoute` and `UDPRoute` are still experimental, and proxying would hide client addresses.
 - **`sc-shard-operator`** runs each `ShardCluster`: a region's pool of shards. It keeps one empty shard
   warm, opens more as players arrive, and closes surplus shards once they have stayed empty. A shard
@@ -29,7 +29,7 @@ browser ─ HTTPS ──> Envoy Gateway ──┬─> sc-portal       register, 
 
 | Stage | State |
 |---|---|
-| Service binaries, Alpine images, Helm charts, helmfile (in BackendDeploySC) | Working, see the cluster notes below |
+| Service binaries, Alpine images, Helm charts, helmfile (in StarServices-CN) | Working, see the cluster notes below |
 | All 44 gRPC services answer with the right streaming shape | Working, tested |
 | Login through to character customization | Working with the real game, before the service split |
 | Destination list and join routing | Passes against the test client; **not yet run with the real game** |
@@ -77,15 +77,15 @@ cargo build --release
 ```
 
 The deployment (helmfile, environments, per-service values, kind config, `cluster-up.sh`) lives in
-[BackendDeploySC](../BackendDeploySC), which only deploys what this repository pushes:
+[StarServices-CN](../StarServices-CN), which only deploys what this repository pushes:
 
 ```sh
 scripts/build-and-push.sh                       # sc-admin init, images, charts, pushed to the registry
 scripts/gamedata-publish.sh --seed              # once per game build: game data and seed bundle, pushed to the registry
-../BackendDeploySC/scripts/cluster-up.sh        # kind cluster, registry access, Secrets, helmfile sync; the sc-seed Job seeds
+../StarServices-CN/scripts/cluster-up.sh        # kind cluster, registry access, Secrets, helmfile sync; the sc-seed Job seeds
 # scripts/seed.sh                               # the manual seed: straight from the archive, through port-forwards
 <launcher>/sc-launch-private.sh                 # starts the game (the private client launcher, kept outside this repository)
-../BackendDeploySC/scripts/cluster-down.sh
+../StarServices-CN/scripts/cluster-down.sh
 ```
 
 The services need the databases, so the cluster is the only way to run them. Re-run `build-and-push.sh`
@@ -98,26 +98,26 @@ This uses a 7-node kind cluster (1 control-plane, 6 workers) on rootless Podman.
 
 `deploy/charts/` holds the `sc-service` chart, which every service is a release of, `sc-edge` for the
 Gateway, and `sc-shard-operator`. `build-and-push.sh` packages them and pushes them to
-`oci://<registry>/scbackend/charts`, versioned from each `Chart.yaml`; a chart change that BackendDeploySC
+`oci://<registry>/scbackend/charts`, versioned from each `Chart.yaml`; a chart change that StarServices-CN
 should pin separately needs a new version there and in its helmfile. YugabyteDB runs in the `scbackend-data`
 namespace, and each region's ArangoDB in its region's namespace (below); [docs/DATA.md](docs/DATA.md) says what goes where.
 
 Images are built with Podman. Images and charts go to the deploy environment's registry, which
-`scripts/registry.sh` reads from BackendDeploySC's `environments/dev/registry.yaml` (`SC_DEPLOY_REPO`,
-default `../BackendDeploySC`): `registry.alexandria.local:5000`, plain HTTP. `SC_REGISTRY` and
+`scripts/registry.sh` reads from StarServices-CN's `environments/dev/registry.yaml` (`SC_DEPLOY_REPO`,
+default `../StarServices-CN`): `registry.alexandria.local:5000`, plain HTTP. `SC_REGISTRY` and
 `SC_REGISTRY_PLAIN_HTTP` override it; until Alexandria runs, use `SC_REGISTRY=localhost:5001`, the local
-`kind-registry` container that BackendDeploySC's `cluster-up.sh` starts, on every script (its README has
-the first-run order). A deploy host's cluster holds its own registry (BackendDeploySC's `registry.yaml` mode
+`kind-registry` container that StarServices-CN's `cluster-up.sh` starts, on every script (its README has
+the first-run order). A deploy host's cluster holds its own registry (StarServices-CN's `registry.yaml` mode
 `in-cluster`), where anyone pulls and pushes need a login (`podman login` and `helm registry login` as `push`);
-BackendDeploySC's `scripts/deploy-remote.sh` logs in and runs these scripts against it from the build PC. Base images come from Docker Hub. Follow logs
+StarServices-CN's `scripts/deploy-remote.sh` logs in and runs these scripts against it from the build PC. Base images come from Docker Hub. Follow logs
 with `kubectl -n scbackend logs -f deploy/sc-hub`. Stream idle and request timeouts are off in `sc-edge`,
 because the game holds streams open for a whole session. `state.json`, the certificates and `destinations.json`
-reach the pods as the `scbackend-data` Secret, so re-run BackendDeploySC's `cluster-up.sh` after changing them. `ca.key`
+reach the pods as the `scbackend-data` Secret, so re-run StarServices-CN's `cluster-up.sh` after changing them. `ca.key`
 stays out of the cluster.
 
 Shard clusters are listed in the `sc-shard-operator` chart values, and `kubectl -n scbackend get shc` shows
 them. Shards get random names, such as `usa-crimson-falcon`, and ids in the game's format, such as
-`pub_usa_12913470_000`: shard cluster, game build and shard number. A new cluster needs its own region and port ranges, plus matching ports in BackendDeploySC's kind config.
+`pub_usa_12913470_000`: shard cluster, game build and shard number. A new cluster needs its own region and port ranges, plus matching ports in StarServices-CN's kind config.
 
 A shard cluster's region names a `ShardRegion` (`shardRegions` in the same values, `kubectl get shr`): the namespace
 `scbackend-region-<name>` with its game data, a Valkey cluster (`spec.gamedata.cache`) that holds each listed game build
@@ -182,7 +182,7 @@ tree trusts, so keep it private.
 | `proto/sc/` | Generated from your game binary by `scripts/game-files.sh` (`scripts/protos.sh`); not in the repository. Do not edit |
 | `services/*/testdata/` | Test data and golden files from the game, generated by `scripts/game-files.sh`; not in the repository |
 | `proto/scbackend/` | Hand-written Hub and internal messages. Those with required fields are proto2, in `hub_wire.proto` |
-| `deploy/charts/` | Helm charts, pushed to the registry; deployed by BackendDeploySC |
+| `deploy/charts/` | Helm charts, pushed to the registry; deployed by StarServices-CN |
 | `scripts/` | `game-files.sh` (generates every file from the game: `proto/sc/`, test data, golden files), `protos.sh` (generates `proto/sc/` alone), `build-and-push.sh`, `build-images.sh`, `seed.sh`, `seed-publish.sh` (with `seed-push.sh`), `gamedata-publish.sh` (with `gamedata-push.sh`), `gamedata-valkey-test.sh`, `identity-admin.sh` for web account roles and passwords, and `registry.sh` for the registry setting |
 | `Dockerfile` | Alpine image for any service, with `--build-arg SERVICE=<binary>` |
 | `tests/e2e.py` | End-to-end check with an independent client stack |
@@ -230,7 +230,7 @@ runs `sc-admin seed-export <Data.p4k> target/seed`, which writes the seed bundle
 table, length-delimited protobuf rows of the owner's seed RPC, and `manifest.json` with each file's size, sha256 and
 row count; about 30 MB for 4.10.2, the same bytes for the same archive), and pushes it with `scripts/seed-push.sh` as
 `<registry>/scbackend/seed:<build>` (`FROM scratch`, files under `/seed/<build>/`, `--timestamp 0`, so the digest is
-stable). The rental prices are BackendDeploySC's `environments/<env>/rental-prices.json` when present (`SC_RENTAL_PRICES`).
+stable). The rental prices are StarServices-CN's `environments/<env>/rental-prices.json` when present (`SC_RENTAL_PRICES`).
 
 The cluster applies it with the `sc-seed` chart (pushed with the others by `build-and-push.sh`): a Job, named after the
 build, that runs `sc-seeder`. It pulls the bundle itself, checks the image's digests and every file's sha256, waits for

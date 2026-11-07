@@ -16,7 +16,7 @@ These rules apply to all work in this repository.
 
 - Infrastructure is cloud native and Helm based.
 - The deployment (helmfile, environments, per-service values, kind config, cluster scripts) lives in
-  the BackendDeploySC repository, checked out next to this one. This repository builds and pushes images and charts (`scripts/build-and-push.sh`)
+  the StarServices-CN repository, checked out next to this one. This repository builds and pushes images and charts (`scripts/build-and-push.sh`)
   to the registry set in that repository's `environments/<env>/registry.yaml`; a new service also needs its values
   file there.
 

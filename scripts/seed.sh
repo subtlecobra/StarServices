@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seeds from the game archive on this machine, after BackendDeploySC's scripts/cluster-up.sh, because the services must
+# Seeds from the game archive on this machine, after StarServices-CN's scripts/cluster-up.sh, because the services must
 # be running. `sc-admin seed` reads the archive and hands the entity classes and the container tree to the sc-entitygraph
 # of each ShardRegion (in the namespace scbackend-region-<name>, which sc-shard-operator makes), and every other table's
 # rows to the service that owns it, each through its seed RPC. The owners only upsert, so it is safe to repeat.
@@ -13,7 +13,7 @@
 #   SC_P4K             game archive                          (none; set it in local.env)
 #   SC_SEED_PORTS      local ports: the first for the regions' sc-entitygraphs, one each, then the first of six for the
 #                      owner services ("18529 15051")
-#   SC_RENTAL_PRICES   rental prices to import when present  (../BackendDeploySC/environments/dev/rental-prices.json)
+#   SC_RENTAL_PRICES   rental prices to import when present  (../StarServices-CN/environments/dev/rental-prices.json)
 #   SC_KUBE_CONTEXT    cluster                               (kind-scbackend)
 set -euo pipefail
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
@@ -83,6 +83,6 @@ for port in "${ports[@]}"; do
   done
 done
 prices=()
-rental_prices=${SC_RENTAL_PRICES:-$repo/../BackendDeploySC/environments/dev/rental-prices.json}
+rental_prices=${SC_RENTAL_PRICES:-$repo/../StarServices-CN/environments/dev/rental-prices.json}
 [[ -f $rental_prices ]] && prices=(--rental-prices "$rental_prices")
 "$admin" seed "${graph_args[@]}" "${owner_args[@]}" --p4k "$p4k" "${prices[@]}"

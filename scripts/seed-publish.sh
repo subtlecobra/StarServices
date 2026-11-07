@@ -19,7 +19,7 @@ repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 if [[ -f $repo/local.env ]]; then source "$repo/local.env"; fi
 p4k=${SC_P4K:-}
 out=${SC_SEED_OUT:-$repo/target/seed}
-prices=${SC_RENTAL_PRICES:-${SC_DEPLOY_REPO:-$repo/../BackendDeploySC}/environments/${SC_ENVIRONMENT:-dev}/rental-prices.json}
+prices=${SC_RENTAL_PRICES:-${SC_DEPLOY_REPO:-$repo/../StarServices-CN}/environments/${SC_ENVIRONMENT:-dev}/rental-prices.json}
 build=
 while (($#)); do
   case $1 in
