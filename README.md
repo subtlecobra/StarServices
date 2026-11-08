@@ -90,7 +90,8 @@ scripts/publish.sh                              # here: images, charts, game dat
 ../StarServices-CN/scripts/cluster-down.sh
 ```
 
-The services need the databases, so the cluster is the only way to run them. Re-run `publish.sh`
+The services need the databases, so the cluster is the only way to run them. Re-run `publish.sh` (it pushes only the images whose binary changed, and the charts that changed;
+`SC_FORCE_PUSH=1` pushes all)
 (with service names to build only those images) and `cluster-up.sh` after rebuilding. The client script builds its private tree and starts the game. It stops if the backend is not
 reachable, and refuses to start next to a running game. `--dry-run` prints the plan, and `--prepare-only`
 builds the tree without launching. Logs are in `kubectl -n scbackend logs`, where every unimplemented call
