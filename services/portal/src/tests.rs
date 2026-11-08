@@ -144,6 +144,7 @@ async fn portal(registration_open: bool) -> Router {
     let app = App {
         identity: IdentityInternalClient::new(endpoint.connect_lazy()),
         game_host: "127.0.0.2".into(),
+        game_names: vec!["alexandria.local".into()],
         game_grpc_port: 50051,
         game_hub_port: 8000,
         ca_pem: Some("-----BEGIN CERTIFICATE-----\n".into()),
@@ -159,6 +160,8 @@ async fn portal(registration_open: bool) -> Router {
 #[derive(Default)]
 struct Browser {
     cookies: HashMap<String, String>,
+    /// The `Host` it reached the site by; 127.0.0.2:50051 when unset.
+    host: Option<String>,
 }
 
 struct Reply {
@@ -168,12 +171,16 @@ struct Reply {
 }
 
 impl Browser {
+    fn host(&self) -> &str {
+        self.host.as_deref().unwrap_or("127.0.0.2:50051")
+    }
+
     fn request(&self, method: &str, path: &str) -> axum::http::request::Builder {
         let cookies: Vec<String> = self.cookies.iter().map(|(name, value)| format!("{name}={value}")).collect();
         Request::builder()
             .method(method)
             .uri(path)
-            .header("host", "127.0.0.2:50051")
+            .header("host", self.host())
             .header("x-forwarded-for", "198.51.100.1, 203.0.113.7")
             .header("cookie", cookies.join("; "))
             .extension(ConnectInfo::<SocketAddr>("10.244.0.9:1234".parse().unwrap()))
@@ -214,7 +221,7 @@ impl Browser {
         let request = self
             .request("POST", path)
             .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", "https://127.0.0.2:50051")
+            .header("origin", format!("https://{}", self.host()))
             .body(Body::from(body))
             .unwrap();
         self.send(router, request).await
@@ -336,4 +343,35 @@ async fn closed_registration_refuses_new_accounts() {
     assert!(browser.get(&router, "/register").await.body.contains("Registration is closed"));
     let made = browser.form(&router, "/register", &[("handle", "x"), ("email", "x"), ("password", "x")]).await;
     assert_eq!(made.status, StatusCode::FORBIDDEN);
+}
+
+/// LoginData.json names the backend as the site was reached: by a listed name when it is one, and by the game host for
+/// any other name, so a forged `Host` never puts a name of its own in it.
+#[tokio::test]
+async fn the_login_data_uses_the_name_the_site_was_reached_by() {
+    let router = portal(true).await;
+    let mut browser = Browser { host: Some("Alexandria.local:8443".into()), ..Browser::default() };
+    browser.get(&router, "/register").await;
+    let made = browser
+        .form(&router, "/register", &[("handle", "Vega"), ("email", "v%40example.com"), ("password", "violet+tangerine")])
+        .await;
+    assert_eq!(made.status, StatusCode::SEE_OTHER, "{}", made.body);
+
+    let login = browser.form(&router, "/play/login-data", &[]).await;
+    let data: serde_json::Value = serde_json::from_str(&login.body).unwrap();
+    assert_eq!(data["star_network"]["hostname"], "alexandria.local");
+    assert_eq!(data["star_network"]["servicesEndpoint"], "https://alexandria.local:50051");
+
+    browser.host = Some("elsewhere.example:8443".into());
+    let login = browser.form(&router, "/play/login-data", &[]).await;
+    let data: serde_json::Value = serde_json::from_str(&login.body).unwrap();
+    assert_eq!(data["star_network"]["hostname"], "127.0.0.2");
+}
+
+#[test]
+fn a_host_header_loses_only_its_port() {
+    assert_eq!(super::host_without_port("alexandria.local:8443"), "alexandria.local");
+    assert_eq!(super::host_without_port("alexandria.local"), "alexandria.local");
+    assert_eq!(super::host_without_port("[fd00::2]:8443"), "fd00::2");
+    assert_eq!(super::host_without_port("fd00::2"), "fd00::2");
 }

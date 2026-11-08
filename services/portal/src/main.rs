@@ -58,6 +58,10 @@ struct Args {
     /// The address the game reaches this backend at, for LoginData.json.
     #[arg(long, env = "SCBACKEND_GAME_HOST", default_value = "127.0.0.2")]
     game_host: String,
+    /// Other names the game may reach the backend by (DNS names, comma separated). LoginData.json carries the name the
+    /// site was reached by when it is one of these (or the game host), and the game host otherwise.
+    #[arg(long, env = "SCBACKEND_GAME_NAMES", value_delimiter = ',', default_value = "")]
+    game_names: Vec<String>,
     #[arg(long, env = "SCBACKEND_GAME_GRPC_PORT", default_value_t = 50051)]
     game_grpc_port: u16,
     #[arg(long, env = "SCBACKEND_GAME_HUB_PORT", default_value_t = 8000)]
@@ -79,6 +83,7 @@ struct Args {
 pub struct App {
     identity: IdentityInternalClient<Channel>,
     game_host: String,
+    game_names: Vec<String>,
     game_grpc_port: u16,
     game_hub_port: u16,
     ca_pem: Option<String>,
@@ -196,18 +201,41 @@ impl App {
         Ok(())
     }
 
-    fn login_data(&self, token: &str, handle: &str) -> serde_json::Value {
+    /// The name the game should use: the one this request reached the site by (its `Host`, without the port) when it
+    /// is the game host or one of the game names, so a player who browsed to a DNS name gets that name; otherwise the
+    /// game host. A name outside the list never reaches LoginData.json.
+    pub fn game_host_for(&self, headers: &HeaderMap) -> &str {
+        let requested = headers.get(header::HOST).and_then(|value| value.to_str().ok()).map(host_without_port);
+        match requested {
+            Some(name) if name.eq_ignore_ascii_case(&self.game_host) => &self.game_host,
+            Some(name) => self.game_names.iter().find(|known| known.eq_ignore_ascii_case(name)).unwrap_or(&self.game_host),
+            None => &self.game_host,
+        }
+    }
+
+    fn login_data(&self, token: &str, handle: &str, host: &str) -> serde_json::Value {
         // As sc-admin's client-files writes it.
         json!({
             "username": handle,
             "token": token,
             "auth_token": token,
             "star_network": {
-                "hostname": self.game_host,
+                "hostname": host,
                 "port": self.game_hub_port,
-                "servicesEndpoint": format!("https://{}:{}", self.game_host, self.game_grpc_port),
+                "servicesEndpoint": format!("https://{}:{}", host, self.game_grpc_port),
             },
         })
+    }
+}
+
+/// A `Host` header's name: `name:port` and `[v6]:port` lose the port, and a bare IPv6 address stays whole.
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => name,
+        _ => host,
     }
 }
 
@@ -462,9 +490,9 @@ async fn revoke_post(State(app): Shared, ConnectInfo(peer): Peer, headers: Heade
     }
 }
 
-fn endpoint(app: &App) -> html::Endpoint<'_> {
+fn endpoint<'a>(app: &'a App, headers: &HeaderMap) -> html::Endpoint<'a> {
     html::Endpoint {
-        host: &app.game_host,
+        host: app.game_host_for(headers),
         grpc_port: app.game_grpc_port,
         hub_port: app.game_hub_port,
         has_ca: app.ca_pem.is_some(),
@@ -474,10 +502,10 @@ fn endpoint(app: &App) -> html::Endpoint<'_> {
 async fn play_page(State(app): Shared, ConnectInfo(peer): Peer, headers: HeaderMap) -> Response {
     let ctx = app.ctx(&headers, peer).await;
     let Some(user) = &ctx.user else { return see_other("/login") };
-    ctx.page(StatusCode::OK, "Play", &html::play(&ctx.csrf, &user.handle, &endpoint(&app)))
+    ctx.page(StatusCode::OK, "Play", &html::play(&ctx.csrf, &user.handle, &endpoint(&app, &headers)))
 }
 
-async fn game_login(app: &App, ctx: &Ctx) -> Result<serde_json::Value, (StatusCode, String)> {
+async fn game_login(app: &App, ctx: &Ctx, headers: &HeaderMap) -> Result<serde_json::Value, (StatusCode, String)> {
     let user = ctx.user.as_ref().ok_or((StatusCode::UNAUTHORIZED, "Log in first.".to_string()))?;
     let answer = app
         .identity()
@@ -486,7 +514,7 @@ async fn game_login(app: &App, ctx: &Ctx) -> Result<serde_json::Value, (StatusCo
         .map_err(|status| identity_message(&status))?
         .into_inner();
     info!(account_id = user.account_id, "game login issued");
-    Ok(app.login_data(&answer.token, &answer.handle))
+    Ok(app.login_data(&answer.token, &answer.handle, app.game_host_for(headers)))
 }
 
 /// A POST with the CSRF token, not a link: it hands out a credential.
@@ -498,7 +526,7 @@ async fn login_data_post(State(app): Shared, ConnectInfo(peer): Peer, headers: H
     if let Err((status, error)) = app.guard(&ctx, &headers, Some(&form.csrf)) {
         return ctx.page(status, "Play", &html::problem("Play", error));
     }
-    match game_login(&app, &ctx).await {
+    match game_login(&app, &ctx, &headers).await {
         Ok(data) => (
             [
                 (header::CONTENT_TYPE, "application/json"),
@@ -671,7 +699,7 @@ async fn api_game_login(State(app): Shared, ConnectInfo(peer): Peer, headers: He
     if let Err(response) = api_guard(&app, &ctx, &headers) {
         return response;
     }
-    match game_login(&app, &ctx).await {
+    match game_login(&app, &ctx, &headers).await {
         Ok(data) => Json(data).into_response(),
         Err((status, error)) => api_error(status, &error),
     }
@@ -731,6 +759,7 @@ fn app(args: &Args) -> Result<App, String> {
     Ok(App {
         identity: IdentityInternalClient::new(endpoint.connect_lazy()),
         game_host: args.game_host.clone(),
+        game_names: args.game_names.iter().map(|name| name.trim().to_ascii_lowercase()).filter(|name| !name.is_empty()).collect(),
         game_grpc_port: args.game_grpc_port,
         game_hub_port: args.game_hub_port,
         ca_pem,
