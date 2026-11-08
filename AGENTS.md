@@ -15,10 +15,11 @@ These rules apply to all work in this repository.
 ## Infrastructure
 
 - Infrastructure is cloud native and Helm based.
-- The deployment (helmfile, environments, per-service values, kind config, cluster scripts) lives in
-  the StarServices-CN repository, checked out next to this one. This repository builds and pushes images and charts (`scripts/build-and-push.sh`)
-  to the registry set in that repository's `environments/<env>/registry.yaml`; a new service also needs its values
-  file there.
+- This repository builds and publishes; it does not deploy. `scripts/publish.sh` pushes the images, the charts, the
+  game data and the seed bundle to the registry `SC_REGISTRY` (local.env) names, and a release manifest of their
+  versions and digests. Deployments (helmfile, environments, per-service values, cluster scripts) live elsewhere and
+  pull from the registry: nothing here names, reads or writes a deployment's files. A new service needs its release in
+  the deployment too.
 
 ## Commits
 

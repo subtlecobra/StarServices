@@ -1,11 +1,15 @@
-# Pulled as <registry>/<name>:<tag>.
+# Pulled as <registry>/<name>:<tag>. The deployment sets all three: the tag is <version>@sha256:<digest>, as the release
+# manifest (scripts/publish.sh) lists it, so a pod runs exactly the image published.
 image:
-  registry: localhost:5001
-  name: scbackend/sc-service
-  tag: dev
+  registry: ""
+  name: ""
+  tag: ""
   pullPolicy: IfNotPresent
 
 replicas: 1
+
+# Extra annotations of the pods, such as a checksum of a mounted Secret, so that a change to it rolls them.
+podAnnotations: {}
 
 # Adds a <release>-peers headless Service that resolves to every replica.
 headless: false

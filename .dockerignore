@@ -5,4 +5,8 @@
 !crates
 !services
 !proto
+!deploy
+# The tools are workspace members, so Cargo needs their manifests and sources, but the images never build them.
+!tools
+tools/*/target
 services/*/testdata

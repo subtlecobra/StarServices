@@ -1,17 +1,18 @@
-# Pulled as <registry>/<name>:<tag>.
+# Pulled as <registry>/<name>:<tag>. The deployment sets registry and tag: the tag is <version>@sha256:<digest>, as the
+# release manifest (scripts/publish.sh) lists it, so a pod runs exactly the image published.
 image:
-  registry: localhost:5001
+  registry: ""
   name: scbackend/sc-shard-operator
-  tag: dev
+  tag: ""
   pullPolicy: IfNotPresent
 
-# The PU frontend image shards run.
+# The PU frontend image shards run. Registry and tag as for image.
 shardImage:
-  registry: localhost:5001
+  registry: ""
   name: scbackend/sc-pu-frontend
-  tag: dev
+  tag: ""
 
-# The sc-dgs image of the DGS pods. Registry and tag follow shardImage unless set here.
+# The sc-dgs image of the DGS pods. The registry follows shardImage unless set; the tag is its own (version@digest).
 dgsImage:
   registry: ""
   name: scbackend/sc-dgs
@@ -22,8 +23,8 @@ dgsImage:
 # operator runs, for the containers of their area.
 dgsCustomizer: http://sc-character-customizer.scbackend.svc:50051
 
-# The sc-entitygraph image each ShardRegion runs in front of its entity database. Registry and tag follow shardImage
-# unless set here.
+# The sc-entitygraph image each ShardRegion runs in front of its entity database. The registry follows shardImage unless
+# set; the tag is its own (version@digest).
 entitygraphImage:
   registry: ""
   name: scbackend/sc-entitygraph
@@ -35,8 +36,10 @@ entitygraphImage:
 # layout is its spec.entityDb (see the ShardRegion CRD).
 entityDb:
   # ArangoDB, where a region sets no entityDb.image.
-  arangoImage: docker.io/library/arangodb:3.12.13
-  operatorImage: docker.io/arangodb/kube-arangodb:1.4.7
+  # arangodb 3.12.13
+  arangoImage: docker.io/library/arangodb:3.12.13@sha256:e48adfc58986a10e0316aa23ccae95ca580d880a41c76a8f0df68f9c29b470f2
+  # kube-arangodb 1.4.7
+  operatorImage: docker.io/arangodb/kube-arangodb:1.4.7@sha256:5dbc63080044d0eb86c0447af79d437658b7b73d634801e00fcaafede4f3468a
   # sc-push's internal publisher as sc-entitygraph reaches it. Empty: sc-push in this release's namespace.
   push: ""
   # The Secret with state.json here, copied into each region for the token secret.
@@ -46,7 +49,7 @@ entityDb:
   gateway: sc-edge
   listener: grpc
 
-# The sc-gamedata image of each ShardRegion's game data. Registry and tag follow shardImage unless set here.
+# The sc-gamedata image of each ShardRegion's game data. The registry follows shardImage unless set; the tag is its own.
 gamedataImage:
   registry: ""
   name: scbackend/sc-gamedata
@@ -61,7 +64,8 @@ gamedata:
   repository: scbackend/gamedata
   plainHttp: true
   registryIp: ""
-  valkeyImage: docker.io/valkey/valkey:9.0
+  # valkey 9.0.7
+  valkeyImage: docker.io/valkey/valkey:9.0.7@sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d
 
 # Game build the shards serve. Shard ids look like pub_<shard cluster>_<build>_<number>.
 build: "0"

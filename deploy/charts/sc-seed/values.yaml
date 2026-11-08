@@ -12,11 +12,12 @@ plainHttp: true
 # resolved by the cluster's DNS.
 registryIp: ""
 
-# The sc-seeder image, as the nodes pull it: <registry>/<name>:<tag>. A string is taken as the whole reference.
+# The sc-seeder image, as the nodes pull it: <registry>/<name>:<tag>. A string is taken as the whole reference. The
+# deployment sets registry and tag: the tag is <version>@sha256:<digest>, as the release manifest lists it.
 image:
-  registry: localhost:5001
+  registry: ""
   name: scbackend/sc-seeder
-  tag: dev
+  tag: ""
   pullPolicy: IfNotPresent
 
 # The ShardRegions to seed. Empty: every one the Kubernetes API lists, through a ServiceAccount that may only get and

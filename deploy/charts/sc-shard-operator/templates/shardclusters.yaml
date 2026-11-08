@@ -6,7 +6,7 @@ metadata:
   name: {{ .name }}
 spec:
   region: {{ .region }}
-  image: "{{ $.Values.shardImage.registry }}/{{ $.Values.shardImage.name }}:{{ $.Values.shardImage.tag }}"
+  image: "{{ $.Values.shardImage.registry }}/{{ $.Values.shardImage.name }}:{{ required "shardImage.tag: <version>@sha256:<digest>, as the release manifest lists it" $.Values.shardImage.tag }}"
   build: {{ $.Values.build | quote }}
   publicAddress: {{ $.Values.publicAddress }}
   publicPortBase: {{ .publicPortBase }}

@@ -10,7 +10,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if kindIs "string" .Values.image -}}
 {{ .Values.image }}
 {{- else -}}
-{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}
+{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ required "image.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.image.tag }}
 {{- end -}}
 {{- end }}
 

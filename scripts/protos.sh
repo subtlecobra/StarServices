@@ -24,8 +24,8 @@ fi
 }
 
 # protodump runs on this machine only, so it builds for the host's glibc rather than the repository's musl target.
-(cd tools/protodump && cargo build -q --release --target x86_64-unknown-linux-gnu)
-dump=tools/protodump/target/x86_64-unknown-linux-gnu/release/protodump
+cargo build -q --release -p protodump --target x86_64-unknown-linux-gnu
+dump=target/x86_64-unknown-linux-gnu/release/protodump
 
 # Written to a scratch folder first: a failed or partial run never replaces a good proto/sc/.
 mkdir -p "$repo/target"

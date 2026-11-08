@@ -96,13 +96,13 @@ struct Args {
     #[arg(long, env = "SCBACKEND_NAMESPACE", default_value = "scbackend")]
     namespace: String,
     /// The sc-dgs image of the DGS pods.
-    #[arg(long, env = "SCBACKEND_DGS_IMAGE", default_value = "localhost:5001/scbackend/sc-dgs:dev")]
+    #[arg(long, env = "SCBACKEND_DGS_IMAGE")]
     dgs_image: String,
     /// The `sc-character-customizer` address of the DGS pods, which they ask for saved characters. A full service name.
     #[arg(long, env = "SCBACKEND_DGS_CUSTOMIZER", default_value = "http://sc-character-customizer.scbackend.svc:50051")]
     dgs_customizer: String,
     /// The sc-gamedata image of each ShardRegion's game data.
-    #[arg(long, env = "SCBACKEND_GAMEDATA_IMAGE", default_value = "localhost:5001/scbackend/sc-gamedata:dev")]
+    #[arg(long, env = "SCBACKEND_GAMEDATA_IMAGE")]
     gamedata_image: String,
     /// The registry, `host:port` as pods reach it, game builds are pulled from where a ShardRegion does not say.
     #[arg(long, env = "SCBACKEND_GAMEDATA_REGISTRY", default_value = "localhost:5001")]
@@ -117,16 +117,31 @@ struct Args {
     #[arg(long, env = "SCBACKEND_GAMEDATA_REGISTRY_IP", default_value = "")]
     gamedata_registry_ip: String,
     /// Valkey, where a region's `gamedata.cache.image` is empty: each region's game data cluster.
-    #[arg(long, env = "SCBACKEND_VALKEY_IMAGE", default_value = "docker.io/valkey/valkey:9.0")]
+    // valkey 9.0.7
+    #[arg(
+        long,
+        env = "SCBACKEND_VALKEY_IMAGE",
+        default_value = "docker.io/valkey/valkey:9.0.7@sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d"
+    )]
     valkey_image: String,
     /// The sc-entitygraph image each ShardRegion runs in front of its entity database.
-    #[arg(long, env = "SCBACKEND_ENTITYGRAPH_IMAGE", default_value = "localhost:5001/scbackend/sc-entitygraph:dev")]
+    #[arg(long, env = "SCBACKEND_ENTITYGRAPH_IMAGE")]
     entitygraph_image: String,
     /// ArangoDB, where a region's `entityDb.image` is empty.
-    #[arg(long, env = "SCBACKEND_ARANGO_IMAGE", default_value = "docker.io/library/arangodb:3.12.13")]
+    // arangodb 3.12.13
+    #[arg(
+        long,
+        env = "SCBACKEND_ARANGO_IMAGE",
+        default_value = "docker.io/library/arangodb:3.12.13@sha256:e48adfc58986a10e0316aa23ccae95ca580d880a41c76a8f0df68f9c29b470f2"
+    )]
     arango_image: String,
     /// kube-arangodb, which each region runs for its own namespace. The version of the CRDs installed in the cluster.
-    #[arg(long, env = "SCBACKEND_ARANGO_OPERATOR_IMAGE", default_value = "docker.io/arangodb/kube-arangodb:1.4.7")]
+    // kube-arangodb 1.4.7
+    #[arg(
+        long,
+        env = "SCBACKEND_ARANGO_OPERATOR_IMAGE",
+        default_value = "docker.io/arangodb/kube-arangodb:1.4.7@sha256:5dbc63080044d0eb86c0447af79d437658b7b73d634801e00fcaafede4f3468a"
+    )]
     arango_operator_image: String,
     /// sc-push's internal publisher, as each region's sc-entitygraph reaches it.
     #[arg(long, env = "SCBACKEND_ENTITYGRAPH_PUSH", default_value = "http://sc-push.scbackend.svc:50051")]

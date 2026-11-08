@@ -170,7 +170,7 @@ deletes it. Its replacement opens at once in another slot. A shard drains when i
 - has no `spec.namespace`, from before shards had namespaces. It runs on in `scbackend`, where its objects are still
   owned by the Shard, and needs no finalizer.
 - has an id of an older game build.
-- has the annotation `scbackend.io/drain`. StarServices-CN's `scripts/cluster-up.sh` sets this after a deploy, once the
+- has the annotation `scbackend.io/drain`. The deployment sets this after a deploy, once the
   new operator runs and its old pod is gone, on the shards opened before that pod was made, so they are replaced by
   shards from the new images and settings. Marked earlier, the old operator would open the replacements with its own
   settings. A shard with players keeps its old images until it empties.

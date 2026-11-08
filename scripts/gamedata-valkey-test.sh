@@ -5,7 +5,7 @@
 #   scripts/gamedata-valkey-test.sh --image <build> --expect <file> [--path <path>] [--registry <host:port>]
 #                                   [--network <podman network>]
 # With --image it then empties the cluster, runs the sc-gamedata binary on it, which pulls <registry>/scbackend/gamedata:<build>
-# (default kind-registry:5000 on the network kind, the local registry of StarServices-CN), and checks that <path>
+# (default kind-registry:5000 on the network kind, a local registry container), and checks that <path>
 # (default collision/1200814982.col) comes back byte for byte as <file>.
 # The tests and the service run in containers (Alpine, as the service images) on the cluster's network, where the nodes' host names resolve; everything
 # started here is removed at the end.

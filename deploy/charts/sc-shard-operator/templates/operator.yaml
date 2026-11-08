@@ -240,7 +240,7 @@ spec:
             name: {{ .Release.Name }}-templates
       initContainers:
         - name: install
-          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ required "image.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["install", "--templates", "/templates/templates.yaml", "--regions", "/templates/regions.yaml"]
           volumeMounts:
@@ -267,7 +267,7 @@ spec:
               memory: 64Mi
       containers:
         - name: operator
-          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ required "image.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -284,11 +284,11 @@ spec:
             - name: SCBACKEND_NAMESPACE
               value: {{ .Release.Namespace }}
             - name: SCBACKEND_DGS_IMAGE
-              value: "{{ .Values.dgsImage.registry | default .Values.shardImage.registry }}/{{ .Values.dgsImage.name }}:{{ .Values.dgsImage.tag | default .Values.shardImage.tag }}"
+              value: "{{ .Values.dgsImage.registry | default .Values.shardImage.registry }}/{{ .Values.dgsImage.name }}:{{ required "dgsImage.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.dgsImage.tag }}"
             - name: SCBACKEND_DGS_CUSTOMIZER
               value: {{ .Values.dgsCustomizer | quote }}
             - name: SCBACKEND_GAMEDATA_IMAGE
-              value: "{{ .Values.gamedataImage.registry | default .Values.shardImage.registry }}/{{ .Values.gamedataImage.name }}:{{ .Values.gamedataImage.tag | default .Values.shardImage.tag }}"
+              value: "{{ .Values.gamedataImage.registry | default .Values.shardImage.registry }}/{{ .Values.gamedataImage.name }}:{{ required "gamedataImage.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.gamedataImage.tag }}"
             - name: SCBACKEND_GAMEDATA_REGISTRY
               value: {{ .Values.gamedata.registry | default .Values.shardImage.registry | quote }}
             - name: SCBACKEND_GAMEDATA_REPOSITORY
@@ -300,7 +300,7 @@ spec:
             - name: SCBACKEND_VALKEY_IMAGE
               value: {{ .Values.gamedata.valkeyImage | quote }}
             - name: SCBACKEND_ENTITYGRAPH_IMAGE
-              value: "{{ .Values.entitygraphImage.registry | default .Values.shardImage.registry }}/{{ .Values.entitygraphImage.name }}:{{ .Values.entitygraphImage.tag | default .Values.shardImage.tag }}"
+              value: "{{ .Values.entitygraphImage.registry | default .Values.shardImage.registry }}/{{ .Values.entitygraphImage.name }}:{{ required "entitygraphImage.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.entitygraphImage.tag }}"
             - name: SCBACKEND_ARANGO_IMAGE
               value: {{ .Values.entityDb.arangoImage | quote }}
             - name: SCBACKEND_ARANGO_OPERATOR_IMAGE

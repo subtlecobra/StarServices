@@ -60,8 +60,8 @@ scripts/protos.sh "$exe"
 
 step "2/4 game data of build $build ($out/$build)"
 # meshoptimizer is C++ and the repository's musl target has no g++ here; the tool runs on this machine only.
-(cd tools/gamedata-build && cargo build -q --release --target x86_64-unknown-linux-gnu)
-tools/gamedata-build/target/x86_64-unknown-linux-gnu/release/gamedata-build "$p4k" "$out" --build "$build"
+cargo build -q --release -p gamedata-build --target x86_64-unknown-linux-gnu
+target/x86_64-unknown-linux-gnu/release/gamedata-build "$p4k" "$out" --build "$build"
 built=$out/$build
 [[ -f $built/manifest.json ]] || fail "gamedata-build left no manifest.json in $built"
 

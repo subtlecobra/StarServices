@@ -15,6 +15,9 @@ spec:
         {{- include "sc-service.labels" . | nindent 8 }}
       annotations:
         checksum/env: {{ toJson .Values.env | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -26,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: service
-          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.registry }}/{{ .Values.image.name }}:{{ required "image.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false

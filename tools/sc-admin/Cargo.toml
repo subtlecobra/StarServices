@@ -23,10 +23,3 @@ tonic = { version = "0.14", default-features = false, features = ["channel", "co
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "router", "server"] }
-
-[workspace]
-
-[profile.release]
-lto = "thin"
-panic = "abort"
-strip = true

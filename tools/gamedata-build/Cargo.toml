@@ -7,7 +7,8 @@ description = "Converts Data.p4k into the game files of one build that the regio
 publish = false
 
 # meshoptimizer is C++ and the repository's default target is musl, which has no g++ here: build it for the host,
-# `cargo build --release --target x86_64-unknown-linux-gnu`. It runs on a workstation, never in an image.
+# `cargo build --release -p gamedata-build --target x86_64-unknown-linux-gnu`. It runs on a workstation, never in an
+# image (it is not a default member of the workspace).
 
 [dependencies]
 p4k-formats = { git = "https://github.com/subtlecobra/p4ktools.git", branch = "main" }
@@ -18,5 +19,3 @@ meshopt = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-
-[workspace]

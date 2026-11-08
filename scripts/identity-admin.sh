@@ -15,8 +15,8 @@ context=${SC_KUBE_CONTEXT:-kind-scbackend}
 port=${SC_IDENTITY_PORT:-15050}
 (($# > 0)) || { sed -n '2,10p' "$0"; exit 1; }
 
-(cd tools/sc-admin && cargo build --release -q)
-admin=tools/sc-admin/target/x86_64-unknown-linux-musl/release/sc-admin
+cargo build --release -q -p sc-admin
+admin=target/x86_64-unknown-linux-musl/release/sc-admin
 
 kubectl --context "$context" -n scbackend port-forward svc/sc-identity "$port:50051" >/dev/null &
 forward=$!

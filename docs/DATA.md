@@ -266,7 +266,7 @@ ArangoDB 3.12.13 on 7 kind nodes, all on one machine, through a port-forward, wi
 YugabyteDB stays global, in `scbackend-data`. The entity graph is per region: each `ShardRegion` (`kubectl get shr`)
 has, in its namespace `scbackend-region-<name>`, an ArangoDeployment named `arangodb` and the `sc-entitygraph` that is
 its only reader and writer, which `sc-shard-operator` creates, reconciles and deletes with the region, like its game
-data. Nothing of a region is in helm: StarServices-CN installs the kube-arangodb release (its CRDs) and the
+data. Nothing of a region is in helm: the deployment installs the kube-arangodb release (its CRDs) and the
 shard operator.
 
 | Object, in `scbackend-region-<name>` unless said | What it is |
@@ -290,11 +290,11 @@ Who finds which `sc-entitygraph`:
 |---|---|
 | sc-dgs | The operator sets `SCBACKEND_ENTITYGRAPH` to its shard's region's |
 | The game client | Through the gateway, to the region with `clientRoute` |
-| sc-entity-subscription, sc-admin-web | `SCBACKEND_ENTITYGRAPH`, set by StarServices-CN to the region `entityRegion` |
+| sc-entity-subscription, sc-admin-web | `SCBACKEND_ENTITYGRAPH`, set by the deployment to its region `entityRegion` |
 | sc-seeder (the `sc-seed` Job) | Every ShardRegion's `status.entityDb.service`, listed through the Kubernetes API |
 | sc-admin seed | Each region's sc-entitygraph, port-forwarded by `scripts/seed.sh` |
 
-sc-entity-subscription and sc-instance-manager keep their own collections in ArangoDB, and StarServices-CN points them
+sc-entity-subscription and sc-instance-manager keep their own collections in ArangoDB, and the deployment points them
 at `entityRegion`'s. With several regions, what each needs is in TODO.md.
 
 ### Replication between regions

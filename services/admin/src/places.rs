@@ -1,6 +1,6 @@
 //! The home locations a player can live at: the DGS's home locations table of the environment's game build, which
 //! `tools/gamedata-build` writes into the build's game data and the region's `sc-gamedata` serves. This service is
-//! global, so it asks the `sc-gamedata` of the region that takes the entity calls (`entityRegion` in StarServices-CN),
+//! global, so it asks the `sc-gamedata` of the region that takes the entity calls (the deployment's `entityRegion`),
 //! for the build the environment runs.
 //!
 //! Fetched at start, retried with a backoff until it is there, and fetched again every `REFRESH` so a build pushed again

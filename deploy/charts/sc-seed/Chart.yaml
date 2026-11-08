@@ -2,5 +2,5 @@ apiVersion: v2
 name: sc-seed
 description: Applies the seed bundle of a game build (entity classes, container tree, owners' tables) as a Job.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.1.0"

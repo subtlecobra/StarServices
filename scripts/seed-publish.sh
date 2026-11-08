@@ -9,9 +9,8 @@
 # Settings (environment; the arguments win):
 #   SC_P4K             game archive                  (none; set it in local.env)
 #   SC_SEED_OUT        exported bundles              (<repo>/target/seed)
-#   SC_RENTAL_PRICES   rental prices to put in the bundle when present
-#                      (<deploy repo>/environments/<environment>/rental-prices.json)
-#   SC_REGISTRY, SC_REGISTRY_PLAIN_HTTP, SC_DEPLOY_REPO, SC_ENVIRONMENT   see scripts/registry.sh
+#   SC_RENTAL_PRICES   rental prices to put in the bundle, a JSON file (none)
+#   SC_REGISTRY, SC_REGISTRY_PLAIN_HTTP   see scripts/registry.sh
 # The build is the change number of build_manifest.id beside the archive, as for gamedata-publish.
 set -euo pipefail
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
@@ -19,7 +18,7 @@ repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 if [[ -f $repo/local.env ]]; then source "$repo/local.env"; fi
 p4k=${SC_P4K:-}
 out=${SC_SEED_OUT:-$repo/target/seed}
-prices=${SC_RENTAL_PRICES:-${SC_DEPLOY_REPO:-$repo/../StarServices-CN}/environments/${SC_ENVIRONMENT:-dev}/rental-prices.json}
+prices=${SC_RENTAL_PRICES:-}
 build=
 while (($#)); do
   case $1 in
@@ -38,6 +37,6 @@ fi
 export_args=(--build "$build")
 [[ -f $prices ]] && export_args+=(--rental-prices "$prices")
 
-(cd "$repo/tools/sc-admin" && cargo build -q --release)
-"$repo/tools/sc-admin/target/x86_64-unknown-linux-musl/release/sc-admin" seed-export "$p4k" "$out" "${export_args[@]}"
+(cd "$repo" && cargo build -q --release -p sc-admin)
+"$repo/target/x86_64-unknown-linux-musl/release/sc-admin" seed-export "$p4k" "$out" "${export_args[@]}"
 "$repo/scripts/seed-push.sh" "$out" "$build"

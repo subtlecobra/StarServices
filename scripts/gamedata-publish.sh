@@ -38,8 +38,8 @@ if [[ -z $build ]]; then
 fi
 
 # meshoptimizer is C++ and the repository's musl target has no g++ here; the tool runs on this machine only.
-(cd "$repo/tools/gamedata-build" && cargo build -q --release --target x86_64-unknown-linux-gnu)
-"$repo/tools/gamedata-build/target/x86_64-unknown-linux-gnu/release/gamedata-build" "$p4k" "$out" --build "$build" "${tool_args[@]}"
+(cd "$repo" && cargo build -q --release -p gamedata-build --target x86_64-unknown-linux-gnu)
+"$repo/target/x86_64-unknown-linux-gnu/release/gamedata-build" "$p4k" "$out" --build "$build" "${tool_args[@]}"
 "$repo/scripts/gamedata-push.sh" "$out" "$build"
 if [[ $seed == true ]]; then
   "$repo/scripts/seed-publish.sh" "$p4k" --build "$build"

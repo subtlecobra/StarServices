@@ -65,7 +65,7 @@ shape index and a row-major 3x4 f32 matrix into the hangar's frame. Little endia
   embedded before, now the test fixture `services/dgs/testdata/collision/1200814982.col`, and the tables to the ones the
   images embedded.
   meshoptimizer is C++ and the repository's musl target has no g++, so it is built for the host:
-  `(cd tools/gamedata-build && cargo build --release --target x86_64-unknown-linux-gnu)`.
+  `cargo build --release -p gamedata-build --target x86_64-unknown-linux-gnu`.
 - `scripts/gamedata-push.sh <out> [build]` checks the directory against its manifest and pushes it as
   `<registry>/scbackend/gamedata:<build>`: `FROM scratch`, the files under `/gamedata/<build>/` and nothing else, built
   with `--timestamp 0` so the same files give the same digest.
