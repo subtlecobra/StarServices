@@ -33,14 +33,15 @@ manifest_digest() {
     tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" {print $2}'
 }
 
-# 2. Our charts, each against the same version in the registry, both unpacked.
-for chart in deploy/charts/*/; do
-  helm package -d "$packages" "$chart" >/dev/null
-done
+# 2. Our charts, each against the same version in the registry, both unpacked. The name and version come from each
+# Chart.yaml (a pre-release version has dashes, so the package's file name cannot be split).
 pushed=0 unchanged=0 stale=() charts=()
-for package in "$packages"/*.tgz; do
-  file=$(basename "$package" .tgz)
-  name=${file%-*} version=${file##*-}
+for chart in deploy/charts/*/; do
+  name=$(sed -n 's/^name:[[:space:]]*//p' "$chart/Chart.yaml" | tr -d '"')
+  version=$(sed -n 's/^version:[[:space:]]*//p' "$chart/Chart.yaml" | tr -d '"')
+  helm package -d "$packages" "$chart" >/dev/null
+  package=$packages/$name-$version.tgz
+  file=$name-$version
   charts+=("$name $version")
   compare=$packages/compare-$file
   mkdir -p "$compare/local" "$compare/registry"
@@ -56,6 +57,23 @@ for package in "$packages"/*.tgz; do
     stale+=("$name $version")
   fi
 done
+# Uncommitted work is published as release candidates only (CLAUDE.md).
+if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+  plain=()
+  for package in "$packages"/*.tgz; do
+    [[ -e $package ]] || continue
+    for entry in "${charts[@]}"; do
+      read -r name version <<<"$entry"
+      [[ $package == "$packages/$name-$version.tgz" && $version != *-* ]] && plain+=("$name $version")
+    done
+  done
+  if ((${#plain[@]} > 0)); then
+    echo "build-and-push: the working tree has uncommitted changes, so these charts would be published as plain versions:" >&2
+    printf '  %s\n' "${plain[@]}" >&2
+    echo "Give each a release candidate version (X.Y.Z-rc.N) to publish uncommitted work, or commit first." >&2
+    exit 1
+  fi
+fi
 if ((${#stale[@]} > 0)); then
   echo "build-and-push: these charts changed but their version is already in $registry with other content:" >&2
   printf '  %s\n' "${stale[@]}" >&2

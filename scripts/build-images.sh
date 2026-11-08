@@ -9,6 +9,8 @@
 #   - it is, with the same key: nothing to do (an unchanged binary is byte-identical);
 #   - it is, with another key: the service changed without a new version. Nothing at all is pushed then: bump the version
 #     of every service named (semver: patch, minor or major for the kind of change) and run this again.
+# From a working tree with uncommitted changes, only release candidates (X.Y.Z-rc.N) are pushed: a plain version comes
+# from a clean commit (CLAUDE.md).
 # Every service ends up in $SC_IMAGES_OUT (target/images.tsv): name, version and the digest of its image in the registry,
 # for scripts/publish.sh's release manifest. Those not considered are listed at the digest the registry has for their
 # version, and left out (with a warning) when it has none.
@@ -87,6 +89,20 @@ if ((${#stale[@]} > 0)); then
   echo "Bump each one's version in its Cargo.toml (semver: patch for a fix, minor for a compatible feature, major for a" >&2
   echo "breaking change) and run this again. Nothing was pushed." >&2
   exit 1
+fi
+
+# Uncommitted work is published as release candidates only.
+if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
+  plain=()
+  for service in "${to_push[@]}"; do
+    [[ ${version[$service]} == *-* ]] || plain+=("$service ${version[$service]}")
+  done
+  if ((${#plain[@]} > 0)); then
+    echo "build-images: the working tree has uncommitted changes, so these would be published as plain versions:" >&2
+    printf '  %s\n' "${plain[@]}" >&2
+    echo "Give each a release candidate version (X.Y.Z-rc.N) to publish uncommitted work, or commit first. Nothing was pushed." >&2
+    exit 1
+  fi
 fi
 
 # 3. The new versions.

@@ -95,15 +95,15 @@ struct Args {
     /// Namespace holding the ShardClusters, ShardTemplates and Shards.
     #[arg(long, env = "SCBACKEND_NAMESPACE", default_value = "scbackend")]
     namespace: String,
-    /// The sc-dgs image of the DGS pods.
+    /// The sc-dgs image of the DGS pods. Required to run the operator (not for `install` or `crd`).
     #[arg(long, env = "SCBACKEND_DGS_IMAGE")]
-    dgs_image: String,
+    dgs_image: Option<String>,
     /// The `sc-character-customizer` address of the DGS pods, which they ask for saved characters. A full service name.
     #[arg(long, env = "SCBACKEND_DGS_CUSTOMIZER", default_value = "http://sc-character-customizer.scbackend.svc:50051")]
     dgs_customizer: String,
-    /// The sc-gamedata image of each ShardRegion's game data.
+    /// The sc-gamedata image of each ShardRegion's game data. Required to run the operator.
     #[arg(long, env = "SCBACKEND_GAMEDATA_IMAGE")]
-    gamedata_image: String,
+    gamedata_image: Option<String>,
     /// The registry, `host:port` as pods reach it, game builds are pulled from where a ShardRegion does not say.
     #[arg(long, env = "SCBACKEND_GAMEDATA_REGISTRY", default_value = "localhost:5001")]
     gamedata_registry: String,
@@ -124,9 +124,9 @@ struct Args {
         default_value = "docker.io/valkey/valkey:9.0.7@sha256:7e1deda01b64ece3167d370ab5be3452d29734feec22cbcbc69b3a64f6859d6d"
     )]
     valkey_image: String,
-    /// The sc-entitygraph image each ShardRegion runs in front of its entity database.
+    /// The sc-entitygraph image each ShardRegion runs in front of its entity database. Required to run the operator.
     #[arg(long, env = "SCBACKEND_ENTITYGRAPH_IMAGE")]
-    entitygraph_image: String,
+    entitygraph_image: Option<String>,
     /// ArangoDB, where a region's `entityDb.image` is empty.
     // arangodb 3.12.13
     #[arg(
@@ -1367,9 +1367,9 @@ async fn install(namespace: String, templates: PathBuf, regions: Option<PathBuf>
 async fn serve(args: Args) -> Result<(), String> {
     let client = kube_client().await?;
     let shared = Arc::new(Mutex::new(Shared::default()));
-    let dgs = DgsSettings { image: args.dgs_image.clone(), customizer: args.dgs_customizer.clone() };
+    let dgs = DgsSettings { image: args.dgs_image.clone().unwrap_or_default(), customizer: args.dgs_customizer.clone() };
     let gamedata = GamedataSettings {
-        image: args.gamedata_image.clone(),
+        image: args.gamedata_image.clone().unwrap_or_default(),
         registry: args.gamedata_registry.clone(),
         repository: args.gamedata_repository.clone(),
         plain_http: args.gamedata_plain_http,
@@ -1379,7 +1379,7 @@ async fn serve(args: Args) -> Result<(), String> {
     let entity_db = EntityDbSettings {
         arango_image: args.arango_image.clone(),
         operator_image: args.arango_operator_image.clone(),
-        entitygraph_image: args.entitygraph_image.clone(),
+        entitygraph_image: args.entitygraph_image.clone().unwrap_or_default(),
         push: args.entitygraph_push.clone(),
         log_level: args.region_log_level.clone(),
         data_secret: args.region_data_secret.clone(),
@@ -1418,7 +1418,23 @@ fn main() -> ExitCode {
     match args.command {
         Some(Command::Crd) => print_crds(),
         Some(Command::Install { templates, regions }) => sc_runtime::run(None, install(args.namespace, templates, regions)),
-        None => sc_runtime::run(args.common.health, serve(args)),
+        None => {
+            // The images the operator hands to what it makes; `install` and `crd` need none of them.
+            let missing: Vec<&str> = [
+                ("SCBACKEND_DGS_IMAGE", &args.dgs_image),
+                ("SCBACKEND_GAMEDATA_IMAGE", &args.gamedata_image),
+                ("SCBACKEND_ENTITYGRAPH_IMAGE", &args.entitygraph_image),
+            ]
+            .into_iter()
+            .filter(|(_, value)| value.as_deref().is_none_or(str::is_empty))
+            .map(|(name, _)| name)
+            .collect();
+            if !missing.is_empty() {
+                eprintln!("sc-shard-operator: not set: {}", missing.join(", "));
+                return ExitCode::FAILURE;
+            }
+            sc_runtime::run(args.common.health, serve(args))
+        }
     }
 }
 
