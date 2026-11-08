@@ -36,7 +36,8 @@ if [[ $registry_host != localhost ]]; then
   fi
   scheme=https
   [[ $registry_plain_http == true ]] && scheme=http
-  status=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$scheme://$registry/v2/" || true)
+  # -q: no ~/.curlrc, whose DNS settings (such as doh-url) would skip /etc/hosts, where the registry name is.
+  status=$(curl -q -s -m 10 -o /dev/null -w '%{http_code}' "$scheme://$registry/v2/" || true)
   if [[ $status != 200 && $status != 401 ]]; then
     echo "publish: no registry answers at $scheme://$registry ($registry_host is $resolved here). Run StarServices-CN's" >&2
     echo "scripts/cluster-up.sh on the deploy host first, and open its port ${registry##*:} to this PC." >&2
