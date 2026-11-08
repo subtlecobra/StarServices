@@ -12,7 +12,7 @@ use sc_proto::services::delivery::v1::{
     external_delivery_service_server::{ExternalDeliveryService, ExternalDeliveryServiceServer},
     Delivery, DeliveryStatus, QueryDeliveriesStreamRequest, QueryDeliveriesStreamResponse,
 };
-use sc_proto::internal::{identity_internal_client::IdentityInternalClient, GetAccountsRequest};
+use sc_api::internal::{identity_internal_client::IdentityInternalClient, GetAccountsRequest};
 use sc_proto::services::entitlement::v2::DelayedDeliveryCompleted;
 use sc_runtime::{caller, state::State, CommonArgs, MAX_MESSAGE_BYTES};
 use tonic::{
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(topic(-1), format!("player/{}/delivery", u64::MAX));
     }
 
-    use sc_proto::internal::{
+    use sc_api::internal::{
         identity_internal_server::{IdentityInternal, IdentityInternalServer},
         ChangePasswordRequest, ChangePasswordResponse, GetAccountRequest, GetAccountResponse, GetAccountsResponse,
         IssueGameTokenRequest, IssueGameTokenResponse, ListWebSessionsRequest, ListWebSessionsResponse,

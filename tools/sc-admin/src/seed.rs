@@ -5,11 +5,8 @@
 
 use std::{collections::BTreeMap, path::Path};
 
+use sc_api::internal::{ BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement, };
 use sc_proto::{
-    internal::{
-        BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice,
-        ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement,
-    },
     services::solar_system_shop::v1::RentalOffering,
 };
 use sc_seed::Content;

@@ -9,20 +9,17 @@ use std::{net::SocketAddr, process::ExitCode};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs, Postgres};
+use sc_api::internal::{ push_publisher_client::PushPublisherClient, shard_directory_client::ShardDirectoryClient, AllocateShardRequest, AllocateShardResponse, PublishRequest, };
 use sc_proto::{
     common::{
-        game::v1::{mode, Game, Mode},
-        network::v1::{Endpoint as GameEndpoint, Region},
-    },
-    internal::{
-        push_publisher_client::PushPublisherClient, shard_directory_client::ShardDirectoryClient, AllocateShardRequest,
-        AllocateShardResponse, PublishRequest,
+    game::v1::{mode, Game, Mode},
+    network::v1::{Endpoint as GameEndpoint, Region},
     },
     services::matchmaking::v1::{
-        frontend_service_server::{FrontendService, FrontendServiceServer},
-        match_request, matchmaking_in_progress, AcceptRequest, AcceptResponse, Assignment, CancelRequest,
-        CancelResponse, GetLastAssignmentRequest, GetLastAssignmentResponse, MatchRequest, MatchResponse,
-        MatchmakingCancelled, MatchmakingInProgress,
+    frontend_service_server::{FrontendService, FrontendServiceServer},
+    match_request, matchmaking_in_progress, AcceptRequest, AcceptResponse, Assignment, CancelRequest,
+    CancelResponse, GetLastAssignmentRequest, GetLastAssignmentResponse, MatchRequest, MatchResponse,
+    MatchmakingCancelled, MatchmakingInProgress,
     },
 };
 use sc_runtime::{caller, state::{Account, State}, CommonArgs, MAX_MESSAGE_BYTES};

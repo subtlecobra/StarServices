@@ -13,10 +13,10 @@
 //! There is one head class, `PU_Protos_Head`, and one body, for both genders: the model tag picks the male or female
 //! geometry. A player with nothing saved keeps the default of `loadout`, and no snapshot is added.
 
+use sc_api::internal::{character_customizer_internal_client::CharacterCustomizerInternalClient, GetCustomizationRequest};
 use sc_proto::{
     common::types::v1::{entity_class_loadout::EntityClassLoadoutParams, CharacterCustomization},
     identity::Gender,
-    internal::{character_customizer_internal_client::CharacterCustomizerInternalClient, GetCustomizationRequest},
 };
 use tonic::transport::Channel;
 use tracing::warn;
@@ -237,7 +237,7 @@ mod tests {
 
     /// A customizer holding one saved character, at an address of its own.
     async fn customizer(saved_geid: u64) -> CharacterCustomizerInternalClient<Channel> {
-        use sc_proto::internal::{
+        use sc_api::internal::{
             character_customizer_internal_server::{CharacterCustomizerInternal, CharacterCustomizerInternalServer},
             GetCustomizationResponse,
         };

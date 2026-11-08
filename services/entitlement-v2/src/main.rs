@@ -10,7 +10,7 @@ use sc_db::{internal, DatabaseArgs, Postgres, Row};
 use sc_economy::{
     command::{command_id, Push}, reply_stream, ReplyStream,
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     entitlement_internal_client::EntitlementInternalClient, QueryEntitlementsRequest, UpdateLoadoutRequest,
 };
 use sc_proto::services::entitlement::v2::{

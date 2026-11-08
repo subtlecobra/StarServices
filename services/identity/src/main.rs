@@ -14,7 +14,7 @@ use sc_proto::identity::{
     get_players_names_response::PlayerName, GetCurrentPlayerRequest, GetCurrentPlayerResponse,
     GetPlayersNamesRequest, GetPlayersNamesResponse, PreallocatePlayerRequest, PreallocatePlayerResponse,
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     identity_internal_server::{IdentityInternal, IdentityInternalServer},
     ChangePasswordRequest, ChangePasswordResponse, GetAccountRequest, GetAccountResponse, GetAccountsRequest,
     GetAccountsResponse, IssueGameTokenRequest, IssueGameTokenResponse, ListWebSessionsRequest, ListWebSessionsResponse,
@@ -253,7 +253,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_proto::internal::{WebClient, WebSession};
+    use sc_api::internal::{WebClient, WebSession};
 
     /// A private schema of the server in `SCBACKEND_TEST_POSTGRES`, with identity's tables. Without it the tests do
     /// nothing, so `cargo test` stays offline.

@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use prost::Message;
-use sc_proto::internal::{
+use sc_api::internal::{
     blueprint_library_internal_client::BlueprintLibraryInternalClient,
     contract_broker_internal_client::ContractBrokerInternalClient,
     entitlement_internal_client::EntitlementInternalClient, entity_graph_internal_client::EntityGraphInternalClient,
@@ -181,7 +181,7 @@ pub async fn apply(content: Content, regions: &[(String, String)], owners: &Owne
 
 #[cfg(test)]
 mod tests {
-    use sc_proto::internal::MissionContractSeed;
+    use sc_api::internal::MissionContractSeed;
 
     use super::*;
 

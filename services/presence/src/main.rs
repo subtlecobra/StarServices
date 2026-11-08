@@ -19,16 +19,13 @@ use std::{
 use clap::Parser;
 use futures_util::StreamExt;
 use sc_db::{internal, DatabaseArgs, Row};
+use sc_api::internal::{ presence_internal_server::{PresenceInternal, PresenceInternalServer}, GetPresencesRequest, GetPresencesResponse, PlayerPresence, };
 use sc_proto::{
-    internal::{
-        presence_internal_server::{PresenceInternal, PresenceInternalServer},
-        GetPresencesRequest, GetPresencesResponse, PlayerPresence,
-    },
     services::presence::v1::{
-        presence_command::Command,
-        presence_service_server::{PresenceService, PresenceServiceServer},
-        Activity, Presence, PresenceStreamRequest, PresenceStreamResponse, PresenceUpdated, SetPresenceCommand,
-        Status as PresenceStatus,
+    presence_command::Command,
+    presence_service_server::{PresenceService, PresenceServiceServer},
+    Activity, Presence, PresenceStreamRequest, PresenceStreamResponse, PresenceUpdated, SetPresenceCommand,
+    Status as PresenceStatus,
     },
 };
 use sc_runtime::{state::Account, CommonArgs, MAX_MESSAGE_BYTES};

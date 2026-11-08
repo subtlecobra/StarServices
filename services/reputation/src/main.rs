@@ -23,7 +23,7 @@ use sc_proto::services::reputation::v1::{
     VersionedReputation,
 };
 use sc_proto::common::api::v1::{PaginationInfo, Query};
-use sc_proto::internal::reputation_internal_server::ReputationInternalServer;
+use sc_api::internal::reputation_internal_server::ReputationInternalServer;
 use sc_runtime::player_urn;
 use sc_runtime::query;
 use sc_runtime::{caller, state::State, CommonArgs, MAX_MESSAGE_BYTES};

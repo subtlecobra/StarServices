@@ -9,18 +9,15 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Row};
+use sc_api::internal::{ group_data_internal_server::{GroupDataInternal, GroupDataInternalServer}, DeleteGroupDataRequest, DeleteGroupDataResponse, };
 use sc_proto::{
-    internal::{
-        group_data_internal_server::{GroupDataInternal, GroupDataInternalServer},
-        DeleteGroupDataRequest, DeleteGroupDataResponse,
-    },
     services::{
     rtc::v1::{
-        rtc_service_server::{RtcService, RtcServiceServer},
-        AcceptCallRequest, AcceptCallResponse, Call, CallAccepted, CallDeclined, CallHungup, CallReceived, CallRequest,
-        CallResponse, Channel, DeclineCallRequest, DeclineCallResponse, GetChannelsRequest, GetChannelsResponse,
-        GetPendingCallsRequest, GetPendingCallsResponse, HangupCallRequest, HangupCallResponse, Protocol,
-        Server as VoiceServer,
+    rtc_service_server::{RtcService, RtcServiceServer},
+    AcceptCallRequest, AcceptCallResponse, Call, CallAccepted, CallDeclined, CallHungup, CallReceived, CallRequest,
+    CallResponse, Channel, DeclineCallRequest, DeclineCallResponse, GetChannelsRequest, GetChannelsResponse,
+    GetPendingCallsRequest, GetPendingCallsResponse, HangupCallRequest, HangupCallResponse, Protocol,
+    Server as VoiceServer,
     },
     social::v1::Group,
     },

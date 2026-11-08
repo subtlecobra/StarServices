@@ -1,5 +1,6 @@
-//! Compiles proto/ into Rust types, gRPC servers and clients, and a descriptor set. protox is a
-//! pure-Rust protobuf compiler, so no protoc is needed.
+//! Compiles the game's protocol (proto/sc/, recovered from the game, and proto/scbackend/, the Hub's wire protocol written
+//! by hand) into Rust types, gRPC servers and clients, and a descriptor set. protox is a pure-Rust protobuf compiler, so
+//! no protoc is needed. The services' API to each other is sc-api (proto/internal/).
 
 use std::{env, fs, path::{Path, PathBuf}};
 

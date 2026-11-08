@@ -95,7 +95,7 @@ async fn live_pull_and_apply() {
 }
 
 mod sc_proto_rows {
-    pub use sc_proto::internal::{ContainerSeed, EntityClassSeed};
+    pub use sc_api::internal::{ContainerSeed, EntityClassSeed};
 
     pub fn class(guid: &str) -> EntityClassSeed {
         EntityClassSeed { guid: guid.into(), ..Default::default() }

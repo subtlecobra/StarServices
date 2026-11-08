@@ -12,7 +12,7 @@ use std::{
 };
 
 use prost::Message;
-use sc_proto::internal::{
+use sc_api::internal::{
     BlueprintDefault, ContainerSeed, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding,
     ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement,
 };

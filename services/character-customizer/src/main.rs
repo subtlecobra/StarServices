@@ -7,15 +7,12 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs, Postgres};
+use sc_api::internal::{ character_customizer_internal_server::{CharacterCustomizerInternal, CharacterCustomizerInternalServer}, GetCustomizationRequest, GetCustomizationResponse, };
 use sc_proto::{
     common::types::v1::CharacterCustomization,
-    internal::{
-        character_customizer_internal_server::{CharacterCustomizerInternal, CharacterCustomizerInternalServer},
-        GetCustomizationRequest, GetCustomizationResponse,
-    },
     services::character_customizer::v1::{
-        character_customizer_service_server::{CharacterCustomizerService, CharacterCustomizerServiceServer},
-        SaveCharacterCustomizationsRequest, SaveCharacterCustomizationsResponse,
+    character_customizer_service_server::{CharacterCustomizerService, CharacterCustomizerServiceServer},
+    SaveCharacterCustomizationsRequest, SaveCharacterCustomizationsResponse,
     },
 };
 use sc_runtime::{caller, state::State, CommonArgs, MAX_MESSAGE_BYTES};

@@ -17,11 +17,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use sc_api::internal::{ CreateRentalRequest, ExtendRentalRequest, ExtendRentalResponse, GetRentalResponse, GrantPurchaseRequest, LedgerDebitRequest, LedgerDebitResponse, LedgerRefundRequest, LedgerRefundResponse, SetRentalExpiryRequest, };
 use sc_proto::{
-    internal::{
-        CreateRentalRequest, ExtendRentalRequest, ExtendRentalResponse, GetRentalResponse, GrantPurchaseRequest,
-        LedgerDebitRequest, LedgerDebitResponse, LedgerRefundRequest, LedgerRefundResponse, SetRentalExpiryRequest,
-    },
     services::{entitlement::v2::EntitlementSourceType, solar_system_shop::v1::RentalOffering},
 };
 use sc_economy::ledger::REC_LEDGER;

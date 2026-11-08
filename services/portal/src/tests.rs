@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use axum::{body::Body, http::Request};
 use http_body_util::BodyExt;
-use sc_proto::internal::{
+use sc_api::internal::{
     identity_internal_server::{IdentityInternal, IdentityInternalServer},
     ChangePasswordResponse, GetAccountResponse, GetAccountsRequest, GetAccountsResponse, IssueGameTokenResponse,
     ListWebSessionsResponse, PasswordLoginResponse, RegisterAccountResponse, RevokeWebSessionResponse,

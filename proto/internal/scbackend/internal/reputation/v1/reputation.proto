@@ -1,0 +1,44 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.reputation.v1;
+
+import "scbackend/internal/common/v1/common.proto";
+
+// Game data. sc-admin reads it from the archive and hands it to the service that owns its table.
+
+message ReputationScope {
+  string scope = 1;
+  string standings_id = 2;
+  string display_name = 3;
+  string description = 4;
+  int32 initial_reputation = 5;
+  int32 ceiling = 6;
+}
+
+message ReputationStanding {
+  string id = 1;
+  string standings_id = 2;
+  string name = 3;
+  string description = 4;
+  int32 min = 5;
+  int64 drift_seconds = 6;
+  int32 drift_amount = 7;
+  bool gated = 8;
+}
+
+message ReputationLadderStanding {
+  string standings_id = 1;
+  string standing_id = 2;
+}
+
+message SeedReputationRequest {
+  repeated ReputationScope scopes = 1;
+  repeated ReputationStanding standings = 2;
+  repeated ReputationLadderStanding ladder = 3;
+}
+
+// Answered by sc-reputation, which owns `reputation_scopes`, `reputation_standings` and `reputation_ladder_standings`.
+service ReputationInternal {
+  rpc SeedReputation(SeedReputationRequest) returns (common.v1.SeedResponse);
+}

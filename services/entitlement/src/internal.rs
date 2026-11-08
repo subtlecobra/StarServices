@@ -4,18 +4,11 @@
 
 use sc_db::{internal, Postgres, Row, ToSql};
 use sc_economy::{decoded, reply_stream, timestamp_of, ReplyStream};
+use sc_api::internal::{ entitlement_internal_server::EntitlementInternal, EntitlementHistoryEntry, EntitlementHistoryRequest, EntitlementHistoryResponse, GrantPurchaseRequest, GrantPurchaseResponse, QueryEntitlementsRequest, QueryEntitlementsResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, RevokeExpiredRentalsRequest, RevokeExpiredRentalsResponse, SeedResponse, SeedStarterEntitlementsRequest, SetRentalExpiryRequest, SetRentalExpiryResponse, UpdateLoadoutRequest, UpdateLoadoutResponse, };
 use sc_proto::{
-    internal::{
-        entitlement_internal_server::EntitlementInternal, EntitlementHistoryEntry, EntitlementHistoryRequest,
-        EntitlementHistoryResponse, GrantPurchaseRequest, GrantPurchaseResponse, QueryEntitlementsRequest,
-        QueryEntitlementsResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, RevokeExpiredRentalsRequest,
-        RevokeExpiredRentalsResponse,
-        SeedResponse, SeedStarterEntitlementsRequest, SetRentalExpiryRequest, SetRentalExpiryResponse,
-        UpdateLoadoutRequest, UpdateLoadoutResponse,
-    },
     services::entitlement::v2::{
-        entitlement_filter::Exclude, Entitlement, EntitlementFilter, EntitlementLogAction, EntitlementMetadata,
-        EntitlementSourceType, EntitlementStatus,
+    entitlement_filter::Exclude, Entitlement, EntitlementFilter, EntitlementLogAction, EntitlementMetadata,
+    EntitlementSourceType, EntitlementStatus,
     },
 };
 use tonic::{Request, Response, Status};
@@ -326,7 +319,7 @@ pub async fn history(db: &Postgres, request: &EntitlementHistoryRequest) -> Resu
 pub async fn seed_starters(db: &Postgres, request: SeedStarterEntitlementsRequest) -> Result<u64, Status> {
     let mut written = 0;
     for rows in request.entitlements.chunks(SEED_ROWS) {
-        let column = |field: fn(&sc_proto::internal::StarterEntitlement) -> &String| -> Vec<&str> {
+        let column = |field: fn(&sc_api::internal::StarterEntitlement) -> &String| -> Vec<&str> {
             rows.iter().map(|row| field(row).as_str()).collect()
         };
         let parameters: [&(dyn ToSql + Sync); 6] = [
@@ -565,7 +558,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn seeded_starters_reach_a_player_on_first_query() {
-        use sc_proto::internal::StarterEntitlement;
+        use sc_api::internal::StarterEntitlement;
         let url = std::env::var("SC_TEST_POSTGRES").expect("SC_TEST_POSTGRES");
         let db = Postgres::connect(&url, crate::SCHEMA).await.unwrap();
         let geid = 940_000_000 + std::process::id() as u64;

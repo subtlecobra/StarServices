@@ -7,12 +7,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use sc_proto::internal::{
+use sc_api::internal::{
     dgs_control_server::DgsControl, DgsStatusRequest, DgsStatusResponse, EntityBind, InputFrame, JoinPlayerRequest, JoinPlayerResponse,
     LeavePlayerRequest, LeavePlayerResponse, LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerInputResponse, PlayerMovement,
     Rotation, ShardEntitiesRequest, ShardEntitiesResponse,
 };
-use sc_proto::internal::character_customizer_internal_client::CharacterCustomizerInternalClient;
+use sc_api::internal::character_customizer_internal_client::CharacterCustomizerInternalClient;
 use tonic::{transport::Channel, Request, Response, Status};
 use tracing::{info, warn};
 

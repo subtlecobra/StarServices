@@ -1,0 +1,43 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.entity_document.v1;
+
+import "sc/external/services/entity_document/v1/documents.proto";
+
+message GetEntityDocumentsRequest {
+  uint64 entity_id = 1;
+  repeated string classes = 2;  // field names of EntityDocumentBody's oneof, such as player_home_location; empty for all
+}
+
+message StoredEntityDocument {
+  string class = 1;
+  sc.external.services.entity_document.v1.EntityDocument document = 2;
+  uint64 owner_id = 3;
+  bool prepared = 4;  // a Prepare waits for its Commit
+}
+
+message GetEntityDocumentsResponse {
+  repeated StoredEntityDocument documents = 1;
+}
+
+message PutEntityDocumentRequest {
+  uint64 entity_id = 1;
+  uint64 owner_id = 2;
+  sc.external.services.entity_document.v1.EntityDocumentBody body = 3;
+  // Unset to write whatever is there; 0 when there must be none; otherwise the revision there must be. A mismatch is
+  // ABORTED, and nothing is written.
+  optional uint64 expected_revision = 4;
+}
+
+message PutEntityDocumentResponse {
+  sc.external.services.entity_document.v1.EntityDocument previous = 1;  // unset when there was none
+  uint64 revision = 2;
+}
+
+// Answered by sc-entity-document, which owns `entity_documents`, for the admin site. A document is written whole, so a
+// repeat changes nothing but the revision.
+service EntityDocumentInternal {
+  rpc GetDocuments(GetEntityDocumentsRequest) returns (GetEntityDocumentsResponse);
+  rpc PutDocument(PutEntityDocumentRequest) returns (PutEntityDocumentResponse);
+}

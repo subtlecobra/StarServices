@@ -15,13 +15,13 @@
 //! A planet's entity XML is in the socpak that lists its `<Child>`, named by the CRC-32C of the GUID as text, not in
 //! the planet's own socpak. Its `Name` is the client's name for the entity, see the protocol notes (outside this repository).
 
-use std::{collections::HashMap, fmt::Write, rc::Rc};
+use std::{borrow::Cow, collections::HashMap, fmt::Write, rc::Rc};
 
 use p4k_formats::{cryxml::Element, dcb::Dcb, socpak::SocZip, xmlq};
 use p4k::P4k;
 use serde_json::Value;
 
-use crate::{crc_byte, socpak_hash};
+use crate::{crc_byte, socpak_hash, transit};
 
 const STAR_SUFFIX: &str = "Star";
 /// The class whose socpaks hold the system's layout: stars, planets, moons and Lagrange points.
@@ -30,12 +30,12 @@ const SYSTEMS: [&str; 3] = ["stanton", "pyro", "nyx"];
 
 /// A position and a rotation as `x y z w`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Frame {
-    position: [f64; 3],
-    rotation: [f64; 4],
+pub(crate) struct Frame {
+    pub(crate) position: [f64; 3],
+    pub(crate) rotation: [f64; 4],
 }
 
-const IDENTITY: Frame = Frame { position: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0] };
+pub(crate) const IDENTITY: Frame = Frame { position: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0] };
 
 fn multiply([ax, ay, az, aw]: [f64; 4], [bx, by, bz, bw]: [f64; 4]) -> [f64; 4] {
     [
@@ -46,14 +46,14 @@ fn multiply([ax, ay, az, aw]: [f64; 4], [bx, by, bz, bw]: [f64; 4]) -> [f64; 4] 
     ]
 }
 
-fn normalized(rotation: [f64; 4]) -> [f64; 4] {
+pub(crate) fn normalized(rotation: [f64; 4]) -> [f64; 4] {
     let length = rotation.iter().map(|part| part * part).sum::<f64>().sqrt();
     rotation.map(|part| part / length)
 }
 
 impl Frame {
     /// `child`, given in this frame, in the frame this one is given in.
-    fn compose(&self, child: &Frame) -> Frame {
+    pub(crate) fn compose(&self, child: &Frame) -> Frame {
         let [x, y, z] = child.position;
         let [qx, qy, qz, qw] = self.rotation;
         let turned = multiply(multiply(self.rotation, [x, y, z, 0.0]), [-qx, -qy, -qz, qw]);
@@ -61,20 +61,20 @@ impl Frame {
         Frame { position, rotation: normalized(multiply(self.rotation, child.rotation)) }
     }
 
-    fn row(&self) -> String {
+    pub(crate) fn row(&self) -> String {
         let [x, y, z] = self.position;
         let [qx, qy, qz, qw] = self.rotation;
         format!("{x}\t{y}\t{z}\t{qx}\t{qy}\t{qz}\t{qw}")
     }
 }
 
-fn numbers<const N: usize>(text: Option<&str>) -> Option<[f64; N]> {
+pub(crate) fn numbers<const N: usize>(text: Option<&str>) -> Option<[f64; N]> {
     let parsed: Vec<f64> = text?.split(',').map(|number| number.parse().ok()).collect::<Option<_>>()?;
     parsed.try_into().ok()
 }
 
 /// `pos` and `rot` of a `<Child>`, whose rotation is `w x y z`.
-fn child_frame(child: &Element) -> Frame {
+pub(crate) fn child_frame(child: &Element) -> Frame {
     let position = numbers(child.get("pos")).unwrap_or(IDENTITY.position);
     let [w, x, y, z] = numbers(child.get("rot")).unwrap_or([1.0, 0.0, 0.0, 0.0]);
     Frame { position, rotation: normalized([x, y, z, w]) }
@@ -92,25 +92,38 @@ struct Planet {
 }
 
 /// `frame` is in the frame of the planet, or of the solar system when there is no planet.
-struct Place {
+pub(crate) struct Place {
     planet: Option<Rc<Planet>>,
     frame: Frame,
+    /// The socpak of the `<Child>` that names the location, from `Data/` on.
+    pub(crate) path: String,
 }
 
 /// The paths in the xml differ from the archive's in case.
-struct Socpaks<'a> {
-    archive: &'a P4k,
-    names: HashMap<String, String>,
+pub(crate) struct Socpaks<'a> {
+    pub(crate) archive: &'a P4k,
+    pub(crate) names: HashMap<String, String>,
 }
 
-fn folded(path: &str) -> String {
+impl<'a> Socpaks<'a> {
+    /// The bytes of a socpak by its path in any case, borrowed from the archive when it is stored uncompressed, as every
+    /// socpak is: reading the members a socpak is opened for then costs no copy of the rest.
+    pub(crate) fn bytes(&self, path: &str) -> Option<Cow<'a, [u8]>> {
+        let entry = self.archive.get(self.names.get(&folded(path))?)?;
+        if entry.method == 0 && !entry.encrypted() {
+            return self.archive.raw(entry).ok().map(Cow::Borrowed);
+        }
+        self.archive.read(entry).ok().map(Cow::Owned)
+    }
+}
+
+pub(crate) fn folded(path: &str) -> String {
     path.to_ascii_lowercase().replace('\\', "/")
 }
 
 /// A socpak's metadata, as `sc-admin` finds it: the xml at its top that is not the editor's.
-fn metadata(socpaks: &Socpaks, path: &str) -> Option<Element> {
-    let entry = socpaks.archive.get(socpaks.names.get(&folded(path))?)?;
-    let bytes = socpaks.archive.read(entry).ok()?;
+pub(crate) fn metadata(socpaks: &Socpaks, path: &str) -> Option<Element> {
+    let bytes = socpaks.bytes(path)?;
     let zip = SocZip::open(&bytes).ok()?;
     let is_metadata = |name: &&str| {
         let name = name.to_ascii_lowercase();
@@ -120,19 +133,19 @@ fn metadata(socpaks: &Socpaks, path: &str) -> Option<Element> {
     xmlq::parse_any(&zip.read(&name).ok()?).ok()
 }
 
-fn children(element: &Element) -> Vec<&Element> {
+pub(crate) fn children(element: &Element) -> Vec<&Element> {
     let list = element.find("ChildObjectContainers");
     list.map_or(Vec::new(), |list| list.children.iter().filter(|child| child.tag == "Child").collect())
 }
 
-fn file_stem(path: &str) -> &str {
+pub(crate) fn file_stem(path: &str) -> &str {
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
     file.split('.').next().unwrap_or(file)
 }
 
 /// The `entdata` file of a child of `owner`, by the name the client builds (0x1470f4c50).
 fn entity_xml(socpaks: &Socpaks, owner: &str, crc: u32) -> Option<Element> {
-    let bytes = socpaks.archive.read(socpaks.archive.get(socpaks.names.get(&folded(owner))?)?).ok()?;
+    let bytes = socpaks.bytes(owner)?;
     let zip = SocZip::open(&bytes).ok()?;
     xmlq::parse_any(&zip.read(&format!("{}/entdata/{crc}.entxml", file_stem(owner))).ok()?).ok()
 }
@@ -159,7 +172,7 @@ fn walk(socpaks: &Socpaks, list: &[(&Element, &str)], anchor: Frame, planet: &Op
             None => (planet, frame),
         };
         if let Some(record) = child.get("starMapRecord") {
-            places.insert(record.to_ascii_lowercase(), Place { planet: planet.clone(), frame });
+            places.insert(record.to_ascii_lowercase(), Place { planet: planet.clone(), frame, path: path.to_string() });
         }
         let mut below_list: Vec<(&Element, &str)> = children(child).into_iter().map(|inline| (inline, owner)).collect();
         let listed: Vec<Option<&str>> = below_list.iter().map(|(inline, _)| inline.get("guid")).collect();
@@ -172,7 +185,7 @@ fn walk(socpaks: &Socpaks, list: &[(&Element, &str)], anchor: Frame, planet: &Op
 
 /// The bytes of a GUID as the game holds it: two 64-bit halves in little endian, then CRC-32C with no final xor
 /// removed. `sc-admin` computes class CRCs the same way.
-fn guid_crc(guid: &str) -> u32 {
+pub(crate) fn guid_crc(guid: &str) -> u32 {
     let digits: Vec<u8> = guid.bytes().filter(u8::is_ascii_hexdigit).collect();
     let hex = |pair: &[u8]| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
     let bytes: Vec<u8> = digits.chunks_exact(2).map(hex).collect();
@@ -181,7 +194,7 @@ fn guid_crc(guid: &str) -> u32 {
 }
 
 /// Whether the archive holds this socpak. A `<Child>` can name one that is not there.
-fn exists(socpaks: &Socpaks, path: &str) -> bool {
+pub(crate) fn exists(socpaks: &Socpaks, path: &str) -> bool {
     socpaks.names.contains_key(&folded(path))
 }
 
@@ -255,7 +268,7 @@ fn content_paths(socpaks: &Socpaks, list: &[(&Element, &str)], above: &mut Vec<S
     }
 }
 
-fn reference(value: &Value) -> &str {
+pub(crate) fn reference(value: &Value) -> &str {
     value.get(2).and_then(Value::as_str).unwrap_or_default()
 }
 
@@ -266,15 +279,30 @@ fn quaternion(angles: &Value) -> [f64; 4] {
     [cz * sx * cy - sz * cx * sy, cz * cx * sy + sz * sx * cy, sz * cx * cy - cz * sx * sy, cz * cx * cy + sz * sx * sy]
 }
 
-struct Records {
+/// A home location's hangar classes.
+pub(crate) struct HomeHangars {
+    pub(crate) location_id: u32,
+    /// The location's `StarMapObject` record.
+    pub(crate) guid: String,
+    pub(crate) classes: Vec<HangarClass>,
+}
+
+pub(crate) struct HangarClass {
+    pub(crate) name: String,
+    pub(crate) crc: u32,
+    /// The socpak, from `Data/` on.
+    pub(crate) path: String,
+}
+
+pub(crate) struct Records {
     datacore: Dcb,
-    by_guid: HashMap<String, usize>,
+    pub(crate) by_guid: HashMap<String, usize>,
     by_struct: HashMap<String, Vec<usize>>,
-    places: HashMap<String, Place>,
+    pub(crate) places: HashMap<String, Place>,
 }
 
 impl Records {
-    fn data(&self, index: usize, depth: usize) -> (String, String, Value) {
+    pub(crate) fn data(&self, index: usize, depth: usize) -> (String, String, Value) {
         let record = self.datacore.record(index).unwrap();
         let data = self.datacore.record_data(&record, depth).unwrap().to_json();
         (record.name, record.guid, data)
@@ -290,6 +318,23 @@ impl Records {
             }
             guid = parent;
         }
+    }
+
+    /// The location of a home location row and every hangar class it lists (`defaultHangars`, small to XL, not only the
+    /// first that `row` takes).
+    pub(crate) fn hangar_classes(&self, index: usize) -> Option<HomeHangars> {
+        let (_, _, params) = self.data(index, 3);
+        let location = reference(&params["location"]).to_string();
+        let mut classes = Vec::new();
+        for hangar in params["defaultHangars"].as_array()? {
+            let guid = reference(hangar).to_string();
+            let (class, _, data) = self.data(*self.by_guid.get(&guid)?, 3);
+            let components = data["Components"].as_array()?;
+            let container = components.iter().find(|component| component["__struct__"] == "SObjectContainerComponentParams");
+            let path = container?["objectContainer"].as_str()?;
+            classes.push(HangarClass { name: class.rsplit('.').next()?.to_string(), crc: guid_crc(&guid), path: format!("Data/{path}") });
+        }
+        Some(HomeHangars { location_id: guid_crc(&location), guid: location, classes })
     }
 
     /// The row of a location, and the path of its hangar's socpak from `Data/` on.
@@ -326,17 +371,25 @@ pub const HOME_LOCATIONS: &str = "tables/home_locations.tsv";
 pub const HANGAR_CONTENT: &str = "tables/hangar_content.tsv";
 pub const ENTITY_COUNTS: &str = "tables/entity_counts.tsv";
 
-/// The three tables, each ending in a newline.
+/// The tables, each ending in a newline.
 pub struct Tables {
     pub home_locations: String,
     pub hangar_content: String,
     pub entity_counts: String,
+    pub transit: transit::Tables,
 }
 
 impl Tables {
     /// Each table with its path in the build.
-    pub fn files(&self) -> [(&'static str, &str); 3] {
-        [(HOME_LOCATIONS, &self.home_locations), (HANGAR_CONTENT, &self.hangar_content), (ENTITY_COUNTS, &self.entity_counts)]
+    pub fn files(&self) -> [(&'static str, &str); 6] {
+        [
+            (HOME_LOCATIONS, &self.home_locations),
+            (HANGAR_CONTENT, &self.hangar_content),
+            (ENTITY_COUNTS, &self.entity_counts),
+            (transit::MANAGERS, &self.transit.managers),
+            (transit::GATEWAYS, &self.transit.gateways),
+            (transit::HANGARS, &self.transit.hangars),
+        ]
     }
 }
 
@@ -362,7 +415,8 @@ pub fn generate(archive: &P4k) -> Tables {
     }
     let records = Records { datacore, by_guid, by_struct, places };
     let indexes = &records.by_struct["InstancedInteriorLocationParams"];
-    let found: Vec<(String, String)> = indexes.iter().filter_map(|index| records.row(*index, archive)).collect();
+    let homes: Vec<usize> = indexes.iter().copied().filter(|index| records.row(*index, archive).is_some()).collect();
+    let found: Vec<(String, String)> = homes.iter().filter_map(|index| records.row(*index, archive)).collect();
     let mut rows: Vec<String> = found.iter().map(|(row, _)| row.clone()).collect();
     rows.sort();
     let hangars: std::collections::BTreeSet<&str> = found.iter().map(|(_, path)| path.as_str()).collect();
@@ -377,9 +431,12 @@ pub fn generate(archive: &P4k) -> Tables {
     let mut count_rows: Vec<String> = paths.iter().filter_map(|path| entity_counts(&socpaks, path)).collect();
     count_rows.sort();
     count_rows.dedup();
+    let locations: Vec<_> = homes.iter().filter_map(|index| records.hangar_classes(*index)).collect();
+    let transit = transit::generate(&socpaks, &records, &locations);
     Tables {
         home_locations: rows.join("\n") + "\n",
         hangar_content: content_rows.join("\n") + "\n",
         entity_counts: count_rows.join("\n") + "\n",
+        transit,
     }
 }

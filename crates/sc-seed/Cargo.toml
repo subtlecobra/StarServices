@@ -1,6 +1,6 @@
 [package]
 name = "sc-seed"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -13,6 +13,7 @@ fakes = ["dep:futures-util", "tokio/net", "tokio-stream/net"]
 [dependencies]
 futures-util = { workspace = true, optional = true }
 prost.workspace = true
+sc-api.workspace = true
 sc-proto.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true

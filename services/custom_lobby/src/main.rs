@@ -13,21 +13,18 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs};
+use sc_api::internal::{ group_data_internal_server::{GroupDataInternal, GroupDataInternalServer}, DeleteGroupDataRequest, DeleteGroupDataResponse, };
 use sc_proto::{
-    internal::{
-        group_data_internal_server::{GroupDataInternal, GroupDataInternalServer},
-        DeleteGroupDataRequest, DeleteGroupDataResponse,
-    },
     services::{
-        custom_lobby::v1::{
-            custom_lobby_service_server::{CustomLobbyService, CustomLobbyServiceServer},
-            ChangeTeamRequest, ChangeTeamResponse, ChangeTeammateTeamRequest, ChangeTeammateTeamResponse,
-            CreateRequest, CreateResponse, CustomLobby, CustomLobbyMemberJoinedTeam, CustomLobbySettings,
-            CustomLobbySettingsChanged, CustomLobbyTeam, FindMatchRequest, FindMatchResponse, GetRequest, GetResponse,
-            JoinRequest, JoinResponse, UpdateSettingsRequest, UpdateSettingsResponse,
-        },
-        matchmaking::v1::MatchRequest,
-        social::v1::{Group, GroupType},
+    custom_lobby::v1::{
+    custom_lobby_service_server::{CustomLobbyService, CustomLobbyServiceServer},
+    ChangeTeamRequest, ChangeTeamResponse, ChangeTeammateTeamRequest, ChangeTeammateTeamResponse,
+    CreateRequest, CreateResponse, CustomLobby, CustomLobbyMemberJoinedTeam, CustomLobbySettings,
+    CustomLobbySettingsChanged, CustomLobbyTeam, FindMatchRequest, FindMatchResponse, GetRequest, GetResponse,
+    JoinRequest, JoinResponse, UpdateSettingsRequest, UpdateSettingsResponse,
+    },
+    matchmaking::v1::MatchRequest,
+    social::v1::{Group, GroupType},
     },
 };
 use sc_runtime::{state::Account, CommonArgs, MAX_MESSAGE_BYTES};

@@ -1,0 +1,30 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.contacts.v1;
+
+message IsBlockedRequest {
+  // Whether `owner_account_id` blocked `target_account_id`.
+  uint32 owner_account_id = 1;
+  uint32 target_account_id = 2;
+}
+
+message IsBlockedResponse {
+  bool blocked = 1;
+}
+
+message ListFriendsRequest {
+  uint32 account_id = 1;
+}
+
+// Oldest friendship first.
+message ListFriendsResponse {
+  repeated uint32 account_ids = 1;
+}
+
+// Answered by sc-contacts, which owns relationships, friend requests and notes (`contact_*`). It shares that service's
+// port, so no GRPCRoute may list it. sc-friends goes through the public ContactsService with its caller's token.
+service ContactsInternal {
+  rpc IsBlocked(IsBlockedRequest) returns (IsBlockedResponse);
+  rpc ListFriends(ListFriendsRequest) returns (ListFriendsResponse);
+}

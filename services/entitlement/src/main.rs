@@ -14,21 +14,21 @@ use sc_economy::{
     account_urn, command::{command_id, Push}, decoded, player_urn,
     query::{compile, Field, Kind},
 };
+use sc_api::internal::entitlement_internal_server::EntitlementInternalServer;
 use sc_proto::{
     common::platform::v1::PortConfig,
-    internal::entitlement_internal_server::EntitlementInternalServer,
     services::entitlement::{
-        v1::{
-            external_entitlement_service_server::{ExternalEntitlementService, ExternalEntitlementServiceServer},
-            new_entity_configuration_parameters::Param, new_entity_port_configuration,
-            ClaimRequest, ClaimResponse, Entitlement, EntitlementItemType, EntitlementSource, EntitlementStatus,
-            EntitlementType, Insurance, InsuranceItemPortLoadout, NewEntityConfiguration,
-            NewEntityConfigurationParameters, NewEntityLoadoutKitConfiguration, NewEntityNameConfiguration,
-            NewEntityPortConfiguration, NewEntitySerialConfiguration, QueryRequest, QueryResponse,
-            UpdateArenaCommanderLoadoutRequest, UpdateArenaCommanderLoadoutResponse,
-        },
-        v2::{entity_configuration_parameters, EntityConfiguration, EntitlementLogAction},
-        v2::EntitlementStatus as StoredStatus,
+    v1::{
+    external_entitlement_service_server::{ExternalEntitlementService, ExternalEntitlementServiceServer},
+    new_entity_configuration_parameters::Param, new_entity_port_configuration,
+    ClaimRequest, ClaimResponse, Entitlement, EntitlementItemType, EntitlementSource, EntitlementStatus,
+    EntitlementType, Insurance, InsuranceItemPortLoadout, NewEntityConfiguration,
+    NewEntityConfigurationParameters, NewEntityLoadoutKitConfiguration, NewEntityNameConfiguration,
+    NewEntityPortConfiguration, NewEntitySerialConfiguration, QueryRequest, QueryResponse,
+    UpdateArenaCommanderLoadoutRequest, UpdateArenaCommanderLoadoutResponse,
+    },
+    v2::{entity_configuration_parameters, EntityConfiguration, EntitlementLogAction},
+    v2::EntitlementStatus as StoredStatus,
     },
 };
 use sc_runtime::{caller, state::{Account, State}, CommonArgs, MAX_MESSAGE_BYTES};

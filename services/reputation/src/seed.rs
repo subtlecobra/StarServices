@@ -3,7 +3,7 @@
 //! nothing and a new build updates what it finds.
 
 use sc_db::{internal, Postgres, ToSql};
-use sc_proto::internal::{
+use sc_api::internal::{
     reputation_internal_server::ReputationInternal, ReputationLadderStanding, ReputationScope, ReputationStanding,
     SeedReputationRequest, SeedResponse,
 };

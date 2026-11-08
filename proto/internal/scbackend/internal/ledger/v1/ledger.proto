@@ -1,0 +1,105 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.ledger.v1;
+
+message LedgerDebitRequest {
+  // Idempotency key. Repeating it returns the first result and charges nothing more.
+  string key = 1;
+  uint64 owner_geid = 2;
+  uint32 account_id = 3;  // opens the ledger on first use
+  string ledger_name = 4;
+  int64 amount = 5;  // more than 0
+}
+
+message LedgerDebitResponse {
+  uint64 version = 1;  // the ledger's version once charged
+  bool replayed = 2;  // the key had been charged before
+}
+
+message LedgerRefundRequest {
+  string key = 1;  // the debit's key
+  uint64 owner_geid = 2;
+}
+
+message LedgerRefundResponse {
+  // False when nothing was charged under the key. The key is then spent, so a late debit with it is refused.
+  bool refunded = 1;
+  int64 amount = 2;
+  uint64 version = 3;
+}
+
+message LedgerBalancesRequest {
+  uint64 owner_geid = 1;
+}
+
+message LedgerBalance {
+  string ledger_name = 1;
+  int64 amount = 2;
+  int32 currency = 3;  // sc.external.services.ledger.v1.Currency
+  uint64 version = 4;
+  int64 updated_at_ms = 5;
+}
+
+message LedgerBalancesResponse {
+  // The ledgers the player has opened. A player who never asked for funds has none yet.
+  repeated LedgerBalance balances = 1;
+}
+
+message LedgerAdjustRequest {
+  // Idempotency key. Repeating it returns the first result and changes nothing more.
+  string key = 1;
+  uint64 owner_geid = 2;
+  uint32 account_id = 3;  // opens the ledger on first use
+  string ledger_name = 4;
+  int64 delta = 5;  // not 0. Negative takes money, and is refused when the balance would go below 0
+  string reason = 6;
+  string actor = 7;  // who asked, for the record
+}
+
+message LedgerAdjustResponse {
+  int64 balance_before = 1;
+  int64 balance_after = 2;
+  uint64 version = 3;
+  bool replayed = 4;
+}
+
+message LedgerOperationsRequest {
+  uint64 owner_geid = 1;
+  uint32 limit = 2;  // 0 for 50, at most 500
+  int64 before_ms = 3;  // 0 for the newest; otherwise those created before this time
+}
+
+message LedgerOperation {
+  string key = 1;
+  string ledger_name = 2;
+  int64 amount = 3;  // as recorded: a debit's charge, an adjustment's delta
+  string state = 4;  // debited, refunded, cancelled or adjusted
+  int64 change = 5;  // what it did to the balance now
+  uint64 version = 6;
+  string reason = 7;
+  string actor = 8;
+  int64 created_at_ms = 9;
+  int64 updated_at_ms = 10;
+  optional int64 balance_before = 11;  // recorded for adjustments
+  optional int64 balance_after = 12;
+}
+
+message LedgerOperationsResponse {
+  // Newest first.
+  repeated LedgerOperation operations = 1;
+}
+
+// Answered by sc-ledger, which owns `ledgers`.
+service LedgerInternal {
+  // FAILED_PRECONDITION for insufficient funds, which records nothing, or for a key already refunded.
+  rpc Debit(LedgerDebitRequest) returns (LedgerDebitResponse);
+  // Gives back what a debit took. Safe to repeat, and to call when it is unknown whether the debit happened.
+  rpc Refund(LedgerRefundRequest) returns (LedgerRefundResponse);
+  // For the admin site. Reads only: opens no ledger.
+  rpc Balances(LedgerBalancesRequest) returns (LedgerBalancesResponse);
+  // A keyed credit or debit by an admin. FAILED_PRECONDITION for insufficient funds or a key used for something else.
+  rpc Adjust(LedgerAdjustRequest) returns (LedgerAdjustResponse);
+  // The keyed operations of a player: purchases, refunds and adjustments.
+  rpc Operations(LedgerOperationsRequest) returns (LedgerOperationsResponse);
+}

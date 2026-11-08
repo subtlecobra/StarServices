@@ -1,0 +1,124 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.social.v1;
+
+import "sc/external/services/social/v1/types.proto";
+
+// A member of a group, with what a service needs to reach it through push.
+message GroupMemberAccount {
+  uint64 geid = 1;
+  uint32 account_id = 2;
+  string name = 3;
+}
+
+// A group as sc-social keeps it: what the client sees, and its members in the order they joined.
+message InternalGroup {
+  sc.external.services.social.v1.Group group = 1;
+  repeated GroupMemberAccount members = 2;
+}
+
+message GetGroupsRequest {
+  repeated string group_ids = 1;
+}
+
+// In the order asked. Ids of no group are left out.
+message GetGroupsResponse {
+  repeated InternalGroup groups = 1;
+}
+
+message ListGroupIdsRequest {
+  uint64 geid = 1;
+  // `sc.external.services.social.v1.GroupType` values. Empty means every type.
+  repeated int32 types = 2;
+}
+
+// Oldest membership first.
+message ListGroupIdsResponse {
+  repeated string group_ids = 1;
+}
+
+message GetTeamsRequest {
+  string group_id = 1;
+}
+
+// The first member of `member_geids` leads, unless the type has no leader. A type that allows one group per player
+// takes each member out of its other group of that type.
+message CreateGroupRequest {
+  int32 type = 1;
+  string name = 2;
+  string parent_urn = 3;
+  repeated uint64 member_geids = 4;
+}
+
+message CreateGroupResponse {
+  InternalGroup group = 1;
+}
+
+// Adds a player to a group, and to the emptiest of its teams if it has teams.
+message JoinGroupRequest {
+  string group_id = 1;
+  uint64 geid = 2;
+}
+
+message JoinGroupResponse {}
+
+// Moves a member of a group into another team of that group.
+message MoveToTeamRequest {
+  string team_id = 1;
+  uint64 geid = 2;
+}
+
+message MoveToTeamResponse {
+  // The group the team belongs to, after the move.
+  InternalGroup group = 1;
+  // Equal to the team asked for when the player was already in it, and nothing moved.
+  string previous_team_id = 2;
+}
+
+// Gives a group this many teams, named "Team <n>". Members of a team that goes move to the first one.
+message SyncTeamsRequest {
+  string group_id = 1;
+  uint32 count = 2;
+  int32 team_type = 3;
+}
+
+message SyncTeamsResponse {}
+
+message DestroyGroupRequest {
+  string group_id = 1;
+}
+
+message DestroyGroupResponse {}
+
+// Answered by sc-social, which owns groups, members and invitations (`social_*`). It shares that service's port, so no
+// GRPCRoute may list it. The chat, squad, custom lobby, RTC and presence services ask it about groups. A destroyed
+// group's rows in the other services go through `GroupDataInternal`.
+service SocialInternal {
+  rpc GetGroups(GetGroupsRequest) returns (GetGroupsResponse);
+  rpc ListGroupIds(ListGroupIdsRequest) returns (ListGroupIdsResponse);
+  // The teams of a group, oldest first.
+  rpc GetTeams(GetTeamsRequest) returns (GetGroupsResponse);
+  rpc CreateGroup(CreateGroupRequest) returns (CreateGroupResponse);
+  // ALREADY_EXISTS for a member, FAILED_PRECONDITION for a full group.
+  rpc JoinGroup(JoinGroupRequest) returns (JoinGroupResponse);
+  rpc MoveToTeam(MoveToTeamRequest) returns (MoveToTeamResponse);
+  rpc SyncTeams(SyncTeamsRequest) returns (SyncTeamsResponse);
+  // Ends a group and its teams. Their rows in other services follow.
+  rpc DestroyGroup(DestroyGroupRequest) returns (DestroyGroupResponse);
+}
+
+message DeleteGroupDataRequest {
+  repeated string group_ids = 1;
+}
+
+message DeleteGroupDataResponse {
+  uint64 deleted = 1;
+}
+
+// Answered by each service that keeps rows per group: sc-chat (`chat_messages`), sc-squad (`squads`), sc-custom-lobby
+// (`custom_lobbies`) and sc-rtc (`rtc_channels`, `rtc_calls`), each on its own port. sc-social calls them for the
+// groups it destroyed, until each has answered, so calling it again is harmless.
+service GroupDataInternal {
+  rpc DeleteGroupData(DeleteGroupDataRequest) returns (DeleteGroupDataResponse);
+}

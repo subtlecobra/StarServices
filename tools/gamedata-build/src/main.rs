@@ -1,11 +1,14 @@
 //! Converts Data.p4k into the game files of one build, once per build and on a workstation, as no cluster ever sees the
-//! archive: `gamedata-build <Data.p4k> <out dir> [--build <n>] [--jobs <n>] [--report]`.
+//! archive: `gamedata-build <Data.p4k> <out dir> [--build <n>] [--jobs <n>] [--report] [--tables-only]`.
 //! `scripts/gamedata-publish.sh` runs it and pushes the result as the image the region caches pull.
 //!
 //! The tree it writes is the contract with `scripts/gamedata-push.sh` and `sc-gamedata`:
 //!
-//! - `<out>/<build>/tables/home_locations.tsv`, `hangar_content.tsv` and `entity_counts.tsv`: the DGS's tables of the
-//!   build, see tables.rs. Written first, on every run, as the hangars come from the first.
+//! - `<out>/<build>/tables/home_locations.tsv`, `hangar_content.tsv`, `entity_counts.tsv` and the hangar elevators'
+//!   `transit_managers.tsv`, `transit_gateways.tsv` and `transit_hangars.tsv`: the DGS's tables of the build, see
+//!   tables.rs and transit.rs. Written first, on every run, as the hangars come from the first. `--tables-only` writes
+//!   only them, in seconds, and leaves no manifest: the directory is a whole build again after a run without it, which
+//!   then converts only the collision that is missing.
 //! - `<out>/<build>/collision/<socpak hash>.col`, one per hangar socpak of `home_locations.tsv` (its sixth column).
 //! - `<out>/<build>/manifest.json`, `{"build":"…","files":[{"path":"collision/….col","size":…,"sha256":"…"}]}`, files
 //!   sorted by path and relative to `<build>/`. It is removed first and written last, by rename, so a run that stops
@@ -54,6 +57,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 mod tables;
+mod transit;
 
 const MAX_DEPTH: usize = 16;
 /// The walk class of geometry that stops a player, see above.
@@ -409,7 +413,7 @@ fn write_manifest(root: &Path, build: &str) -> usize {
     count
 }
 
-const USAGE: &str = "usage: gamedata-build <Data.p4k> <out dir> [--build <n>] [--jobs <n>] [--report]";
+const USAGE: &str = "usage: gamedata-build <Data.p4k> <out dir> [--build <n>] [--jobs <n>] [--report] [--tables-only]";
 
 fn main() {
     // The archive reader looks for its key in the game's executable for encrypted entries, which are only `Data/Scripts`
@@ -418,13 +422,14 @@ fn main() {
         std::env::set_var("P4K_EXE", "/nonexistent/StarCitizen.exe");
     }
     let mut arguments = std::env::args().skip(1);
-    let (mut positional, mut build, mut jobs, mut report) = (vec![], None, None, false);
+    let (mut positional, mut build, mut jobs, mut report, mut tables_only) = (vec![], None, None, false, false);
     while let Some(argument) = arguments.next() {
         let mut value = || arguments.next().unwrap_or_else(|| panic!("{argument} needs a value\n{USAGE}"));
         match argument.as_str() {
             "--build" => build = Some(value()),
             "--jobs" => jobs = Some(value().parse::<usize>().expect("--jobs is a number").max(1)),
             "--report" => report = true,
+            "--tables-only" => tables_only = true,
             _ if argument.starts_with("--") => panic!("unknown option {argument}\n{USAGE}"),
             _ => positional.push(argument),
         }
@@ -448,6 +453,10 @@ fn main() {
     for (path, text) in tables.files() {
         write_whole(&root.join(path), text.as_bytes());
         println!("{} rows -> {}", text.lines().count(), root.join(path).display());
+    }
+    if tables_only {
+        println!("build {build}: tables only, no manifest -> {}", root.display());
+        return;
     }
     let hashes = hangars(&tables.home_locations);
     let pending: Vec<u32> = hashes.iter().copied().filter(|hash| !valid(&collision.join(format!("{hash}.col")), *hash)).collect();

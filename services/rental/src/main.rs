@@ -18,15 +18,12 @@ use sc_economy::{
     transaction::{retrying, Failure},
     ReplyStream,
 };
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, rental_internal_server::RentalInternalServer, RevokeExpiredRentalsRequest, SetRentalExpiryRequest, };
 use sc_proto::{
-    internal::{
-        entitlement_internal_client::EntitlementInternalClient, rental_internal_server::RentalInternalServer,
-        RevokeExpiredRentalsRequest, SetRentalExpiryRequest,
-    },
     services::rental::v1::{
-        external_rental_service_server::{ExternalRentalService, ExternalRentalServiceServer},
-        QueryRentalsRequest, QueryRentalsResponse, QueryRentalsStreamRequest, QueryRentalsStreamResponse, Rental,
-        RentalLogAction, RentalStatus, StartRequest, StartResponse,
+    external_rental_service_server::{ExternalRentalService, ExternalRentalServiceServer},
+    QueryRentalsRequest, QueryRentalsResponse, QueryRentalsStreamRequest, QueryRentalsStreamResponse, Rental,
+    RentalLogAction, RentalStatus, StartRequest, StartResponse,
     },
 };
 use sc_runtime::{caller, state::{Account, State}, CommonArgs, MAX_MESSAGE_BYTES};

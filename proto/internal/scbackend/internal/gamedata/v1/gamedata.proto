@@ -1,0 +1,42 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.gamedata.v1;
+
+message GetGameFileRequest {
+  // The game build, its change number, e.g. "12913470".
+  string build = 1;
+  // As in the build's manifest.json, e.g. "collision/1200814982.col". Relative, without `..`.
+  string path = 2;
+}
+
+message GameFileChunk {
+  bytes data = 1;
+  // The file's size in bytes, in the first chunk only.
+  uint64 size = 2;
+}
+
+message ListGameBuildsRequest {}
+
+message GameBuildStatus {
+  string build = 1;
+  // Pulled, checked and served.
+  bool ready = 2;
+  // The files of its manifest, once ready.
+  uint64 file_count = 3;
+}
+
+message ListGameBuildsResponse {
+  // The builds the service was given, in that order.
+  repeated GameBuildStatus builds = 1;
+}
+
+// Answered by sc-gamedata, a region's cache of game data. Each replica pulls the builds it is given from the registry
+// (image `scbackend/gamedata:<build>`, files under `/gamedata/<build>/`) onto its own volume and serves them from there.
+// gRPC health reports "" SERVING once every build is there.
+service GameData {
+  // A file of a ready build, in chunks of about 1 MiB. NOT_FOUND for a build or path it does not have, UNAVAILABLE for a
+  // build it was given but has not pulled yet, INVALID_ARGUMENT for an absolute path or one with `..`.
+  rpc GetFile(GetGameFileRequest) returns (stream GameFileChunk);
+  rpc ListBuilds(ListGameBuildsRequest) returns (ListGameBuildsResponse);
+}

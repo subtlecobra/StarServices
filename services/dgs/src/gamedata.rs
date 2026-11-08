@@ -1,4 +1,5 @@
-//! Game data of the shard's build: the home location tables (`crate::location`) and the collision of the hangars this DGS
+//! Game data of the shard's build: the home location tables (`crate::location`), the hangar elevator tables
+//! (`crate::transit`) and the collision of the hangars this DGS
 //! loads (`collision/<socpak hash>.col`), by their paths in the build. Nothing of it is in the image. In a cluster it comes
 //! from the region's `sc-gamedata`, which owns the files of each game build; for a local run, from a build directory that
 //! `tools/gamedata-build` wrote (`<out>/<build>/`).
@@ -9,7 +10,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use sc_proto::internal::{game_data_client::GameDataClient, GetGameFileRequest};
+use sc_api::internal::{game_data_client::GameDataClient, GetGameFileRequest};
 use tokio::time::{sleep, timeout};
 use tonic::{
     transport::{Channel, Endpoint},
@@ -20,6 +21,7 @@ use tracing::warn;
 use crate::{
     location::{Tables, ENTITY_COUNTS_PATH, HANGAR_CONTENT_PATH, HOME_LOCATIONS_PATH},
     physics::World,
+    transit,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -114,6 +116,16 @@ impl GameData {
         Tables::parse(&texts[0], &texts[1], &texts[2])
     }
 
+    /// The three hangar elevator tables of the build. A table that is missing or does not parse is an error.
+    pub async fn transit_tables(&self) -> Result<transit::Tables, String> {
+        let mut texts = Vec::new();
+        for path in [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH] {
+            let bytes = self.file(path).await.map_err(|status| describe_status(path, &status))?;
+            texts.push(String::from_utf8(bytes).map_err(|_| format!("{path} is not UTF-8"))?);
+        }
+        transit::Tables::parse(&texts[0], &texts[1], &texts[2])
+    }
+
     /// A hangar's collision, built off the async runtime (a third of a second) and kept for `World::loaded`.
     pub async fn hangar_collision(&self, hash: u32) -> Result<Arc<World>, String> {
         let path = collision_path(hash);
@@ -158,7 +170,7 @@ pub fn collision_path(hash: u32) -> String {
 mod tests {
     use std::{collections::HashMap, pin::Pin};
 
-    use sc_proto::internal::{
+    use sc_api::internal::{
         game_data_server::{GameData as GameDataService, GameDataServer},
         GameFileChunk, ListGameBuildsRequest, ListGameBuildsResponse,
     };
@@ -204,8 +216,11 @@ mod tests {
         address
     }
 
+    const TRANSIT: [&str; 3] = [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH];
+
     fn whole_build() -> Vec<(&'static str, &'static [u8])> {
-        [HOME_LOCATIONS_PATH, HANGAR_CONTENT_PATH, ENTITY_COUNTS_PATH].into_iter().map(|path| (path, testdata::bytes(path))).collect()
+        let tables = [HOME_LOCATIONS_PATH, HANGAR_CONTENT_PATH, ENTITY_COUNTS_PATH].into_iter().chain(TRANSIT);
+        tables.map(|path| (path, testdata::bytes(path))).collect()
     }
 
     #[tokio::test]
@@ -217,6 +232,7 @@ mod tests {
         assert_eq!(gamedata.file(&path).await.unwrap(), rest_stop_collision());
         let tables = gamedata.tables().await.unwrap();
         assert_eq!(tables.locations(), 8);
+        assert_eq!(gamedata.transit_tables().await.unwrap().hangars().len(), 32);
         let world = gamedata.hangar_collision(REST_STOP).await.unwrap();
         assert!(world.triangles() > 500_000);
         assert!(World::loaded(REST_STOP).is_some());
@@ -239,6 +255,12 @@ mod tests {
         assert!(broken.tables().await.unwrap_err().contains("line 1"));
         let without = GameData::service(&serve(&[(HOME_LOCATIONS_PATH, testdata::bytes(HOME_LOCATIONS_PATH))]).await, BUILD).unwrap();
         assert!(without.tables().await.unwrap_err().contains(HANGAR_CONTENT_PATH));
+        // A build of before the transit tables, and one whose hangars name a manager it lacks.
+        assert!(without.transit_tables().await.unwrap_err().contains(transit::MANAGERS_PATH));
+        let [_, gateways, hangars] = TRANSIT.map(testdata::bytes);
+        let files = [(transit::MANAGERS_PATH, &b"\n"[..]), (transit::GATEWAYS_PATH, gateways), (transit::HANGARS_PATH, hangars)];
+        let unmanaged = GameData::service(&serve(&files).await, BUILD).unwrap();
+        assert!(unmanaged.transit_tables().await.unwrap_err().contains("names a manager"));
     }
 
     /// `testdata/` is laid out as a build directory of `tools/gamedata-build`, with one hangar's collision.
@@ -249,6 +271,7 @@ mod tests {
         testdata::bytes(&collision_path(REST_STOP));
         let gamedata = GameData::directory(testdata::dir());
         assert_eq!(gamedata.tables().await.unwrap().locations(), 8);
+        assert_eq!(gamedata.transit_tables().await.unwrap().managers().len(), 7);
         assert!(gamedata.hangar_collision(REST_STOP).await.unwrap().triangles() > 500_000);
         assert!(gamedata.hangar_collision(7).await.err().unwrap().contains("not in the build"));
     }

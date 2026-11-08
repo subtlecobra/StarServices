@@ -1,7 +1,7 @@
 //! A player's movement on the wire: the client's input frames in, the server's movement state out. The replicant decodes
 //! and encodes; the DGS that holds the player decides where it is. See "Player movement" in the protocol notes (kept outside this repository).
 
-use sc_proto::internal::{ClientPosition, InputFrame, PlayerMovement, Rotation};
+use sc_api::internal::{ClientPosition, InputFrame, PlayerMovement, Rotation};
 
 /// `EntityRemoteMethod`, `[u64 entity][varint method][varint length][length bytes]` from a client.
 pub const MESSAGE_ENTITY_REMOTE_METHOD: usize = 18;
@@ -285,7 +285,7 @@ const INDEXED_CLASS: u32 = 2_961_494_058;
 
 /// Whether `index` holds for a player bound so. Any other bind gets no movement update, as a wrong index is fatal to the
 /// client.
-pub fn indexes_hold(player: &sc_proto::internal::EntityBind) -> bool {
+pub fn indexes_hold(player: &sc_api::internal::EntityBind) -> bool {
     player.class_crc == INDEXED_CLASS && player.components.is_empty()
 }
 
@@ -573,11 +573,11 @@ mod tests {
 
     #[test]
     fn only_a_plain_player_bind_gets_updates() {
-        let mut player = sc_proto::internal::EntityBind { class_crc: 2_961_494_058, ..Default::default() };
+        let mut player = sc_api::internal::EntityBind { class_crc: 2_961_494_058, ..Default::default() };
         assert!(indexes_hold(&player));
         player.components.push(0x702b_110a);
         assert!(!indexes_hold(&player));
-        assert!(!indexes_hold(&sc_proto::internal::EntityBind { class_crc: 1, ..Default::default() }));
+        assert!(!indexes_hold(&sc_api::internal::EntityBind { class_crc: 1, ..Default::default() }));
     }
 
     #[test]

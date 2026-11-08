@@ -1,0 +1,19 @@
+[package]
+name = "sc-api"
+version = "0.1.0"
+description = "The backend's internal gRPC API, one package per owning service (proto/internal)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+prost.workspace = true
+prost-types.workspace = true
+sc-proto.workspace = true
+tonic.workspace = true
+tonic-prost = "0.14"
+
+[build-dependencies]
+prost.workspace = true
+protox = "0.9"
+tonic-prost-build = "0.14"

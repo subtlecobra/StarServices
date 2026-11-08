@@ -1,7 +1,7 @@
 //! What an entity is, apart from how it is sent: no sockets, keys or peers. Entity logic builds these, a DGS hands them
 //! over as `EntityBind`, and the replicant writes them to a client.
 
-use sc_proto::internal::{EntityBind, EntitySnapshot, EntityTransform};
+use sc_api::internal::{EntityBind, EntitySnapshot, EntityTransform};
 
 /// `IGameFramework::GetUniverseRootEntityId`. The client stores this entity as the root of its model,
 /// and it alone may arrive without a bound parent.

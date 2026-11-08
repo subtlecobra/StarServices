@@ -4,11 +4,8 @@
 
 use prost::Message;
 use sc_db::{internal, Row};
+use sc_api::internal::{ entity_document_internal_server::EntityDocumentInternal, GetEntityDocumentsRequest, GetEntityDocumentsResponse, PutEntityDocumentRequest, PutEntityDocumentResponse, StoredEntityDocument, };
 use sc_proto::{
-    internal::{
-        entity_document_internal_server::EntityDocumentInternal, GetEntityDocumentsRequest,
-        GetEntityDocumentsResponse, PutEntityDocumentRequest, PutEntityDocumentResponse, StoredEntityDocument,
-    },
     services::entity_document::v1::{DocumentHeader, EntityDocument, EntityDocumentBody},
 };
 use tonic::{Request, Response, Status};

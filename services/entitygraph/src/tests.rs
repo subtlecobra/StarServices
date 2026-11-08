@@ -601,7 +601,7 @@ mod live {
     #[tokio::test]
     #[ignore]
     async fn admin_inventory_rpcs() {
-        use sc_proto::internal::{
+        use sc_api::internal::{
             AdminAddItemRequest, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminRemoveItemRequest,
             AdminSearchEntityClassesRequest,
         };
@@ -1057,7 +1057,7 @@ fn owners_skip_unowned_and_unparsable_entities() {
 /// The internal service on the port of the public one, through a real channel, with no database behind it.
 #[tokio::test]
 async fn the_internal_service_shares_the_port_and_refuses_a_bad_prefix() {
-    use sc_proto::internal::entity_graph_internal_client::EntityGraphInternalClient;
+    use sc_api::internal::entity_graph_internal_client::EntityGraphInternalClient;
     use tokio_stream::wrappers::TcpListenerStream;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

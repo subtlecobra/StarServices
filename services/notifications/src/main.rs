@@ -7,17 +7,14 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs, Row};
+use sc_api::internal::{ notifications_internal_server::{NotificationsInternal, NotificationsInternalServer}, CreateNotificationRequest, CreateNotificationResponse, };
 use sc_proto::{
     common::api::v1::PaginationOrder,
-    internal::{
-        notifications_internal_server::{NotificationsInternal, NotificationsInternalServer},
-        CreateNotificationRequest, CreateNotificationResponse,
-    },
     services::notifications::v1::{
-        notifications_service_server::{NotificationsService, NotificationsServiceServer},
-        FindRequest, FindResponse, Notification, NotificationRead, NotificationRequest, NotificationUnread, Recipient,
-        ReadAllRequest, ReadAllResponse, ReadRequest, ReadResponse, RemoveAllRequest, RemoveAllResponse, RemoveRequest,
-        RemoveResponse, UnreadRequest, UnreadResponse,
+    notifications_service_server::{NotificationsService, NotificationsServiceServer},
+    FindRequest, FindResponse, Notification, NotificationRead, NotificationRequest, NotificationUnread, Recipient,
+    ReadAllRequest, ReadAllResponse, ReadRequest, ReadResponse, RemoveAllRequest, RemoveAllResponse, RemoveRequest,
+    RemoveResponse, UnreadRequest, UnreadResponse,
     },
 };
 use sc_runtime::{state::Account, CommonArgs, MAX_MESSAGE_BYTES};

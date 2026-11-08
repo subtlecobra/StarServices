@@ -11,7 +11,7 @@ pub use self::sc::external::services::{
     push::v1 as push,
 };
 pub use self::sc::external::{common, services};
-pub use self::scbackend::{hub, internal};
+pub use self::scbackend::hub;
 
-/// The serialized FileDescriptorSet of everything in proto/.
+/// The serialized FileDescriptorSet of the game's protocol (proto/sc/ and proto/scbackend/).
 pub static DESCRIPTORS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sc.binpb"));

@@ -10,7 +10,7 @@ use sc_economy::{
     db,
     transaction::{retrying, Failure},
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     ledger_internal_server::LedgerInternal, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance,
     LedgerBalancesRequest, LedgerBalancesResponse, LedgerDebitRequest, LedgerDebitResponse, LedgerOperation,
     LedgerOperationsRequest, LedgerOperationsResponse, LedgerRefundRequest, LedgerRefundResponse,

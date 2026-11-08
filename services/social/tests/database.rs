@@ -1,8 +1,8 @@
 //! Where a player is, against a real database. It needs `SCBACKEND_TEST_POSTGRES`, see `testing`. The
 //! group store is sc-social's binary, and its tests are there (`src/store/tests.rs`).
 
+use sc_api::internal::PlayerPresence;
 use sc_proto::{
-    internal::PlayerPresence,
     services::presence::v1::{Activity, Presence, Status as PresenceStatus},
 };
 use sc_runtime::state::Account;
@@ -26,7 +26,7 @@ fn set_presence(presences: &FakePresence, account: &Account, status: PresenceSta
 /// sc-hub owns `player_shards`: a stand-in answers `HubInternal` with `shard_of` on `shard-a` at location 5, beside
 /// one other player at another location.
 async fn fake_hub(shard_of: u64) -> String {
-    use sc_proto::internal::{
+    use sc_api::internal::{
         hub_internal_server::{HubInternal, HubInternalServer},
         GetPlayerShardRequest, GetPlayerShardResponse, PlayerShard,
     };
@@ -48,6 +48,13 @@ async fn fake_hub(shard_of: u64) -> String {
                 players_on_shard: 2,
             });
             Ok(tonic::Response::new(GetPlayerShardResponse { shard }))
+        }
+
+        async fn resolve_session(
+            &self,
+            _: tonic::Request<sc_api::internal::ResolveSessionRequest>,
+        ) -> Result<tonic::Response<sc_api::internal::ResolveSessionResponse>, Status> {
+            Ok(tonic::Response::new(sc_api::internal::ResolveSessionResponse::default()))
         }
     }
 

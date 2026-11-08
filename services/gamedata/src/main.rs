@@ -15,7 +15,7 @@ mod tests;
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 
 use clap::Parser;
-use sc_proto::internal::game_data_server::GameDataServer;
+use sc_api::internal::game_data_server::GameDataServer;
 use sc_runtime::CommonArgs;
 use tonic::transport::Server;
 use tracing::{info, warn};

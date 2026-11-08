@@ -3,9 +3,9 @@
 
 use std::{sync::OnceLock, time::Duration};
 
+use sc_api::internal::{hub_internal_client::HubInternalClient, GetPlayerShardRequest, PlayerShard};
 use sc_proto::{
     common::shard::v1::ShardInfo,
-    internal::{hub_internal_client::HubInternalClient, GetPlayerShardRequest, PlayerShard},
     services::presence::v1::{Presence, Status as PresenceStatus},
 };
 use sc_runtime::state::Account;
@@ -96,7 +96,7 @@ fn on_shard(shard: PlayerShard, location: String) -> ShardInfo {
 /// reported about itself.
 pub async fn shard_info(ctx: &Context, account: &Account) -> Result<ShardInfo, Status> {
     let presence = ctx.peers.presences(&[account.account_id]).await?.remove(&account.account_id);
-    let online = |p: &sc_proto::internal::PlayerPresence| {
+    let online = |p: &sc_api::internal::PlayerPresence| {
         p.presence.as_ref().is_some_and(|p| p.status != PresenceStatus::Offline as i32)
     };
     let presence = presence.filter(online).ok_or_else(|| Status::not_found(format!("{} is offline", account.handle)))?;
@@ -141,20 +141,27 @@ mod tests {
     struct FakeHub;
 
     #[tonic::async_trait]
-    impl sc_proto::internal::hub_internal_server::HubInternal for FakeHub {
+    impl sc_api::internal::hub_internal_server::HubInternal for FakeHub {
         async fn get_player_shard(
             &self,
             request: Request<GetPlayerShardRequest>,
-        ) -> Result<tonic::Response<sc_proto::internal::GetPlayerShardResponse>, Status> {
+        ) -> Result<tonic::Response<sc_api::internal::GetPlayerShardResponse>, Status> {
             let shard = (request.into_inner().geid == 1).then(|| PlayerShard { shard_id: "shard-a".into(), ..Default::default() });
-            Ok(tonic::Response::new(sc_proto::internal::GetPlayerShardResponse { shard }))
+            Ok(tonic::Response::new(sc_api::internal::GetPlayerShardResponse { shard }))
+        }
+
+        async fn resolve_session(
+            &self,
+            _: tonic::Request<sc_api::internal::ResolveSessionRequest>,
+        ) -> Result<tonic::Response<sc_api::internal::ResolveSessionResponse>, Status> {
+            Ok(tonic::Response::new(sc_api::internal::ResolveSessionResponse::default()))
         }
     }
 
     #[tokio::test]
     async fn the_shard_comes_from_the_hub() {
         let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        let server = sc_proto::internal::hub_internal_server::HubInternalServer::new(FakeHub);
+        let server = sc_api::internal::hub_internal_server::HubInternalServer::new(FakeHub);
         tokio::spawn(tonic::transport::Server::builder().add_service(server).serve(address));
         while tokio::net::TcpStream::connect(address).await.is_err() {
             tokio::time::sleep(Duration::from_millis(5)).await;

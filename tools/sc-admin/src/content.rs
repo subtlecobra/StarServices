@@ -9,9 +9,9 @@ use std::{
 use p4k_formats::{cryxml::Element, dcb::Dcb, xmlq};
 use p4k::P4k;
 use prost::Message;
+use sc_api::internal::LocalizedText;
 use sc_proto::{
     common::mission::v1::{ContractPrerequisites, MissionContract, MissionTemplate, ReputationRequirement},
-    internal::LocalizedText,
     services::blueprint_library::v1::BlueprintProcessType,
 };
 use serde_json::{json, Value};

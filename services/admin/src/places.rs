@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use sc_proto::internal::{game_data_client::GameDataClient, GetGameFileRequest};
+use sc_api::internal::{game_data_client::GameDataClient, GetGameFileRequest};
 use tokio::time::{sleep, timeout};
 use tonic::transport::Endpoint;
 use tracing::{info, warn};

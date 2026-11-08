@@ -51,9 +51,9 @@ shape index and a row-major 3x4 f32 matrix into the hangar's frame. Little endia
 - `scripts/gamedata-publish.sh [Data.p4k] [--build <n>] [--out <dir>]` publishes a build for the regions: it runs
   `tools/gamedata-build` on the archive and `scripts/gamedata-push.sh` on the result. The build is the change number of
   `build_manifest.id` beside the archive (`Data.RequestedP4ChangeNum`, 12913470 for 4.10.2), the one shard ids carry.
-- `gamedata-build <Data.p4k> <out> [--build <n>] [--jobs <n>] [--report]` writes the DGS's tables first,
-  `<out>/<build>/tables/home_locations.tsv`, `hangar_content.tsv` and `entity_counts.tsv` (see docs/DATA.md, Game data
-  per region), then `<out>/<build>/collision/<hash>.col` for every hangar of that `home_locations.tsv`, finding each
+- `gamedata-build <Data.p4k> <out> [--build <n>] [--jobs <n>] [--report] [--tables-only]` writes the DGS's tables
+  first, `<out>/<build>/tables/home_locations.tsv`, `hangar_content.tsv`, `entity_counts.tsv` and the `transit_*.tsv`
+  of the hangar elevators (see docs/DATA.md, Game data per region; `--tables-only` stops there), then `<out>/<build>/collision/<hash>.col` for every hangar of that `home_locations.tsv`, finding each
   socpak by hashing the paths of all socpaks in the archive, then `<out>/<build>/manifest.json` (path, size and sha256
   of each file, sorted by path).
   The manifest is removed first and written last by rename, so a partial run never looks complete; a `.col` that already

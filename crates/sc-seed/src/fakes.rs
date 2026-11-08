@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures_util::{Stream, StreamExt};
-use sc_proto::internal::{
+use sc_api::internal::{
     blueprint_library_internal_server::{BlueprintLibraryInternal, BlueprintLibraryInternalServer},
     contract_broker_internal_server::{ContractBrokerInternal, ContractBrokerInternalServer},
     entitlement_internal_server::{EntitlementInternal, EntitlementInternalServer},

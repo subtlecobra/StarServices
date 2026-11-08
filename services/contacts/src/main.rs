@@ -9,11 +9,8 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::DatabaseArgs;
+use sc_api::internal::{ contacts_internal_server::{ContactsInternal, ContactsInternalServer}, IsBlockedRequest, IsBlockedResponse, ListFriendsRequest, ListFriendsResponse, };
 use sc_proto::{
-    internal::{
-        contacts_internal_server::{ContactsInternal, ContactsInternalServer},
-        IsBlockedRequest, IsBlockedResponse, ListFriendsRequest, ListFriendsResponse,
-    },
     services::contacts::v1::{
     contacts_service_server::{ContactsService, ContactsServiceServer},
     get_shard_info_request, remove_unilateral_relationship_request, send_friend_request_request,
@@ -252,8 +249,8 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sc_api::internal::PlayerPresence;
     use sc_proto::{
-        internal::PlayerPresence,
         services::presence::v1::{Presence, Status as PresenceStatus},
     };
     use sc_social::testing::{nowhere, FakePresence, TestDb};

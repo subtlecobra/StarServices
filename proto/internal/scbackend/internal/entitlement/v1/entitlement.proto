@@ -1,0 +1,123 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.entitlement.v1;
+
+import "sc/external/services/entitlement/v2/types.proto";
+import "scbackend/internal/common/v1/common.proto";
+
+message GrantPurchaseRequest {
+  // Idempotency key. The URN is derived from it and the player, so repeating it grants nothing more.
+  string key = 1;
+  uint32 account_id = 2;
+  uint64 player_id = 3;
+  sc.external.services.entitlement.v2.EntitlementSourceType source_type = 4;
+  string entity_class_guid = 5;
+  int64 rental_expiry_ms = 6;  // 0 for none
+  string log_message = 7;
+}
+
+message GrantPurchaseResponse {
+  string urn = 1;
+}
+
+message SetRentalExpiryRequest {
+  string urn = 1;
+  uint64 player_id = 2;
+  int64 rental_expiry_ms = 3;  // absolute, so a repeat changes nothing
+  // Undoes the revocation of an ended rental, so the entity is made again.
+  bool reactivate = 4;
+  string log_message = 5;
+  string command_id = 6;
+}
+
+message SetRentalExpiryResponse {}
+
+message RevokeExpiredRentalsRequest {
+  repeated string urns = 1;
+}
+
+message RevokeExpiredRentalsResponse {
+  // Those revoked by this call. An entitlement whose expiry has moved on is left alone.
+  repeated string revoked = 1;
+}
+
+message QueryEntitlementsRequest {
+  uint32 account_id = 1;  // for the starter grant on first sight
+  uint64 player_id = 2;
+  sc.external.services.entitlement.v2.EntitlementFilter filter = 3;
+  bool include_persistent_properties = 4;
+}
+
+message QueryEntitlementsResponse {
+  repeated sc.external.services.entitlement.v2.Entitlement entitlements = 1;
+}
+
+message UpdateLoadoutRequest {
+  uint64 player_id = 1;
+  string urn = 2;
+  bytes loadout = 3;  // an ItemPortLoadout, which v1 and v2 encode alike
+  string command_id = 4;
+}
+
+message UpdateLoadoutResponse {}
+
+message StarterEntitlement {
+  string class_guid = 1;
+  string item_type = 2;
+  string item_sub_type = 3;
+  string name = 4;
+  string source = 5;
+  string port_path = 6;
+}
+
+message SeedStarterEntitlementsRequest {
+  repeated StarterEntitlement entitlements = 1;
+}
+
+message RevokeEntitlementRequest {
+  string urn = 1;
+  uint64 player_id = 2;
+  string log_message = 3;
+  string command_id = 4;
+}
+
+message RevokeEntitlementResponse {
+  int32 previous_status = 1;  // sc.external.services.entitlement.v2.EntitlementStatus
+  bool revoked = 2;  // false when it already was, so a repeat changes nothing
+}
+
+message EntitlementHistoryRequest {
+  uint64 player_id = 1;
+  string urn = 2;  // empty for all of the player's
+  uint32 limit = 3;  // 0 for 50, at most 500
+}
+
+message EntitlementHistoryEntry {
+  string urn = 1;
+  int32 log_action = 2;  // sc.external.services.entitlement.v2.EntitlementLogAction
+  string log_message = 3;
+  string command_id = 4;
+  int64 created_at_ms = 5;
+}
+
+message EntitlementHistoryResponse {
+  // Newest first.
+  repeated EntitlementHistoryEntry entries = 1;
+}
+
+// Answered by sc-entitlement (v1), which owns `entitlements`, `entitlement_history` and `starter_entitlements`.
+service EntitlementInternal {
+  rpc GrantPurchase(GrantPurchaseRequest) returns (GrantPurchaseResponse);
+  // NOT_FOUND for an entitlement the player does not have.
+  rpc SetRentalExpiry(SetRentalExpiryRequest) returns (SetRentalExpiryResponse);
+  rpc RevokeExpiredRentals(RevokeExpiredRentalsRequest) returns (RevokeExpiredRentalsResponse);
+  // For sc-entitlement-v2, in batches.
+  rpc QueryEntitlements(QueryEntitlementsRequest) returns (stream QueryEntitlementsResponse);
+  // NOT_FOUND for an entitlement the player does not have.
+  rpc UpdateLoadout(UpdateLoadoutRequest) returns (UpdateLoadoutResponse);
+  rpc SeedStarterEntitlements(SeedStarterEntitlementsRequest) returns (common.v1.SeedResponse);
+  // For the admin site. NOT_FOUND for an entitlement the player does not have.
+  rpc RevokeEntitlement(RevokeEntitlementRequest) returns (RevokeEntitlementResponse);
+  rpc EntitlementHistory(EntitlementHistoryRequest) returns (EntitlementHistoryResponse);
+}

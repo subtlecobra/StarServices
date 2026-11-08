@@ -5,7 +5,10 @@
 //! channel. ReplicationData packets are decrypted, logged and acknowledged. Beyond that the shard
 //! moves a client through its remote states and binds the entities the DGSs give it, which is what ends
 //! the client's `WaitForGameRules`. Which entities those are is the DGSs' to say, see `link`: a stage
-//! that needs what a DGS has not sent yet waits for it.
+//! that needs what a DGS has not sent yet waits for it. Each bind batch gets the next id of its connection, and the
+//! client's report that it has spawned one is kept in `batches`.
+//!
+//! A connection ends when the client says so (a disconnect notice, answered at once), or after `PEER_TIMEOUT` of silence.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -18,7 +21,7 @@ use std::{
 };
 
 use blake2::{digest::consts::U16, Blake2s, Digest};
-use sc_proto::internal::{DgsFrames, DgsStatusResponse, EntityBind, InputFrame, PlayerMovement, Rotation};
+use sc_api::internal::{DgsFrames, DgsStatusResponse, EntityBind, InputFrame, PlayerMovement, Rotation};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
@@ -26,12 +29,14 @@ use tokio::{
 };
 use tracing::{debug, info, warn};
 
+use crate::batches::{Batches, Completion};
 use crate::dgs::Directory;
 use crate::input::{action_frame, client_authority, indexes_hold, movement_update, MESSAGE_ENTITY_REMOTE_METHOD};
 use crate::link::{Event, Identity, Link, PlayerEntities, Session, World};
+use crate::sessions::Sessions;
 use crate::{
     channel::{
-        acknowledges, bind_batch, bind_batch_end, completed_batch, debug_server_info, debug_server_stats, greeting, later_packet, messages, normalized_header, packet_runs, reported_state, state_change,
+        acknowledges, bind_batch, bind_batch_end, completed_batches, debug_server_info, debug_server_stats, greeting, later_packet, messages, normalized_header, packet_runs, reported_state, state_change,
         update_bubble_create, MAX_PACKET_MESSAGES, Channel, DataHeader, Receiver, FLAG_ENCRYPTED, FLAG_PLAINTEXT, FLAG_RESEND, HEADER_LEN,
     },
     curve::{KeyPair, Point, KEY_LEN as PUBKEY_LEN},
@@ -42,6 +47,14 @@ const CONNECT_REQUEST: u8 = 0;
 const CONNECT_ACK: u8 = 1;
 const PING: u8 = 3;
 const PONG: u8 = 4;
+/// The client's notice that it is going, plaintext with CRC: `[u32 reason][0x30-byte trace id][reason text to the end]`.
+const DISCONNECT: u8 = 5;
+/// The answer to a `DISCONNECT`, a header alone, plaintext with CRC.
+const DISCONNECT_ACK: u8 = 6;
+const DISCONNECT_REASON_LEN: usize = 4;
+const DISCONNECT_TRACE_ID_LEN: usize = 0x30;
+/// The most of a disconnect's reason text that is logged.
+const MAX_LOGGED_REASON: usize = 256;
 const REPLICATION_DATA: u8 = 7;
 const REPLICATION_ACK: u8 = 8;
 /// `eCVS_ChangeServer`, the state the client waits for first.
@@ -55,8 +68,6 @@ const SOLAR_SYSTEM_STATE: u8 = 11;
 const STATE_REPLICATE_STREAMABLES: u8 = 15;
 const STATE_WAIT_FOR_ASYNC_SPAWNS: u8 = 16;
 const STATE_IN_GAME: u8 = 17;
-/// Any id works, as the client only matches it across the messages of a batch.
-const FIRST_BATCH: u32 = 1;
 const KEEP_ALIVE: u8 = 2;
 const GREETING_RESEND_PERIOD: Duration = Duration::from_secs(1);
 const PING_BODY_LEN: usize = 8;
@@ -72,6 +83,9 @@ const MAX_LOGGED_PACKETS: u64 = 16;
 const MAX_LOGGED_DATA: u64 = 64;
 /// A player counts as gone after this long without a packet.
 const PEER_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a connection the client ended is remembered, to answer the copies of its notice: a client leaving to the
+/// menu resends it until it is answered, for as long as its linger time.
+const CLOSED_LINGER: Duration = Duration::from_secs(15);
 /// The client resets itself to the server's position when it is 0.5 m away for 0.1 s, which at the run speed of 5.7 m/s
 /// leaves about 0.19 s for the whole round: frames go to the DGS as they come, one call at a time, and its answer goes to
 /// the client at once. That is at most a call and an update per client frame, 30 a second, and none while it stands still.
@@ -168,30 +182,26 @@ fn accept_connect(request: &ConnectRequest) -> Option<(Vec<u8>, [[u8; 16]; 3])> 
     Some((packet, keys))
 }
 
-const SOLAR_SYSTEM_BATCH: u32 = 2;
-const PLAYER_BATCH: u32 = 3;
-const HANGAR_BATCH: u32 = 4;
+/// What the join's batches are kept under in `Batches`. Their ids come from the connection's counter, in the order the
+/// stages send them.
+const UNIVERSE_BATCH: &str = "join:universe";
+const SOLAR_SYSTEM_BATCH: &str = "join:solar-systems";
+const HANGAR_BATCH: &str = "join:hangar";
 /// The containers inside the hangar, once the hangar has spawned, as their parent.
-const CONTENT_BATCH: u32 = 5;
-/// What the player wears, one batch per depth from this id on: the body, then what hangs from it, and so on. An item's
-/// parent must be bound and enabled when the item finalizes (`CAttachableComponent::DoAttachDuringSpawn`, see Body and
-/// loadout), which it is only once the parent's own batch has ended.
-const ITEMS_BATCH: u32 = 6;
+const CONTENT_BATCH: &str = "join:hangar-content";
+const PLAYER_BATCH: &str = "join:player";
 
-/// `<account id>` and an optional `<home location>` of a session named `hub-<account id>[-<home location>]`.
-fn session_fields(session: &[u8]) -> Option<(&str, Option<&str>)> {
-    let fields = std::str::from_utf8(session).ok()?.strip_prefix("hub-")?;
-    Some(fields.split_once('-').map_or((fields, None), |(account, home)| (account, Some(home))))
+/// What the player wears, one batch per depth: the body, then what hangs from it, and so on. An item's parent must be
+/// bound and enabled when the item finalizes (`CAttachableComponent::DoAttachDuringSpawn`, see Body and loadout), which it
+/// is only once the parent's own batch has ended.
+fn items_batch(depth: u32) -> String {
+    format!("join:items:{depth}")
 }
 
-/// The Hub names a session `hub-<account id>`.
-fn session_account(session: &[u8]) -> Option<u64> {
-    session_fields(session)?.0.parse().ok()
-}
-
-/// The Hub does not send this yet, so every session gets the DGS's default.
-fn session_home_location(session: &[u8]) -> Option<u32> {
-    session_fields(session)?.1?.parse().ok()
+/// What a stage sends: messages as they are, or a batch, which gets its id when it is sent.
+enum Step {
+    Messages(Vec<u8>),
+    Batch(String, Vec<EntityBind>),
 }
 
 /// How far the shard has taken a client. Each step is one reliable packet.
@@ -229,8 +239,12 @@ struct Peer {
     /// The messages of later reliable packets, which go one at a time as each is acknowledged.
     pending: VecDeque<Vec<u8>>,
     stage: Stage,
-    /// The batches the client has reported spawned.
-    batches_completed: Vec<u32>,
+    /// The bind batches sent to this client, and which it has reported spawned.
+    batches: Batches,
+    /// The batch the join's current `*Sent` stage waits for.
+    join_batch: Option<u32>,
+    /// When the client said it was going. Nothing more is done for it, but its notice is still answered.
+    closed: Option<Instant>,
     /// Who this is, from the Hub session id.
     identity: Identity,
     /// What ties this connection to its DGS. Dropped with the peer, which frees what the DGS holds for it.
@@ -341,47 +355,62 @@ impl Peer {
     fn plan(&mut self) {
         let next = match self.stage {
             Stage::Greeted if self.reliable_acked && self.client_state >= VIEW_STATE => {
-                Some((Stage::Unstowing, state_change(UNSTOW_STATE)))
+                Some((Stage::Unstowing, Step::Messages(state_change(UNSTOW_STATE))))
             }
-            Stage::Unstowing if self.client_state >= UNIVERSE_ROOT_STATE => self.world.as_ref().map(|world| (Stage::BatchSent, bind_batch(FIRST_BATCH, &world.universe))),
-            Stage::BatchSent if self.batches_completed.contains(&FIRST_BATCH) => Some((Stage::BatchEnded, bind_batch_end(FIRST_BATCH))),
+            Stage::Unstowing if self.client_state >= UNIVERSE_ROOT_STATE => {
+                self.world.as_ref().map(|world| (Stage::BatchSent, Step::Batch(UNIVERSE_BATCH.to_string(), world.universe.clone())))
+            }
+            Stage::BatchSent if self.join_batch_spawned() => Some(self.end_join_batch(Stage::BatchEnded)),
             Stage::BatchEnded if self.client_state >= SOLAR_SYSTEM_STATE => self.solar_system_batch().map(|batch| (Stage::SolarSystemsSent, batch)),
-            Stage::SolarSystemsSent if self.batches_completed.contains(&SOLAR_SYSTEM_BATCH) => {
-                Some((Stage::SolarSystemsEnded, bind_batch_end(SOLAR_SYSTEM_BATCH)))
-            }
+            Stage::SolarSystemsSent if self.join_batch_spawned() => Some(self.end_join_batch(Stage::SolarSystemsEnded)),
             Stage::SolarSystemsEnded if self.client_state >= UNSTOW_STATE => {
-                Some((Stage::Streamables, state_change(STATE_REPLICATE_STREAMABLES)))
+                Some((Stage::Streamables, Step::Messages(state_change(STATE_REPLICATE_STREAMABLES))))
             }
             Stage::Streamables if self.client_state >= STATE_REPLICATE_STREAMABLES => {
-                Some((Stage::AsyncSpawns, state_change(STATE_WAIT_FOR_ASYNC_SPAWNS)))
+                Some((Stage::AsyncSpawns, Step::Messages(state_change(STATE_WAIT_FOR_ASYNC_SPAWNS))))
             }
             Stage::AsyncSpawns if self.client_state >= STATE_WAIT_FOR_ASYNC_SPAWNS => self.hangar_batch().or_else(|| self.player_batch()),
-            Stage::HangarSent if self.batches_completed.contains(&HANGAR_BATCH) => Some((Stage::HangarEnded, bind_batch_end(HANGAR_BATCH))),
+            Stage::HangarSent if self.join_batch_spawned() => Some(self.end_join_batch(Stage::HangarEnded)),
             Stage::HangarEnded => self.content_batch().or_else(|| self.player_batch()),
-            Stage::ContentSent if self.batches_completed.contains(&CONTENT_BATCH) => {
-                Some((Stage::ContentEnded, bind_batch_end(CONTENT_BATCH)))
-            }
+            Stage::ContentSent if self.join_batch_spawned() => Some(self.end_join_batch(Stage::ContentEnded)),
             Stage::ContentEnded => self.player_batch(),
-            Stage::PlayerSent if self.batches_completed.contains(&PLAYER_BATCH) => Some((Stage::PlayerEnded, bind_batch_end(PLAYER_BATCH))),
+            Stage::PlayerSent if self.join_batch_spawned() => Some(self.end_join_batch(Stage::PlayerEnded)),
             Stage::PlayerEnded => Some(self.item_batch(0).unwrap_or_else(|| self.in_game())),
-            Stage::ItemsSent(depth) if self.batches_completed.contains(&(ITEMS_BATCH + depth)) => {
-                Some((Stage::ItemsEnded(depth), bind_batch_end(ITEMS_BATCH + depth)))
-            }
+            Stage::ItemsSent(depth) if self.join_batch_spawned() => Some(self.end_join_batch(Stage::ItemsEnded(depth))),
             Stage::ItemsEnded(depth) => Some(self.item_batch(depth + 1).unwrap_or_else(|| self.in_game())),
             _ => None,
         };
-        if let Some((stage, messages)) = next {
-            info!(?stage, client_state = self.client_state, "shard stage reached");
+        if let Some((stage, step)) = next {
+            let messages = match step {
+                Step::Messages(messages) => messages,
+                Step::Batch(key, binds) => {
+                    let id = self.batches.open(key);
+                    self.join_batch = Some(id);
+                    bind_batch(id, &binds)
+                }
+            };
+            info!(?stage, client_state = self.client_state, batch = ?self.join_batch, "shard stage reached");
             self.stage = stage;
             self.pending.push_back(messages);
         }
+    }
+
+    /// Whether the client has spawned the batch the join waits for.
+    fn join_batch_spawned(&self) -> bool {
+        self.join_batch.is_some_and(|id| self.batches.is_completed(id))
+    }
+
+    /// The end of the batch the join waited for, which lets the client go on.
+    fn end_join_batch(&mut self, stage: Stage) -> (Stage, Step) {
+        let id = self.join_batch.take().unwrap_or_default();
+        (stage, Step::Messages(bind_batch_end(id)))
     }
 
     /// A real view binds unstreamables in state 12, before it lets the client on to the player, so a planet bound with
     /// the hangar was the only one to spawn beside a player. The client does not stop at 12 for this shard, so the planet
     /// goes with its parent, and the batch's end holds back everything after it until the planet has spawned. `None` until
     /// the DGSs have said what goes in it.
-    fn solar_system_batch(&self) -> Option<Vec<u8>> {
+    fn solar_system_batch(&self) -> Option<Step> {
         let mut binds = self.world.as_ref()?.solar_systems.clone();
         match &self.player {
             PlayerEntities::Waiting => return None,
@@ -393,7 +422,7 @@ impl Peer {
                 }
             }
         }
-        Some(bind_batch(SOLAR_SYSTEM_BATCH, &binds))
+        Some(Step::Batch(SOLAR_SYSTEM_BATCH.to_string(), binds))
     }
 
     fn joined(&self) -> Option<&crate::link::Joined> {
@@ -403,29 +432,29 @@ impl Peer {
         }
     }
 
-    fn hangar_batch(&self) -> Option<(Stage, Vec<u8>)> {
+    fn hangar_batch(&self) -> Option<(Stage, Step)> {
         let hangar = self.joined()?.hangar.as_ref()?;
         info!(id = hangar.entity_id, class = hangar.class_crc, "binding home hangar");
-        Some((Stage::HangarSent, bind_batch(HANGAR_BATCH, std::slice::from_ref(hangar))))
+        Some((Stage::HangarSent, Step::Batch(HANGAR_BATCH.to_string(), vec![hangar.clone()])))
     }
 
-    fn content_batch(&self) -> Option<(Stage, Vec<u8>)> {
+    fn content_batch(&self) -> Option<(Stage, Step)> {
         let content = &self.joined()?.hangar_content;
         if content.is_empty() {
             return None;
         }
         info!(count = content.len(), first = content[0].entity_id, "binding the hangar's containers");
-        Some((Stage::ContentSent, bind_batch(CONTENT_BATCH, content)))
+        Some((Stage::ContentSent, Step::Batch(CONTENT_BATCH.to_string(), content.clone())))
     }
 
     /// The player alone. What it wears follows in `item_batch`, once this batch has ended.
-    fn player_batch(&self) -> Option<(Stage, Vec<u8>)> {
+    fn player_batch(&self) -> Option<(Stage, Step)> {
         let player = &self.joined()?.player;
-        Some((Stage::PlayerSent, bind_batch(PLAYER_BATCH, std::slice::from_ref(player))))
+        Some((Stage::PlayerSent, Step::Batch(PLAYER_BATCH.to_string(), vec![player.clone()])))
     }
 
     /// The items `depth` steps below the player: 0 is what hangs from the player itself. `None` past the deepest.
-    fn item_batch(&self, depth: u32) -> Option<(Stage, Vec<u8>)> {
+    fn item_batch(&self, depth: u32) -> Option<(Stage, Step)> {
         let joined = self.joined()?;
         let binds: Vec<EntityBind> = item_depths(joined.player.entity_id, &joined.player_items)
             .into_iter()
@@ -437,11 +466,11 @@ impl Peer {
             return None;
         }
         info!(depth, count = binds.len(), first = binds[0].entity_id, "binding the player's items");
-        Some((Stage::ItemsSent(depth), bind_batch(ITEMS_BATCH + depth, &binds)))
+        Some((Stage::ItemsSent(depth), Step::Batch(items_batch(depth), binds)))
     }
 
     /// Not held for the client's 17: its model only reports a state once this view has reached it.
-    fn in_game(&self) -> (Stage, Vec<u8>) {
+    fn in_game(&self) -> (Stage, Step) {
         let debug = self.server_name().map(|name| {
             let (frames, server_population) = self.server_numbers();
             debug_server_info(name, &frames, self.shard_population, server_population)
@@ -450,7 +479,7 @@ impl Peer {
         // The client moves its actor itself, as with a real server, and the DGS follows what it reports.
         let authority = self.joined().filter(|joined| indexes_hold(&joined.player)).map(|joined| client_authority(joined.player.entity_id));
         let messages = [state_change(STATE_IN_GAME), debug.unwrap_or_default(), bubble.unwrap_or_default(), authority.unwrap_or_default()];
-        (Stage::InGame, messages.concat())
+        (Stage::InGame, Step::Messages(messages.concat()))
     }
 
     /// The name of the governing DGS, for the overlay.
@@ -621,7 +650,17 @@ impl Peer {
         Some(packet)
     }
 
-    fn new(request: &ConnectRequest, ack: Vec<u8>, keys: &[[u8; 16]; 3]) -> Self {
+    /// Ends the connection at the client's word, as a timeout would: dropping the session tells its DGS, which frees what it
+    /// holds for the player. The peer stays a while, closed, to answer the copies of the notice.
+    fn close(&mut self) {
+        self.session = None;
+        self.closed = Some(Instant::now());
+        self.pending.clear();
+        self.reliable = None;
+        self.input.clear();
+    }
+
+    fn new(request: &ConnectRequest, ack: Vec<u8>, keys: &[[u8; 16]; 3], identity: Identity) -> Self {
         Self {
             pubkeys: request.pubkeys,
             ack,
@@ -632,8 +671,10 @@ impl Peer {
             reliable: None,
             pending: VecDeque::new(),
             stage: Stage::Greeted,
-            batches_completed: Vec::new(),
-            identity: Identity { account: session_account(&request.session_guid), location: session_home_location(&request.session_guid) },
+            batches: Batches::new(),
+            join_batch: None,
+            closed: None,
+            identity,
             session: None,
             session_id: 0,
             world: None,
@@ -669,39 +710,49 @@ fn log_movement(peers: &mut HashMap<SocketAddr, Peer>) {
     }
 }
 
-/// Dropping a peer ends its session, and with it what its DGS holds.
+/// Dropping a peer ends its session, and with it what its DGS holds. One the client ended has done so already, and is
+/// only kept a while to answer the copies of its notice.
 fn prune(peers: &mut HashMap<SocketAddr, Peer>) {
-    peers.retain(|from, peer| {
-        let alive = peer.last_seen.elapsed() < PEER_TIMEOUT;
-        if !alive {
-            info!(%from, "player timed out");
+    peers.retain(|from, peer| match peer.closed {
+        Some(closed) => closed.elapsed() < CLOSED_LINGER,
+        None => {
+            let alive = peer.last_seen.elapsed() < PEER_TIMEOUT;
+            if !alive {
+                info!(%from, "player timed out");
+            }
+            alive
         }
-        alive
     });
+}
+
+/// The connections still in play, which is what the overlay and the operator count.
+fn live(peers: &HashMap<SocketAddr, Peer>) -> u32 {
+    peers.values().filter(|peer| peer.closed.is_none()).count() as u32
 }
 
 /// Hands a DGS's answer to the connection it is for. One that has gone, or been replaced at its address, gets nothing.
 /// Returns a connection that has something to send now.
 fn receive_event(event: Event, peers: &mut HashMap<SocketAddr, Peer>) -> Option<SocketAddr> {
-    let population = peers.len() as u32;
+    let population = live(peers);
+    let current = |peer: &&mut Peer, session: u64| peer.session_id == session && peer.closed.is_none();
     match event {
         Event::World { from, session, world } => {
-            if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.session_id == session) {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
                 peer.world = Some(world);
             }
         }
         Event::Player { from, session, player } => {
-            if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.session_id == session) {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
                 peer.receive_player(player);
             }
         }
         Event::Status { dgs, status } => {
-            for peer in peers.values_mut().filter(|peer| peer.dgs() == Some(&dgs)) {
+            for peer in peers.values_mut().filter(|peer| peer.closed.is_none() && peer.dgs() == Some(&dgs)) {
                 peer.receive_status(status.clone(), population);
             }
         }
         Event::Movement { from, session, movement } => {
-            if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.session_id == session) {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
                 peer.receive_movement(movement);
                 return Some(from);
             }
@@ -712,7 +763,7 @@ fn receive_event(event: Event, peers: &mut HashMap<SocketAddr, Peer>) -> Option<
 
 /// Asks each DGS that holds a player here how it is doing.
 fn poll_servers(link: &Arc<Link>, peers: &HashMap<SocketAddr, Peer>) {
-    let servers: HashSet<&str> = peers.values().filter_map(Peer::dgs).collect();
+    let servers: HashSet<&str> = peers.values().filter(|peer| peer.closed.is_none()).filter_map(Peer::dgs).collect();
     for dgs in servers {
         link.poll(dgs.to_string());
     }
@@ -762,6 +813,56 @@ fn pong(ping: &[u8], clock: u64) -> Option<Vec<u8>> {
     Some([&packet_header[..], &body, &crc.to_le_bytes()].concat())
 }
 
+/// A plaintext packet with its CRC footer.
+fn plaintext_packet(kind: u8, body: &[u8]) -> Vec<u8> {
+    let header = [HEADER_MAGIC, kind, FLAG_PLAINTEXT, 0, 0, 0, 0, 0];
+    let crc = packet_crc(&header, body);
+    [&header[..], body, &crc.to_le_bytes()].concat()
+}
+
+/// What a client's `DISCONNECT` says, once its CRC holds.
+#[derive(Debug, PartialEq, Eq)]
+struct Disconnect {
+    /// `None` for a body too short to hold one, which the client's own builder never sends.
+    reason: Option<u32>,
+    text: String,
+}
+
+/// The client's disconnect notice (`BuildDisconnectPacket`): `[u32 reason][0x30-byte trace id][text]`, the text with no
+/// length or end, to the CRC. The trace id is not kept.
+fn parse_disconnect(packet: &[u8]) -> Option<Disconnect> {
+    let end = packet.len().checked_sub(4).filter(|end| *end >= HEADER_LEN)?;
+    let (rest, footer) = packet.split_at(end);
+    let (header, body) = rest.split_at(HEADER_LEN);
+    if packet_crc(header, body).to_le_bytes() != footer {
+        return None;
+    }
+    let reason = body.get(..DISCONNECT_REASON_LEN).map(|reason| u32::from_le_bytes(reason.try_into().unwrap()));
+    let text = body.get(DISCONNECT_REASON_LEN + DISCONNECT_TRACE_ID_LEN..).unwrap_or_default();
+    let text = String::from_utf8_lossy(&text[..text.len().min(MAX_LOGGED_REASON)]).into_owned();
+    Some(Disconnect { reason, text })
+}
+
+/// The answer to a disconnect notice, which stops a client leaving to the menu from sending it again.
+fn disconnect_ack() -> Vec<u8> {
+    plaintext_packet(DISCONNECT_ACK, &[])
+}
+
+/// A disconnect notice for a client, as a real replicant sends one to kick it: the client shows
+/// `Remote Disconnect - <text>`. The trace id is zeros, and the text is made safe as the client's own builder makes it.
+#[cfg_attr(not(test), allow(dead_code))]
+fn disconnect_notice(reason: u32, text: &str) -> Vec<u8> {
+    let mut body = reason.to_le_bytes().to_vec();
+    body.extend_from_slice(&[0; DISCONNECT_TRACE_ID_LEN]);
+    body.extend(text.bytes().map(|byte| match byte {
+        b'"' => b'\'',
+        b'%' | b'\\' => b'#',
+        0x20..=0x7e => byte,
+        _ => b'*',
+    }));
+    plaintext_packet(DISCONNECT, &body)
+}
+
 fn hex(data: &[u8]) -> String {
     data.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -778,7 +879,14 @@ fn replication_data(data: &[u8], from: SocketAddr, peer: &mut Peer) -> Option<Ve
     let header = DataHeader::parse(&body);
     peer.data_packets += 1;
     peer.client_state = peer.client_state.max(reported_state(&body).unwrap_or(0));
-    peer.batches_completed.extend(completed_batch(&body));
+    for batch in completed_batches(&body) {
+        match peer.batches.complete(batch) {
+            Completion::New => info!(%from, batch, key = ?peer.batches.key(batch), "client spawned a batch"),
+            // The 29 of a packet the client sent again.
+            Completion::Repeat => debug!(%from, batch, "batch reported spawned again"),
+            Completion::Unknown => warn!(%from, batch, "client reported a batch it was not sent"),
+        }
+    }
     if peer.data_packets <= MAX_LOGGED_DATA {
         info!(%from, flags = data[2], ?header, body = %hex(&body), "replication data");
     }
@@ -795,7 +903,13 @@ fn replication_data(data: &[u8], from: SocketAddr, peer: &mut Peer) -> Option<Ve
     peer.channel.seal([HEADER_MAGIC, REPLICATION_ACK, FLAG_ENCRYPTED, 0, 0, 0, 0, 0], &ack)
 }
 
+/// The tests' sessions name their account as the Hub's once did (`sessions::test_identity`).
+#[cfg(test)]
 fn handle_packet(data: &[u8], from: SocketAddr, peers: &mut HashMap<SocketAddr, Peer>) -> Option<Vec<u8>> {
+    handle_packet_from(data, from, peers, &Sessions::for_tests())
+}
+
+fn handle_packet_from(data: &[u8], from: SocketAddr, peers: &mut HashMap<SocketAddr, Peer>, sessions: &Sessions) -> Option<Vec<u8>> {
     if data.len() < HEADER_LEN || data[0] != HEADER_MAGIC {
         debug!(%from, len = data.len(), "non-nub datagram");
         return None;
@@ -817,17 +931,35 @@ fn handle_packet(data: &[u8], from: SocketAddr, peers: &mut HashMap<SocketAddr, 
         };
         // The client resends until an ack arrives and keeps the first, so new keys here would not
         // be the ones it uses.
-        if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.pubkeys == request.pubkeys) {
+        if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.closed.is_none() && peer.pubkeys == request.pubkeys) {
             peer.last_seen = Instant::now();
             return Some(peer.ack.clone());
         }
+        // Who the client is comes from the Hub, which issued the session: no answer until it has said (the client resends).
+        let identity = sessions.identity(&request.session_guid)?;
         let (ack, keys) = accept_connect(&request)?;
-        info!(%from, guid_bytes = request.session_guid.len(), "shard handshake complete");
-        peers.insert(from, Peer::new(&request, ack.clone(), &keys));
+        info!(%from, account = identity.account, "shard handshake complete");
+        peers.insert(from, Peer::new(&request, ack.clone(), &keys, identity));
         return Some(ack);
     }
     match peers.get_mut(&from) {
+        // Every copy of the notice is answered, as the first answer may be lost. Nothing else is.
+        Some(peer) if peer.closed.is_some() => {
+            if kind == DISCONNECT && flags & FLAG_PLAINTEXT != 0 && parse_disconnect(data).is_some() {
+                debug!(%from, "disconnect notice repeated");
+                return Some(disconnect_ack());
+            }
+        }
         Some(peer) => {
+            if kind == DISCONNECT && flags & FLAG_PLAINTEXT != 0 {
+                let Some(notice) = parse_disconnect(data) else {
+                    warn!(%from, len = data.len(), "disconnect notice failed CRC");
+                    return None;
+                };
+                info!(%from, session = peer.session_id, reason = ?notice.reason, text = %notice.text, "client disconnected");
+                peer.close();
+                return Some(disconnect_ack());
+            }
             peer.last_seen = Instant::now();
             if kind == PING && flags & FLAG_PLAINTEXT != 0 {
                 return pong(data, server_clock());
@@ -870,7 +1002,9 @@ pub async fn serve(
     shard_name: String,
     dgs_areas: String,
     dgs_address: String,
+    hub: String,
 ) -> Result<(), String> {
+    let sessions = Sessions::new(&hub)?;
     let directory = Directory::parse(&shard_id, &dgs_areas, &dgs_address)?;
     info!(dgs = directory.dgs_count(), address = %dgs_address, "DGS areas read");
     let (events, mut answers) = unbounded_channel();
@@ -900,7 +1034,7 @@ pub async fn serve(
             _ = tick.tick() => {
                 prune(&mut peers);
                 log_movement(&mut peers);
-                players.store(peers.len() as u32, Ordering::Relaxed);
+                players.store(live(&peers), Ordering::Relaxed);
                 poll_servers(&link, &peers);
                 continue;
             }
@@ -912,13 +1046,13 @@ pub async fn serve(
                 continue;
             }
         };
-        if let Some(reply) = handle_packet(&buffer[..length], from, &mut peers) {
+        if let Some(reply) = handle_packet_from(&buffer[..length], from, &mut peers, &sessions) {
             if let Err(error) = socket.send_to(&reply, from).await {
                 warn!(%from, %error, "shard send failed");
             }
         }
-        let population = peers.len() as u32;
-        if let Some(peer) = peers.get_mut(&from) {
+        let population = live(&peers);
+        if let Some(peer) = peers.get_mut(&from).filter(|peer| peer.closed.is_none()) {
             if peer.session.is_none() {
                 last_session += 1;
                 peer.open(&link, from, last_session);
@@ -936,7 +1070,7 @@ pub async fn serve(
                 }
             }
         }
-        players.store(peers.len() as u32, Ordering::Relaxed);
+        players.store(live(&peers), Ordering::Relaxed);
     }
 }
 
@@ -987,37 +1121,46 @@ mod tests {
     fn stages_run_from_game_rules_to_the_player_in_step_with_the_client() {
         let mut peer = connected_peer();
         peer.stage = Stage::BatchEnded;
-        let mut walk = |state: u8, batch: u32| {
+        // The client reports the batch it was sent, or one it was not.
+        let mut walk = |state: u8, spawned: bool| {
             peer.client_state = state;
-            peer.batches_completed.push(batch);
+            let batch = if spawned { peer.join_batch } else { Some(peer.join_batch.unwrap_or_default() + 100) };
+            batch.map(|batch| peer.batches.complete(batch));
             peer.plan();
             peer.stage
         };
-        assert_eq!(walk(10, 1), Stage::BatchEnded);
-        assert_eq!(walk(11, 1), Stage::SolarSystemsSent);
-        assert_eq!(walk(11, 1), Stage::SolarSystemsSent);
-        assert_eq!(walk(11, 2), Stage::SolarSystemsEnded);
-        assert_eq!(walk(13, 2), Stage::SolarSystemsEnded);
-        assert_eq!(walk(14, 2), Stage::Streamables);
-        assert_eq!(walk(15, 2), Stage::AsyncSpawns);
-        assert_eq!(walk(16, 2), Stage::HangarSent);
-        assert_eq!(walk(16, 2), Stage::HangarSent);
-        assert_eq!(walk(16, 4), Stage::HangarEnded);
-        assert_eq!(walk(16, 4), Stage::ContentSent);
-        assert_eq!(walk(16, 4), Stage::ContentSent);
-        assert_eq!(walk(16, 5), Stage::ContentEnded);
-        assert_eq!(walk(16, 5), Stage::PlayerSent);
-        assert_eq!(walk(16, 3), Stage::PlayerEnded);
-        assert_eq!(walk(16, 3), Stage::ItemsSent(0));
-        assert_eq!(walk(16, 3), Stage::ItemsSent(0));
-        assert_eq!(walk(16, 6), Stage::ItemsEnded(0));
-        assert_eq!(walk(16, 6), Stage::ItemsSent(1));
+        assert_eq!(walk(10, true), Stage::BatchEnded);
+        assert_eq!(walk(11, false), Stage::SolarSystemsSent);
+        assert_eq!(walk(11, false), Stage::SolarSystemsSent);
+        assert_eq!(walk(11, true), Stage::SolarSystemsEnded);
+        assert_eq!(walk(13, true), Stage::SolarSystemsEnded);
+        assert_eq!(walk(14, true), Stage::Streamables);
+        assert_eq!(walk(15, true), Stage::AsyncSpawns);
+        assert_eq!(walk(16, false), Stage::HangarSent);
+        assert_eq!(walk(16, false), Stage::HangarSent);
+        assert_eq!(walk(16, true), Stage::HangarEnded);
+        assert_eq!(walk(16, false), Stage::ContentSent);
+        assert_eq!(walk(16, false), Stage::ContentSent);
+        assert_eq!(walk(16, true), Stage::ContentEnded);
+        assert_eq!(walk(16, false), Stage::PlayerSent);
+        assert_eq!(walk(16, true), Stage::PlayerEnded);
+        assert_eq!(walk(16, false), Stage::ItemsSent(0));
+        assert_eq!(walk(16, false), Stage::ItemsSent(0));
+        assert_eq!(walk(16, true), Stage::ItemsEnded(0));
+        assert_eq!(walk(16, false), Stage::ItemsSent(1));
         for depth in 1..4 {
-            assert_eq!(walk(16, 6 + depth), Stage::ItemsEnded(depth));
-            assert_eq!(walk(16, 6 + depth), Stage::ItemsSent(depth + 1));
+            assert_eq!(walk(16, true), Stage::ItemsEnded(depth));
+            assert_eq!(walk(16, false), Stage::ItemsSent(depth + 1));
         }
-        assert_eq!(walk(16, 10), Stage::ItemsEnded(4));
-        assert_eq!(walk(16, 10), Stage::InGame);
+        assert_eq!(walk(16, true), Stage::ItemsEnded(4));
+        assert_eq!(walk(16, false), Stage::InGame);
+        // Ids in the order the batches went, each kept with what it was for.
+        let keys: Vec<String> = (1..=9).map(|id| peer.batches.key(id).unwrap().to_string()).collect();
+        let mut expected: Vec<String> = [SOLAR_SYSTEM_BATCH, HANGAR_BATCH, CONTENT_BATCH, PLAYER_BATCH].map(String::from).into();
+        expected.extend((0..5).map(items_batch));
+        assert_eq!(keys, expected);
+        assert_eq!(peer.batches.key(10), None);
+        assert!(peer.batches.key_completed(PLAYER_BATCH));
     }
 
     #[test]
@@ -1026,10 +1169,10 @@ mod tests {
         peer.stage = Stage::BatchEnded;
         peer.client_state = 11;
         peer.plan();
-        let systems = bind_batch(2, &world().solar_systems);
+        let systems = bind_batch(1, &world().solar_systems);
         let planet = hex_bytes(concat!(
             "1ba700",
-            "d42a0f912e000000", "02000000", "00000000", "00", "569d5c98", "00", "8068",
+            "d42a0f912e000000", "01000000", "00000000", "00", "569d5c98", "00", "8068",
             "b21df470effe0dc2", "4e26250f6c44fc41", "0000000000000000",
             "0000000000000000", "0000000000000000", "a006affd8aaae5bf", "8eb04b9fa88ce73f", "000000000000f03f",
             "00", "0000000000000000", "ae4501912e000000", "b21ec046", "00",
@@ -1037,7 +1180,7 @@ mod tests {
             "03", "04", "e6bca1ff", "ea4b4e5d", "809ef562", "04", "8cdb8b60", "ea4b4e5d", "59cdf5e1", "04", "429f87a8", "ea4b4e5d", "df9e66e5",
         ));
         let expected = [&systems[..systems.len() - 7], &planet, &systems[systems.len() - 7..]].concat();
-        assert_eq!(systems[systems.len() - 7..], hex_bytes("1c040002000000"));
+        assert_eq!(systems[systems.len() - 7..], hex_bytes("1c040001000000"));
         assert_eq!((peer.stage, peer.pending.pop_back()), (Stage::SolarSystemsSent, Some(expected)));
     }
 
@@ -1048,8 +1191,8 @@ mod tests {
         peer.client_state = 16;
         peer.plan();
         let expected = hex_bytes(concat!(
-            "1a040004000000", "1bc400",
-            "0098063933000000", "04000000", "00000000", "00", "342b4b3c", "01", "0a112b70", "00", "8028",
+            "1a040001000000", "1bc400",
+            "0098063933000000", "01000000", "00000000", "00", "342b4b3c", "01", "0a112b70", "00", "8028",
             "00000040262f1741", "000000a008ef25c1", "00000020dd970b41",
             "3f58398338a2abbf", "1b2703a20fb7c53f", "0a6781e6c3b83b3f", "e9d8d8e1227def3f", "000000000000f03f",
             "00", "0000000000000000", "d42a0f912e000000", "b21ec046", "00",
@@ -1057,7 +1200,7 @@ mod tests {
             "03", "04", "e6bca1ff", "ea4b4e5d", "86fb9247",
             "10", "ad1459e3", "aa0f3efb", "0198063933000000", "2c98063933000000",
             "10", "d5d2f409", "aa0f3efb", "0000000000000000", "0000000000000000",
-            "1c040004000000",
+            "1c040001000000",
         ));
         assert_eq!((peer.stage, peer.pending.pop_back()), (Stage::HangarSent, Some(expected)));
     }
@@ -1069,13 +1212,13 @@ mod tests {
         peer.stage = Stage::BatchEnded;
         peer.client_state = 11;
         peer.plan();
-        assert_eq!(peer.pending.pop_back(), Some(bind_batch(2, &world().solar_systems)));
+        assert_eq!(peer.pending.pop_back(), Some(bind_batch(1, &world().solar_systems)));
         peer.stage = Stage::AsyncSpawns;
         peer.client_state = 16;
         peer.plan();
         let expected = hex_bytes(concat!(
-            "1a040004000000", "1bc400",
-            "0098063933000000", "04000000", "00000000", "00", "342b4b3c", "01", "0a112b70", "00", "8028",
+            "1a040002000000", "1bc400",
+            "0098063933000000", "02000000", "00000000", "00", "342b4b3c", "01", "0a112b70", "00", "8028",
             "0000000000000000", "0000000000000000", "0000000000000000",
             "0000000000000000", "0000000000000000", "0000000000000000", "000000000000f03f", "000000000000f03f",
             "00", "0000000000000000", "ae4501912e000000", "b21ec046", "00",
@@ -1083,7 +1226,7 @@ mod tests {
             "03", "04", "e6bca1ff", "ea4b4e5d", "86fb9247",
             "10", "ad1459e3", "aa0f3efb", "0198063933000000", "2c98063933000000",
             "10", "d5d2f409", "aa0f3efb", "0000000000000000", "0000000000000000",
-            "1c040004000000",
+            "1c040002000000",
         ));
         assert_eq!((peer.stage, peer.pending.pop_back()), (Stage::HangarSent, Some(expected)));
     }
@@ -1321,7 +1464,7 @@ mod tests {
         peer.plan();
         assert_eq!(peer.stage, Stage::ContentSent);
         let messages = peer.pending.pop_back().unwrap();
-        assert_eq!(&messages[..7], hex_bytes("1a040005000000").as_slice());
+        assert_eq!(&messages[..7], hex_bytes("1a040001000000").as_slice());
         let under_hangar = hex_bytes(concat!("0098063933000000", "b21ec046"));
         assert_eq!(messages.windows(under_hangar.len()).filter(|window| *window == under_hangar).count(), 7);
         let shell_socpak = hex_bytes(concat!("e6bca1ff", "ea4b4e5d", "38e0597f"));
@@ -1342,20 +1485,16 @@ mod tests {
     }
 
     #[test]
-    fn a_session_may_name_the_home_location() {
-        assert_eq!(session_account(b"hub-1000001-2026442305"), Some(1_000_001));
-        assert_eq!(session_home_location(b"hub-1000001-2026442305"), Some(2_026_442_305));
-        assert_eq!(session_home_location(b"hub-1000001"), None);
-    }
-
-    #[test]
     fn the_player_batch_ends_with_nothing_but_its_end() {
         let mut peer = connected_peer();
-        peer.stage = Stage::PlayerSent;
-        peer.batches_completed.push(PLAYER_BATCH);
+        peer.stage = Stage::ContentEnded;
         peer.plan();
-        let expected = hex_bytes("1e040003000000");
+        assert_eq!(peer.stage, Stage::PlayerSent);
+        peer.batches.complete(peer.join_batch.unwrap());
+        peer.plan();
+        let expected = hex_bytes("1e040001000000");
         assert_eq!(peer.pending.pop_back(), Some(expected));
+        assert_eq!(peer.join_batch, None);
     }
 
     #[test]
@@ -1370,7 +1509,7 @@ mod tests {
             "09", "ee9265f7", "08c076f0", "010000000000000000",
             "10", "e566c4d8", "7f11a5e7", "0000000000000000", "41420f0000000000",
         ));
-        let batch_waiting = hex_bytes("1c040003000000");
+        let batch_waiting = hex_bytes("1c040001000000");
         assert_eq!(messages[messages.len() - batch_waiting.len()..], batch_waiting);
         let body = &messages[..messages.len() - batch_waiting.len()];
         let start = body.windows(snapshots.len()).position(|window| window == snapshots).expect("the actor state");
@@ -1404,13 +1543,15 @@ mod tests {
             let binds: Vec<EntityBind> =
                 joined.player_items.iter().zip(&depths).filter(|(_, at)| **at == Some(depth)).map(|(item, _)| item.clone()).collect();
             assert!(binds.iter().all(|item| item.parent_id == joined.player.entity_id || depth > 0));
-            assert_eq!(peer.pending.pop_back(), Some(bind_batch(ITEMS_BATCH + depth, &binds)));
+            let id = peer.join_batch.unwrap();
+            assert_eq!((id, peer.batches.key(id)), (depth + 1, Some(items_batch(depth).as_str())));
+            assert_eq!(peer.pending.pop_back(), Some(bind_batch(id, &binds)));
             sent += binds.len();
             peer.plan();
             assert_eq!(peer.stage, Stage::ItemsSent(depth), "held until the client has spawned the batch");
-            peer.batches_completed.push(ITEMS_BATCH + depth);
+            peer.batches.complete(id);
             peer.plan();
-            assert_eq!((peer.stage, peer.pending.pop_back()), (Stage::ItemsEnded(depth), Some(bind_batch_end(ITEMS_BATCH + depth))));
+            assert_eq!((peer.stage, peer.pending.pop_back()), (Stage::ItemsEnded(depth), Some(bind_batch_end(id))));
         }
         assert_eq!(sent, 23);
         peer.plan();
@@ -1434,10 +1575,15 @@ mod tests {
         assert_eq!(item_depths(1, &items), [Some(0), Some(1), None, Some(2)]);
     }
 
-    #[test]
-    fn the_account_comes_from_the_hub_session() {
-        assert_eq!(session_account(b"hub-1000001"), Some(1_000_001));
-        assert_eq!(session_account(b"check"), None);
+    #[tokio::test]
+    async fn a_session_the_hub_refused_gets_no_answer() {
+        let sessions = Sessions::new("http://127.0.0.1:1").unwrap();
+        let request = real_request();
+        let session = parse_connect_request(&request[HEADER_LEN..request.len() - 4]).unwrap().session_guid;
+        sessions.refuse(&session);
+        let mut peers = HashMap::new();
+        assert!(handle_packet_from(&request, "127.0.0.1:1".parse().unwrap(), &mut peers, &sessions).is_none());
+        assert!(peers.is_empty(), "no peer for a session the Hub does not know");
     }
 
     #[test]
@@ -1469,7 +1615,7 @@ mod tests {
         let packet = real_request();
         let request = parse_connect_request(&packet[HEADER_LEN..packet.len() - 4]).unwrap();
         let (ack, keys) = accept_connect(&request).unwrap();
-        let mut peer = Peer::new(&request, ack, &keys);
+        let mut peer = Peer::new(&request, ack, &keys, crate::sessions::test_identity(&request.session_guid).unwrap());
         peer.world = Some(world());
         peer.player = joined(1_000_001, None, true);
         peer
@@ -1547,7 +1693,7 @@ mod tests {
         let mut peer = unstowing_peer();
         peer.client_state = UNIVERSE_ROOT_STATE;
         peer.advance().unwrap();
-        peer.batches_completed.push(FIRST_BATCH);
+        peer.batches.complete(peer.join_batch.unwrap());
         assert!(peer.advance().is_none());
         acknowledged(&mut peer);
         assert!(peer.advance().is_some());
@@ -1576,7 +1722,7 @@ mod tests {
 
     #[test]
     fn the_first_batch_binds_the_root_then_the_game_mode_under_it() {
-        let batch = bind_batch(FIRST_BATCH, &world().universe);
+        let batch = bind_batch(1, &world().universe);
         let body = [&[0u8; 12][..], &batch].concat();
         let records: Vec<&[u8]> = messages(&body).into_iter().filter(|(id, _)| *id == 27).map(|(_, payload)| payload).collect();
         assert_eq!(records.len(), 2);
@@ -1626,7 +1772,7 @@ mod tests {
         let packet = real_request();
         let request = parse_connect_request(&packet[HEADER_LEN..packet.len() - 4]).unwrap();
         let (ack, keys) = accept_connect(&request).unwrap();
-        let mut peer = Peer::new(&request, ack, &keys);
+        let mut peer = Peer::new(&request, ack, &keys, crate::sessions::test_identity(&request.session_guid).unwrap());
         let client = Channel::new(&[keys[1], keys[0], keys[2]]);
         peer.stage = Stage::InGame;
         peer.reliable = Some(Vec::new());
@@ -1755,6 +1901,111 @@ mod tests {
         handle_packet(&real_request(), from, &mut peers).unwrap();
         let mut stranger = Channel::new(&[[1; 16], [2; 16], [3; 16]]);
         assert!(handle_packet(&data_packet(&mut stranger, FLAG_ENCRYPTED), from, &mut peers).is_none());
+    }
+
+    /// The shape of the notice an Alt+F4 sends, five times (`SendDisconnectInfoImmediate`): header with a tag the sender
+    /// fills, reason 30016, a trace id, the text to the CRC.
+    fn quit_notice() -> Vec<u8> {
+        let header = hex_bytes("5c0504dc0a0b0c0d");
+        let trace: Vec<u8> = (1..=0x30).collect();
+        let body = [&0x7540u32.to_le_bytes()[..], &trace, b"User closed the application"].concat();
+        [&header[..], &body, &packet_crc(&header, &body).to_le_bytes()].concat()
+    }
+
+    #[test]
+    fn a_disconnect_notice_is_answered_and_ends_the_connection() {
+        let from = "127.0.0.1:1".parse().unwrap();
+        let mut peers = HashMap::new();
+        handle_packet(&real_request(), from, &mut peers).unwrap();
+        assert_eq!(parse_disconnect(&quit_notice()), Some(Disconnect { reason: Some(30016), text: "User closed the application".into() }));
+        let ack = handle_packet(&quit_notice(), from, &mut peers).expect("an ack");
+        assert_eq!(ack, hex_bytes("5c060400000000008d5d6bb6"));
+        let peer = &peers[&from];
+        assert!(peer.closed.is_some() && peer.session.is_none());
+        assert_eq!(live(&peers), 0);
+    }
+
+    #[test]
+    fn every_copy_of_a_notice_is_answered_and_the_first_alone_ends_the_connection() {
+        let from = "127.0.0.1:1".parse().unwrap();
+        let mut peers = HashMap::new();
+        handle_packet(&real_request(), from, &mut peers).unwrap();
+        handle_packet(&quit_notice(), from, &mut peers).unwrap();
+        let closed = peers[&from].closed;
+        // The rest of an Alt+F4's five, and an exit to menu's resends, the resend flag set.
+        let mut resent = quit_notice();
+        resent[2] |= FLAG_RESEND;
+        for packet in [quit_notice(), quit_notice(), quit_notice(), resent] {
+            assert_eq!(handle_packet(&packet, from, &mut peers), Some(disconnect_ack()));
+        }
+        assert_eq!(peers[&from].closed, closed);
+        assert!(handle_packet(&ping(1), from, &mut peers).is_none(), "nothing else is answered");
+        prune(&mut peers);
+        assert_eq!(peers.len(), 1, "kept to answer the copies");
+        peers.get_mut(&from).unwrap().closed = closed.map(|at| at - CLOSED_LINGER);
+        prune(&mut peers);
+        assert!(peers.is_empty());
+        assert!(handle_packet(&quit_notice(), from, &mut peers).is_none(), "gone");
+    }
+
+    #[test]
+    fn a_stranger_or_a_corrupt_notice_gets_nothing() {
+        let from = "127.0.0.1:1".parse().unwrap();
+        assert!(handle_packet(&quit_notice(), from, &mut HashMap::new()).is_none());
+        let mut peers = HashMap::new();
+        handle_packet(&real_request(), from, &mut peers).unwrap();
+        let mut corrupt = quit_notice();
+        corrupt[20] ^= 1;
+        assert!(handle_packet(&corrupt, from, &mut peers).is_none());
+        assert!(peers[&from].closed.is_none());
+        assert!(handle_packet(&ping(1), from, &mut peers).is_some());
+    }
+
+    #[test]
+    fn a_client_that_left_can_connect_again_from_its_address() {
+        let from = "127.0.0.1:1".parse().unwrap();
+        let mut peers = HashMap::new();
+        handle_packet(&real_request(), from, &mut peers).unwrap();
+        handle_packet(&quit_notice(), from, &mut peers).unwrap();
+        assert!(handle_packet(&real_request(), from, &mut peers).is_some());
+        assert!(peers[&from].closed.is_none());
+        assert_eq!(live(&peers), 1);
+    }
+
+    #[test]
+    fn a_notice_for_a_client_reads_back_and_is_made_safe_as_the_client_does() {
+        let notice = disconnect_notice(30028, "player \"inactive\" 100% \\ \u{7}");
+        assert_eq!(notice[..8], [HEADER_MAGIC, DISCONNECT, FLAG_PLAINTEXT, 0, 0, 0, 0, 0]);
+        assert_eq!(notice[12..60], [0; 0x30]);
+        let read = parse_disconnect(&notice).unwrap();
+        assert_eq!(read, Disconnect { reason: Some(30028), text: "player 'inactive' 100# # *".into() });
+        assert_eq!(parse_disconnect(&plaintext_packet(DISCONNECT, &[])), Some(Disconnect { reason: None, text: String::new() }));
+    }
+
+    /// The spawn reports of several batches in one packet, then that packet again, through the real packet path.
+    #[test]
+    fn every_spawn_report_of_a_packet_counts_and_a_resend_changes_nothing() {
+        let from = "127.0.0.1:1".parse().unwrap();
+        let clients: Vec<KeyPair> = (0..3).map(|_| KeyPair::generate()).collect();
+        let mut peers = HashMap::new();
+        let keys = connect(&clients, from, &mut peers);
+        let mut client = Channel::new(&[keys[1], keys[0], keys[2]]);
+        let peer = peers.get_mut(&from).unwrap();
+        let ids = [peer.batches.open("station"), peer.batches.open("hangar"), peer.batches.open("station")];
+        assert_eq!(ids, [1, 2, 3]);
+        let mut send = |peers: &mut HashMap<SocketAddr, Peer>, flags: u8, message: &str| {
+            let body = hex_bytes(&format!("0000000000000000ffffffff{message}"));
+            let packet = client.seal([HEADER_MAGIC, REPLICATION_DATA, flags, 0, 0, 0, 0, 0], &body).unwrap();
+            handle_packet(&packet, from, peers).expect("an ack");
+        };
+        send(&mut peers, FLAG_ENCRYPTED, "1d0400010000001d0400020000001d040009000000");
+        let batches = &peers[&from].batches;
+        assert_eq!(ids.map(|id| batches.is_completed(id)), [true, true, false]);
+        assert!(batches.key_completed("hangar") && !batches.key_completed("station"));
+        send(&mut peers, FLAG_ENCRYPTED | FLAG_RESEND, "1d0400010000001d0400020000001d040009000000");
+        assert_eq!(ids.map(|id| peers[&from].batches.is_completed(id)), [true, true, false]);
+        send(&mut peers, FLAG_ENCRYPTED, "1d040003000000");
+        assert!(peers[&from].batches.key_completed("station"));
     }
 
     #[test]

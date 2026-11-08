@@ -1,0 +1,28 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.presence.v1;
+
+import "sc/external/services/presence/v1/types.proto";
+
+message GetPresencesRequest {
+  repeated uint32 account_ids = 1;
+}
+
+message PlayerPresence {
+  uint32 account_id = 1;
+  // As anyone but the player sees it: invisible or stale is offline, without activity.
+  sc.external.services.presence.v1.Presence presence = 2;
+  // What the client reported as its environment. Empty while offline.
+  string environment = 3;
+}
+
+// Accounts that were never online are left out.
+message GetPresencesResponse {
+  repeated PlayerPresence presences = 1;
+}
+
+// Answered by sc-presence, which owns `player_presence`. It shares that service's port, so no GRPCRoute may list it.
+service PresenceInternal {
+  rpc GetPresences(GetPresencesRequest) returns (GetPresencesResponse);
+}

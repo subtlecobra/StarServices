@@ -2,7 +2,7 @@
 //! which `sc-admin seed` reads from the archive and hands over. Rows are replaced by key.
 
 use sc_db::{internal, Postgres, ToSql};
-use sc_proto::internal::{
+use sc_api::internal::{
     blueprint_library_internal_server::BlueprintLibraryInternal, SeedBlueprintDefaultsRequest, SeedResponse,
 };
 use tonic::{Request, Response, Status};
@@ -53,7 +53,7 @@ impl BlueprintLibraryInternal for Library {
 mod tests {
     use super::*;
 
-    use sc_proto::internal::BlueprintDefault;
+    use sc_api::internal::BlueprintDefault;
 
     /// Against a real database: `SC_TEST_POSTGRES=<url> cargo test -p sc-blueprint-library -- --ignored`.
     #[tokio::test]

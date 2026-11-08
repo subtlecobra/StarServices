@@ -22,7 +22,7 @@ use http::{header, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
-use sc_proto::internal::{game_data_client::GameDataClient, GetGameFileRequest, ListGameBuildsRequest};
+use sc_api::internal::{game_data_client::GameDataClient, GetGameFileRequest, ListGameBuildsRequest};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;

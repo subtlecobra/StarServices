@@ -6,7 +6,7 @@ use std::collections::{HashSet, VecDeque};
 
 use futures_util::{stream, Stream};
 use sc_db::{internal, Arango};
-use sc_proto::internal::{AreaContainer, LoadAreaRequest, LoadAreaResponse};
+use sc_api::internal::{AreaContainer, LoadAreaRequest, LoadAreaResponse};
 use serde_json::{json, Value};
 use tonic::Status;
 

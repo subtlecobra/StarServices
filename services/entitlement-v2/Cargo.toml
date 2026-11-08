@@ -1,6 +1,6 @@
 [package]
 name = "sc-entitlement-v2"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -11,6 +11,7 @@ prost.workspace = true
 prost-types.workspace = true
 sc-economy = { path = "../entitlement/common" }
 sc-db.workspace = true
+sc-api.workspace = true
 sc-proto.workspace = true
 sc-runtime.workspace = true
 tonic.workspace = true

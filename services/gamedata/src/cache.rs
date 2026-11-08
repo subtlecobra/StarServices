@@ -45,7 +45,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sc_proto::internal::{
+use sc_api::internal::{
     game_data_server::GameData, GameBuildStatus, GameFileChunk, GetGameFileRequest, ListGameBuildsRequest, ListGameBuildsResponse,
 };
 use tokio::{io::AsyncReadExt, sync::mpsc};

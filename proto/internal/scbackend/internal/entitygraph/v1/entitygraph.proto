@@ -1,0 +1,230 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.entitygraph.v1;
+
+import "sc/external/services/entitygraph/v1/types.proto";
+import "scbackend/internal/common/v1/common.proto";
+
+message LoadAreaRequest {
+  // As `system` in `containers`.
+  string system = 1;
+  // The names of the containers the DGS has authority over, with everything under them.
+  repeated string roots = 2;
+  // The roots of the other DGSs of the system, which the walk does not enter.
+  repeated string excluded_roots = 3;
+  // Put before the collection names, to read a test copy. Letters, digits and `_` only.
+  string collection_prefix = 4;
+}
+
+// One container of an area. Its entities are the ids from `start_id`, `entities` of them.
+message AreaContainer {
+  fixed64 start_id = 1;
+  uint64 entities = 2;
+}
+
+message LoadAreaResponse {
+  repeated AreaContainer containers = 1;
+}
+
+message GetOwnersRequest {
+  repeated fixed64 entities = 1;
+}
+
+message EntityOwner {
+  fixed64 entity = 1;
+  fixed64 owner = 2;
+}
+
+message GetOwnersResponse {
+  // Entities that exist and have an owner, in no set order.
+  repeated EntityOwner owners = 1;
+}
+
+message AdminInventoryTreeRequest {
+  uint64 owner_id = 1;
+  // Levels of containers below the player's own inventories. 0: no limit.
+  uint32 max_depth = 2;
+  // Items listed per inventory. 0: 500, at most 2000.
+  uint32 max_items = 3;
+}
+
+message AdminInventoryItem {
+  uint64 geid = 1;
+  uint32 class_guid_crc = 2;
+  string class_name = 3;  // empty when the class is not seeded
+  uint32 stack_size = 4;
+  uint64 owner_id = 5;
+  string inventory_id = 6;                 // where it is stowed
+  repeated string held_inventory_ids = 7;  // the inventories it holds: a crate's, a backpack's
+  string class_guid = 8;
+  string display_name = 9;  // the class's English name
+  // Unstowed onto a shard, where the DGS has it: listed, but not changed.
+  bool on_shard = 10;
+  string shard_id = 11;
+}
+
+message AdminInventory {
+  sc.external.services.entitygraph.v1.InventoryNodeProperties inventory = 1;
+  // The nearest inventory up the holder chain: where its holder is stowed. Empty at the top.
+  string parent_inventory_id = 2;
+  repeated AdminInventoryItem items = 3;  // at most `max_items`, by GEID
+  uint64 holder_id = 4;                   // the entity that holds it: the player, a crate, a cargo grid
+  string holder_class_name = 5;
+  uint32 item_count = 6;  // every item stowed in it, also those left out of `items`
+  uint32 depth = 7;       // 0 at the top
+  bool live = 8;          // an entity up its holder chain is on a shard: changes are refused
+}
+
+message AdminInventoryTreeResponse {
+  repeated AdminInventory inventories = 1;  // parents before children
+}
+
+message AdminMoveItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  string from_inventory_id = 4;  // where the item is
+  string to_inventory_id = 5;    // a player inventory its id says the player owns is created on first use
+  uint32 quantity = 6;           // 0 or the whole stack moves the item; less splits it into a new item
+  string actor = 7;
+  string reason = 8;
+}
+
+message AdminMoveItemResponse {
+  uint64 moved_geid = 1;  // the item, or the new one a split made
+  bool replayed = 2;
+}
+
+message AdminAddItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  string inventory_id = 3;
+  string entity_class_guid = 4;  // a seeded entity class
+  uint32 stack_size = 5;         // 0 is 1
+  string actor = 6;
+  string reason = 7;
+}
+
+message AdminAddItemResponse {
+  uint64 geid = 1;  // the same GEID for a repeated command id
+  bool replayed = 2;
+}
+
+message AdminRemoveItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  string actor = 4;
+  string reason = 5;
+}
+
+message AdminRemoveItemResponse {
+  bool removed = 1;
+  uint32 erased = 2;  // entities erased: the item and everything it held
+  bool replayed = 3;
+}
+
+message AdminSearchEntityClassesRequest {
+  // Part of a class name or of an English name, case ignored, or a GUID.
+  string query = 1;
+  uint32 limit = 2;  // 50 when 0, at most 200
+}
+
+message AdminEntityClass {
+  string guid = 1;
+  uint32 guid_hash_crc = 2;
+  string class_name = 3;
+  string display_name = 4;
+  string item_type = 5;
+  string item_sub_type = 6;
+  uint64 occupancy_micro_scu = 7;
+  uint64 capacity_micro_scu = 8;  // of its inventory container, 0 with none or no limit
+  bool container = 9;             // it gets an inventory of its own
+}
+
+message AdminSearchEntityClassesResponse {
+  repeated AdminEntityClass classes = 1;  // by class name
+}
+
+// ---- Admin inventories (end) ----
+
+// Answered by sc-entitygraph, which owns entities and the container tree. It shares that service's port, so no GRPCRoute
+// may list it.
+service EntityGraphInternal {
+  // What a DGS governs: the roots and everything under them, down to the roots of other DGSs. NOT_FOUND names the roots
+  // the tree lacks, before anything is sent. A container is sent once, parents before children, in chunks.
+  rpc LoadArea(LoadAreaRequest) returns (stream LoadAreaResponse);
+  // Who owns these entities, for sc-entity-subscription.
+  rpc GetOwners(GetOwnersRequest) returns (GetOwnersResponse);
+  // ---- Admin inventories (begin) ----
+  // Every inventory of a player: its own (personal, location, hangar, ...), the containers of the entities it owns (a
+  // ship's holds, crates, backpacks), and every container nested in those, with the items of each.
+  rpc AdminInventoryTree(AdminInventoryTreeRequest) returns (AdminInventoryTreeResponse);
+  rpc AdminMoveItem(AdminMoveItemRequest) returns (AdminMoveItemResponse);
+  // A new item of a seeded class, with a GEID sc-entitygraph allocates, stowed in the inventory. A container class
+  // gets its inventory with it.
+  rpc AdminAddItem(AdminAddItemRequest) returns (AdminAddItemResponse);
+  // Erases a stowed item and everything it holds.
+  rpc AdminRemoveItem(AdminRemoveItemRequest) returns (AdminRemoveItemResponse);
+  // The seeded entity classes, for picking what to add.
+  rpc AdminSearchEntityClasses(AdminSearchEntityClassesRequest) returns (AdminSearchEntityClassesResponse);
+  // ---- Admin inventories (end) ----
+  // ---- Game data seed (begin). Sent by sc-seeder and sc-admin seed, once per region. ----
+  // The entity classes of a game build, replaced by GUID. Classes the build no longer has are kept, as items may still
+  // be of them. Messages of at most 4 MiB; the answer counts the classes written.
+  rpc SeedEntityClasses(stream SeedEntityClassesRequest) returns (common.v1.SeedResponse);
+  // The whole object container tree of a game build. Written once the stream ends, which leaves exactly these nodes and
+  // their edges to the parents: a node the build no longer has goes. INVALID_ARGUMENT for an empty tree, a GEID sent
+  // twice or a parent that is not in it, before anything is written. The answer counts the nodes.
+  rpc SeedContainers(stream SeedContainersRequest) returns (common.v1.SeedResponse);
+  // ---- Game data seed (end) ----
+}
+
+// ---- Game data seed of sc-entitygraph (begin). Read from the game archive, see docs/DATA.md. ----
+message EntityClassInventory {
+  int64 capacity_micro_scu = 1;
+  bool closed = 2;
+}
+
+// A localization token and its English text, empty when the game has none.
+message LocalizedText {
+  string token = 1;
+  string en = 2;
+}
+
+message EntityClassSeed {
+  string guid = 1;
+  uint32 guid_hash_crc = 2;
+  string class_name = 3;
+  string item_type = 4;
+  string item_sub_type = 5;
+  LocalizedText name = 6;
+  LocalizedText description = 7;
+  optional int64 occupancy_micro_scu = 8;  // absent when the class has no inventory occupancy
+  EntityClassInventory inventory = 9;      // absent when the class holds no inventory
+}
+
+message SeedEntityClassesRequest {
+  repeated EntityClassSeed classes = 1;
+}
+
+// A node of the object container tree; see docs/DATA.md, Object container tree, for each field.
+message ContainerSeed {
+  uint64 geid = 1;
+  optional uint64 parent = 2;  // absent on the universe root
+  string guid = 3;
+  repeated uint32 labels = 4;
+  uint32 socpak_content_hash = 5;
+  uint32 socpak_file_path_hash = 6;
+  uint64 start_id = 7;
+  bool has_planet = 8;
+  uint32 streaming_immovable_count = 9;
+  uint32 streaming_movable_count = 10;
+  string name = 11;
+  string system = 12;
+}
+
+message SeedContainersRequest {
+  repeated ContainerSeed containers = 1;
+}

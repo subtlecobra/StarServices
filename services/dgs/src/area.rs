@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use sc_proto::internal::{entity_graph_internal_client::EntityGraphInternalClient, LoadAreaRequest, LoadAreaResponse};
+use sc_api::internal::{entity_graph_internal_client::EntityGraphInternalClient, LoadAreaRequest, LoadAreaResponse};
 use tonic::transport::Channel;
 
 /// One entity id range per container, empty for a container with no entities.
@@ -43,7 +43,7 @@ mod tests {
     use std::{net::SocketAddr, pin::Pin, time::{Duration, Instant}};
 
     use futures_util::{stream, Stream};
-    use sc_proto::internal::{
+    use sc_api::internal::{
         entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer},
         AreaContainer, GetOwnersRequest, GetOwnersResponse,
     };
@@ -91,48 +91,48 @@ mod tests {
         // ---- Admin inventories: not used by this test ----
         async fn admin_inventory_tree(
             &self,
-            _: Request<sc_proto::internal::AdminInventoryTreeRequest>,
-        ) -> Result<Response<sc_proto::internal::AdminInventoryTreeResponse>, Status> {
+            _: Request<sc_api::internal::AdminInventoryTreeRequest>,
+        ) -> Result<Response<sc_api::internal::AdminInventoryTreeResponse>, Status> {
             Err(Status::unimplemented("admin_inventory_tree"))
         }
 
         async fn admin_move_item(
             &self,
-            _: Request<sc_proto::internal::AdminMoveItemRequest>,
-        ) -> Result<Response<sc_proto::internal::AdminMoveItemResponse>, Status> {
+            _: Request<sc_api::internal::AdminMoveItemRequest>,
+        ) -> Result<Response<sc_api::internal::AdminMoveItemResponse>, Status> {
             Err(Status::unimplemented("admin_move_item"))
         }
 
         async fn admin_add_item(
             &self,
-            _: Request<sc_proto::internal::AdminAddItemRequest>,
-        ) -> Result<Response<sc_proto::internal::AdminAddItemResponse>, Status> {
+            _: Request<sc_api::internal::AdminAddItemRequest>,
+        ) -> Result<Response<sc_api::internal::AdminAddItemResponse>, Status> {
             Err(Status::unimplemented("admin_add_item"))
         }
 
         async fn admin_remove_item(
             &self,
-            _: Request<sc_proto::internal::AdminRemoveItemRequest>,
-        ) -> Result<Response<sc_proto::internal::AdminRemoveItemResponse>, Status> {
+            _: Request<sc_api::internal::AdminRemoveItemRequest>,
+        ) -> Result<Response<sc_api::internal::AdminRemoveItemResponse>, Status> {
             Err(Status::unimplemented("admin_remove_item"))
         }
 
         async fn admin_search_entity_classes(
             &self,
-            _: Request<sc_proto::internal::AdminSearchEntityClassesRequest>,
-        ) -> Result<Response<sc_proto::internal::AdminSearchEntityClassesResponse>, Status> {
+            _: Request<sc_api::internal::AdminSearchEntityClassesRequest>,
+        ) -> Result<Response<sc_api::internal::AdminSearchEntityClassesResponse>, Status> {
             Err(Status::unimplemented("admin_search_entity_classes"))
         }
         async fn seed_entity_classes(
             &self,
-            _: Request<tonic::Streaming<sc_proto::internal::SeedEntityClassesRequest>>,
-        ) -> Result<Response<sc_proto::internal::SeedResponse>, Status> {
+            _: Request<tonic::Streaming<sc_api::internal::SeedEntityClassesRequest>>,
+        ) -> Result<Response<sc_api::internal::SeedResponse>, Status> {
             Err(Status::unimplemented("seed_entity_classes"))
         }
         async fn seed_containers(
             &self,
-            _: Request<tonic::Streaming<sc_proto::internal::SeedContainersRequest>>,
-        ) -> Result<Response<sc_proto::internal::SeedResponse>, Status> {
+            _: Request<tonic::Streaming<sc_api::internal::SeedContainersRequest>>,
+        ) -> Result<Response<sc_api::internal::SeedResponse>, Status> {
             Err(Status::unimplemented("seed_containers"))
         }
     }

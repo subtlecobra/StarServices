@@ -13,21 +13,21 @@ use clap::Parser;
 use futures_util::{stream, Stream};
 use prost::Message;
 use sc_db::{internal, DatabaseArgs, Postgres};
+use sc_api::internal::contract_broker_internal_server::ContractBrokerInternalServer;
 use sc_proto::{
     common::{
-        api::v1::{PaginationArguments, Query},
-        mission::v1::{ContractPrerequisites, FilterOptions, MissionContract, ReputationRequirement, TokenRequirement},
+    api::v1::{PaginationArguments, Query},
+    mission::v1::{ContractPrerequisites, FilterOptions, MissionContract, ReputationRequirement, TokenRequirement},
     },
-    internal::contract_broker_internal_server::ContractBrokerInternalServer,
     services::{
-        contract_broker::v1::{
-            contract_broker_service_server::{ContractBrokerService, ContractBrokerServiceServer},
-            query_contracts_response::{self, Body, ContractsWithEligibility, EligibilityInfo},
-            QueryAvailableContractsRequest, QueryAvailableContractsResponse, QueryContractsRequest,
-            QueryContractsResponse,
-        },
-        mission_token::v1::{mission_token_service_client::MissionTokenServiceClient, QueryTokensRequest},
-        reputation::v1::{reputation_service_client::ReputationServiceClient, QueryReputationsRequest},
+    contract_broker::v1::{
+    contract_broker_service_server::{ContractBrokerService, ContractBrokerServiceServer},
+    query_contracts_response::{self, Body, ContractsWithEligibility, EligibilityInfo},
+    QueryAvailableContractsRequest, QueryAvailableContractsResponse, QueryContractsRequest,
+    QueryContractsResponse,
+    },
+    mission_token::v1::{mission_token_service_client::MissionTokenServiceClient, QueryTokensRequest},
+    reputation::v1::{reputation_service_client::ReputationServiceClient, QueryReputationsRequest},
     },
 };
 use sc_runtime::query;

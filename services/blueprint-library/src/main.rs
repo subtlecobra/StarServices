@@ -18,13 +18,13 @@ use sc_economy::{
     query::{compile, Compiled, Field, Kind},
     reply_stream, timestamp_of, ReplyStream,
 };
+use sc_api::internal::blueprint_library_internal_server::BlueprintLibraryInternalServer;
 use sc_proto::{
     common::api::v1::Query,
-    internal::blueprint_library_internal_server::BlueprintLibraryInternalServer,
     services::blueprint_library::v1::{
-        blueprint_library_service_server::{BlueprintLibraryService, BlueprintLibraryServiceServer},
-        BlueprintEntry, BlueprintProcessType, BlueprintSource, QueryBlueprintEntriesRequest,
-        QueryBlueprintEntriesResponse, QueryBlueprintEntriesStreamRequest, QueryBlueprintEntriesStreamResponse,
+    blueprint_library_service_server::{BlueprintLibraryService, BlueprintLibraryServiceServer},
+    BlueprintEntry, BlueprintProcessType, BlueprintSource, QueryBlueprintEntriesRequest,
+    QueryBlueprintEntriesResponse, QueryBlueprintEntriesStreamRequest, QueryBlueprintEntriesStreamResponse,
     },
 };
 use sc_runtime::{caller, state::{Account, State}, CommonArgs, MAX_MESSAGE_BYTES};

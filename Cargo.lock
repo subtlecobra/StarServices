@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "gamedata-build"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "meshopt",
@@ -2922,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "sc-achievements"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost-types",
@@ -2935,13 +2935,14 @@ dependencies = [
 
 [[package]]
 name = "sc-admin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "p4k",
  "p4k-formats",
  "prost",
  "rcgen",
+ "sc-api",
  "sc-proto",
  "sc-runtime",
  "sc-seed",
@@ -2953,7 +2954,7 @@ dependencies = [
 
 [[package]]
 name = "sc-admin-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "clap",
@@ -2964,6 +2965,7 @@ dependencies = [
  "prost",
  "prost-types",
  "ring",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -2977,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "sc-analytics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "sc-db",
@@ -2989,10 +2991,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "sc-blueprint-library"
+name = "sc-api"
 version = "0.1.0"
 dependencies = [
+ "prost",
+ "prost-types",
+ "protox",
+ "sc-proto",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "sc-blueprint-library"
+version = "0.1.1"
+dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3004,10 +3020,11 @@ dependencies = [
 
 [[package]]
 name = "sc-character-customizer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3017,9 +3034,10 @@ dependencies = [
 
 [[package]]
 name = "sc-chat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3031,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "sc-configuration"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
@@ -3046,10 +3064,11 @@ dependencies = [
 
 [[package]]
 name = "sc-contacts"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3061,11 +3080,12 @@ dependencies = [
 
 [[package]]
 name = "sc-contract-broker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3076,11 +3096,12 @@ dependencies = [
 
 [[package]]
 name = "sc-custom-lobby"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
  "ring",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3111,9 +3132,10 @@ dependencies = [
 
 [[package]]
 name = "sc-delivery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3125,12 +3147,13 @@ dependencies = [
 
 [[package]]
 name = "sc-dgs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "flate2",
  "futures-util",
  "parry3d",
+ "sc-api",
  "sc-proto",
  "sc-runtime",
  "serde_json",
@@ -3142,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "sc-discipline"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
@@ -3155,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dynamic-game-assets"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost-types",
@@ -3169,10 +3192,11 @@ dependencies = [
 
 [[package]]
 name = "sc-eatransaction"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3184,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "sc-echo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
@@ -3200,11 +3224,12 @@ dependencies = [
 
 [[package]]
 name = "sc-economy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "prost",
  "prost-types",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3215,10 +3240,11 @@ dependencies = [
 
 [[package]]
 name = "sc-entitlement"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3230,11 +3256,12 @@ dependencies = [
 
 [[package]]
 name = "sc-entitlement-v2"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
  "prost-types",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3245,11 +3272,12 @@ dependencies = [
 
 [[package]]
 name = "sc-entity-document"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
  "prost-reflect",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3260,10 +3288,11 @@ dependencies = [
 
 [[package]]
 name = "sc-entity-subscription"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3275,12 +3304,13 @@ dependencies = [
 
 [[package]]
 name = "sc-entitygraph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
  "prost",
  "prost-types",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3293,7 +3323,7 @@ dependencies = [
 
 [[package]]
 name = "sc-friends"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "sc-proto",
@@ -3306,7 +3336,7 @@ dependencies = [
 
 [[package]]
 name = "sc-gamedata"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "clap",
@@ -3317,6 +3347,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "redis",
+ "sc-api",
  "sc-oci",
  "sc-proto",
  "sc-runtime",
@@ -3333,11 +3364,13 @@ dependencies = [
 
 [[package]]
 name = "sc-hub"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "prost",
+ "ring",
  "rustls",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3350,12 +3383,13 @@ dependencies = [
 
 [[package]]
 name = "sc-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
  "clap",
  "ring",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3366,7 +3400,7 @@ dependencies = [
 
 [[package]]
 name = "sc-instance-manager"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost-types",
@@ -3381,7 +3415,7 @@ dependencies = [
 
 [[package]]
 name = "sc-land-claim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "sc-db",
@@ -3394,10 +3428,11 @@ dependencies = [
 
 [[package]]
 name = "sc-ledger"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3409,10 +3444,11 @@ dependencies = [
 
 [[package]]
 name = "sc-login"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3423,7 +3459,7 @@ dependencies = [
 
 [[package]]
 name = "sc-match"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
@@ -3436,10 +3472,11 @@ dependencies = [
 
 [[package]]
 name = "sc-matchmaking"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3450,7 +3487,7 @@ dependencies = [
 
 [[package]]
 name = "sc-mightybridge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
@@ -3465,9 +3502,10 @@ dependencies = [
 
 [[package]]
 name = "sc-mission-scenario"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3478,11 +3516,12 @@ dependencies = [
 
 [[package]]
 name = "sc-mission-service"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
  "prost-types",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3493,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "sc-mission-token"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost-types",
@@ -3506,10 +3545,11 @@ dependencies = [
 
 [[package]]
 name = "sc-notifications"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3541,13 +3581,14 @@ dependencies = [
 
 [[package]]
 name = "sc-portal"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
  "http-body-util",
  "ring",
+ "sc-api",
  "sc-proto",
  "sc-runtime",
  "serde",
@@ -3560,10 +3601,11 @@ dependencies = [
 
 [[package]]
 name = "sc-presence"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3575,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "sc-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -3587,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "sc-pu-frontend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "blake2",
@@ -3596,6 +3638,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "rand_core 0.6.4",
+ "sc-api",
  "sc-dgs",
  "sc-proto",
  "sc-runtime",
@@ -3606,13 +3649,14 @@ dependencies = [
 
 [[package]]
 name = "sc-push"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "clap",
  "futures-util",
  "prost",
  "prost-types",
+ "sc-api",
  "sc-proto",
  "sc-runtime",
  "tokio",
@@ -3623,10 +3667,11 @@ dependencies = [
 
 [[package]]
 name = "sc-rental"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost-types",
+ "sc-api",
  "sc-db",
  "sc-economy",
  "sc-proto",
@@ -3638,9 +3683,10 @@ dependencies = [
 
 [[package]]
 name = "sc-reputation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3651,9 +3697,10 @@ dependencies = [
 
 [[package]]
 name = "sc-rtc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3682,10 +3729,11 @@ dependencies = [
 
 [[package]]
 name = "sc-seed"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "prost",
+ "sc-api",
  "sc-proto",
  "serde",
  "serde_json",
@@ -3697,12 +3745,13 @@ dependencies = [
 
 [[package]]
 name = "sc-seeder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "k8s-openapi",
  "kube",
  "rustls",
+ "sc-api",
  "sc-oci",
  "sc-proto",
  "sc-seed",
@@ -3714,12 +3763,13 @@ dependencies = [
 
 [[package]]
 name = "sc-shard-operator"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "clap",
  "k8s-openapi",
  "kube",
  "rustls",
+ "sc-api",
  "sc-proto",
  "sc-runtime",
  "schemars",
@@ -3733,10 +3783,11 @@ dependencies = [
 
 [[package]]
 name = "sc-social"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3748,9 +3799,10 @@ dependencies = [
 
 [[package]]
 name = "sc-solar-system-shop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3761,10 +3813,11 @@ dependencies = [
 
 [[package]]
 name = "sc-squad"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
+ "sc-api",
  "sc-db",
  "sc-proto",
  "sc-runtime",
@@ -3776,7 +3829,7 @@ dependencies = [
 
 [[package]]
 name = "sc-stats"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "prost",
@@ -3789,7 +3842,7 @@ dependencies = [
 
 [[package]]
 name = "sc-telemetry"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "futures-util",
@@ -3802,7 +3855,7 @@ dependencies = [
 
 [[package]]
 name = "sc-trace"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "sc-db",
@@ -3815,7 +3868,7 @@ dependencies = [
 
 [[package]]
 name = "sc-vqlengine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "sc-db",

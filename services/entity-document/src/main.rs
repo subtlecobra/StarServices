@@ -18,7 +18,7 @@ use prost::{
 };
 use prost_reflect::DescriptorPool;
 use sc_db::{internal, DatabaseArgs, Postgres, Row};
-use sc_proto::internal::entity_document_internal_server::EntityDocumentInternalServer;
+use sc_api::internal::entity_document_internal_server::EntityDocumentInternalServer;
 use sc_proto::services::entity_document::v1::{
     external_entity_document_service_server::{ExternalEntityDocumentService, ExternalEntityDocumentServiceServer},
     CommitRequest, CommitResponse, CreateRequest, CreateResponse, DocumentHeader, EntityDocument, EntityDocumentBody,

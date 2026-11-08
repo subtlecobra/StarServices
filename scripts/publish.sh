@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Publishes everything a deployment of this backend pulls into an OCI registry, from this PC (the build PC):
+#   0. checks the services' internal API (scripts/proto-check.sh): it builds, lints, and has no breaking change since the
+#      last commit unless SC_ALLOW_BREAKING=1;
 #   1. logs in to the registry as the user push (asks for the password once, or reads SC_REGISTRY_PASSWORD_FILE), unless
 #      already logged in;
 #   2. the service images and the charts (scripts/build-and-push.sh): each version is pushed once, and a component that
@@ -28,6 +30,9 @@ source scripts/registry.sh
 registry_host=${registry%%:*}
 p4k=${SC_P4K:-}
 step() { printf '\n== %s\n' "$*"; }
+
+step "0. internal API"
+scripts/proto-check.sh
 
 step "1. registry $registry"
 if [[ $registry_host != localhost ]]; then

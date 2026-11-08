@@ -6,7 +6,7 @@
 //! published once for each member.
 
 use prost::Message;
-use sc_proto::internal::{push_publisher_client::PushPublisherClient, PublishRequest};
+use sc_api::internal::{push_publisher_client::PushPublisherClient, PublishRequest};
 use tokio::sync::mpsc::{self, Sender};
 use tonic::transport::Endpoint;
 use tracing::warn;

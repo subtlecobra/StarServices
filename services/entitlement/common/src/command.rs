@@ -4,10 +4,10 @@
 
 use prost::Message;
 use prost_types::Any;
+use sc_api::internal::{push_publisher_client::PushPublisherClient, PublishRequest};
 use sc_proto::{
     common::command::v1::{notify_destination::Destination, CommandArguments, CommandResponseBody},
     google::rpc,
-    internal::{push_publisher_client::PushPublisherClient, PublishRequest},
 };
 use tonic::{
     transport::{Channel, Endpoint},

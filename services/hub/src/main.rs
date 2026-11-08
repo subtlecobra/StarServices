@@ -6,7 +6,7 @@
 //! The Hub owns `player_shards`, the shard each connected player was sent to. Other services ask for it over
 //! `HubInternal`, on a gRPC port of its own, as the Hub's port speaks only its TLS protocol.
 
-use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
 use clap::Parser;
 use prost::Message;
@@ -25,11 +25,14 @@ use tonic::{
 use tracing::{debug, info, warn};
 
 use sc_db::internal;
-use sc_proto::internal::{
+use sc_api::internal::{
+    entity_document_internal_client::EntityDocumentInternalClient,
     hub_internal_server::{HubInternal, HubInternalServer},
     shard_directory_client::ShardDirectoryClient,
-    AllocateShardRequest, GetPlayerShardRequest, GetPlayerShardResponse, PlayerShard,
+    AllocateShardRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPlayerShardResponse, PlayerShard,
+    ResolveSessionRequest, ResolveSessionResponse,
 };
+use sc_proto::services::entity_document::v1::entity_document_body::Class;
 use sc_proto::hub::{
     AccountLogin, AccountLoginResponse, AccountRecord, Envelope, GotoLocation, InstanceEntry,
     LocationServicesDestination, LocationServicesDestinationList, MatchMakerUpdate, RegionSelection, RpcGuid,
@@ -65,7 +68,17 @@ CREATE TABLE IF NOT EXISTS player_shards (
     location_id BIGINT NOT NULL,
     joined_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS player_shards_shard ON player_shards (shard_id);";
+CREATE INDEX IF NOT EXISTS player_shards_shard ON player_shards (shard_id);
+CREATE TABLE IF NOT EXISTS sessions (
+    session TEXT PRIMARY KEY,
+    account_id BIGINT NOT NULL,
+    geid BIGINT NOT NULL,
+    nickname TEXT NOT NULL,
+    home_location BIGINT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);";
+/// A session lasts as long as its Hub connection, and a day at most.
+const SESSION_MAX_AGE: &str = "1 day";
 const PERSISTENT_PREFIX: &str = "var.persistent_items.";
 
 #[derive(Parser)]
@@ -99,6 +112,69 @@ struct Args {
     /// `<client region id>=<ShardCluster region>`, comma separated.
     #[arg(long, env = "SCBACKEND_REGION_MAP", value_delimiter = ',')]
     region_map: Vec<String>,
+    /// sc-entity-document, which holds each player's chosen home location (`player_home_location`).
+    #[arg(long, env = "SCBACKEND_ENTITY_DOCUMENT", default_value = "http://sc-entity-document:50051")]
+    entity_document: String,
+}
+
+/// How long a login waits for the home location before going on without it.
+const HOME_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The player's chosen home location, `player_home_location` in sc-entity-document, which the session id carries to the
+/// shard: the DGS spawns the player in that location's hangar. None when the player chose none, or sc-entity-document
+/// fails or does not answer in time; the DGS then uses its default.
+async fn home_location(documents: &EntityDocumentInternalClient<Channel>, geid: u64) -> Option<u32> {
+    let request = GetEntityDocumentsRequest { entity_id: geid, classes: vec!["player_home_location".into()] };
+    let mut documents = documents.clone();
+    let response = match tokio::time::timeout(HOME_LOOKUP_TIMEOUT, documents.get_documents(request)).await {
+        Ok(Ok(response)) => response.into_inner(),
+        Ok(Err(status)) => {
+            warn!(geid, error = status.message(), "home location lookup failed");
+            return None;
+        }
+        Err(_) => {
+            warn!(geid, "home location lookup timed out");
+            return None;
+        }
+    };
+    response.documents.into_iter().find_map(|stored| match stored.document?.body?.class? {
+        Class::PlayerHomeLocation(home) if home.home_location_id != 0 => Some(home.home_location_id),
+        _ => None,
+    })
+}
+
+/// How many fresh sessions a login draws before giving up, should each one collide with a live one. Two 128-bit random
+/// values coincide with odds of about 2^-128 each time, so a second draw is already beyond any real chance.
+const SESSION_ATTEMPTS: usize = 5;
+
+/// Records a new session for `account` and returns it. Its primary key keeps every live session unique: a draw that
+/// collides with one writes no row, and another is drawn. Expired sessions are removed first (a crash can leave some).
+async fn issue_session(db: &Postgres, account: &Account, home: Option<u32>) -> Result<String, String> {
+    db.execute(&format!("DELETE FROM sessions WHERE created_at < now() - interval '{SESSION_MAX_AGE}'"), &[]).await?;
+    for _ in 0..SESSION_ATTEMPTS {
+        let session = new_session()?;
+        let written = db
+            .execute(
+                "INSERT INTO sessions (session, account_id, geid, nickname, home_location) VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (session) DO NOTHING",
+                &[&session, &i64::from(account.account_id), &(account.geid as i64), &account.handle, &home.map(i64::from)],
+            )
+            .await?;
+        if written == 1 {
+            return Ok(session);
+        }
+        warn!("a new session collided with a live one: drawing another");
+    }
+    Err(format!("{SESSION_ATTEMPTS} new sessions all collided with live ones"))
+}
+
+/// A new session: 16 random bytes as 32 hex digits, as the real backend's look. It says nothing about the player: a shard
+/// learns who it is only by asking the Hub (`ResolveSession`), so a client cannot name itself someone else.
+fn new_session() -> Result<String, String> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0u8; 16];
+    SystemRandom::new().fill(&mut bytes).map_err(|_| "no system randomness".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 #[derive(Clone)]
@@ -288,6 +364,9 @@ struct Session {
     region: String,
     account: Option<Account>,
     default_handle: String,
+    documents: EntityDocumentInternalClient<Channel>,
+    /// The session this connection issued, which ends with it.
+    session: Option<String>,
 }
 
 impl Session {
@@ -314,6 +393,11 @@ impl Session {
 
     /// The Hub connection lasts as long as the game session, so its end means the player left.
     async fn leave(&self) {
+        if let Some(session) = &self.session {
+            if let Err(error) = self.db.execute("DELETE FROM sessions WHERE session = $1", &[session]).await {
+                warn!(%error, "could not end the session");
+            }
+        }
         let Some(account) = &self.account else { return };
         if let Err(error) = self.db.execute("DELETE FROM player_shards WHERE geid = $1", &[&(account.geid as i64)]).await {
             warn!(%error, "could not clear the player's shard");
@@ -333,8 +417,20 @@ impl Session {
                     warn!("account_login with no usable account");
                     return Vec::new();
                 };
-                info!(handle = %account.handle, "hub login");
-                let session = format!("hub-{}", account.account_id);
+                let home = home_location(&self.documents, account.geid).await;
+                // A session no shard could look up is worth nothing: without one recorded, the login is refused and the
+                // client tries again.
+                let session = match issue_session(&self.db, &account, home).await {
+                    Ok(session) => session,
+                    Err(error) => {
+                        warn!(%error, handle = %account.handle, "no session for the login");
+                        return Vec::new();
+                    }
+                };
+                info!(handle = %account.handle, home, "hub login");
+                if let Some(previous) = self.session.replace(session.clone()) {
+                    let _ = self.db.execute("DELETE FROM sessions WHERE session = $1", &[&previous]).await;
+                }
                 let reply = login_response(&account, &session);
                 self.account = Some(account);
                 vec![frame("account_login_response", reply, envelope.id)]
@@ -431,6 +527,32 @@ impl HubInternal for Internal {
         let shard = player_shard(&self.db, request.into_inner().geid).await.map_err(internal)?;
         Ok(Response::new(GetPlayerShardResponse { shard }))
     }
+
+    async fn resolve_session(
+        &self,
+        request: Request<ResolveSessionRequest>,
+    ) -> Result<Response<ResolveSessionResponse>, Status> {
+        let session = request.into_inner().session;
+        let rows = self
+            .db
+            .query(
+                &format!(
+                    "SELECT account_id, geid, nickname, home_location FROM sessions
+                     WHERE session = $1 AND created_at >= now() - interval '{SESSION_MAX_AGE}'"
+                ),
+                &[&session.to_ascii_lowercase()],
+            )
+            .await
+            .map_err(internal)?;
+        let Some(row) = rows.first() else { return Ok(Response::new(ResolveSessionResponse::default())) };
+        Ok(Response::new(ResolveSessionResponse {
+            found: true,
+            account_id: u32::try_from(row.get::<_, i64>(0)).unwrap_or_default(),
+            geid: row.get::<_, i64>(1) as u64,
+            nickname: row.get(2),
+            home_location: row.get::<_, Option<i64>>(3).and_then(|location| u32::try_from(location).ok()).unwrap_or_default(),
+        }))
+    }
 }
 
 async fn serve_internal(addr: SocketAddr, db: Postgres) -> Result<(), String> {
@@ -475,6 +597,7 @@ async fn accept_loop(
     db: Postgres,
     shard: ShardInfo,
     default_handle: String,
+    documents: EntityDocumentInternalClient<Channel>,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(addr).await.map_err(|e| format!("hub bind {addr}: {e}"))?;
     let acceptor = TlsAcceptor::from(tls);
@@ -496,6 +619,8 @@ async fn accept_loop(
             shard: shard.clone(),
             account: None,
             default_handle: default_handle.clone(),
+            documents: documents.clone(),
+            session: None,
         };
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
@@ -541,8 +666,11 @@ async fn serve(args: Args) -> Result<(), String> {
     };
     let db = Postgres::connect(&args.database.postgres, SCHEMA).await?;
     let config = tls::plain(&args.common.data)?;
+    let endpoint =
+        Endpoint::from_shared(args.entity_document.clone()).map_err(|e| format!("--entity-document: {e}"))?;
+    let documents = EntityDocumentInternalClient::new(endpoint.connect_lazy());
     tokio::select! {
-        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle) => result,
+        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle, documents) => result,
         result = serve_internal(args.internal_listen, db) => result,
     }
 }
@@ -555,6 +683,14 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_32_random_hex_digits() {
+        let (a, b) = (new_session().unwrap(), new_session().unwrap());
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{a}");
+        assert_ne!(a, b);
+    }
 
     #[test]
     fn frame_matches_the_documented_layout() {
@@ -633,7 +769,7 @@ mod tests {
     /// does nothing, so `cargo test` stays offline.
     #[tokio::test]
     async fn a_player_shard_comes_with_the_players_around_it() {
-        use sc_proto::internal::hub_internal_client::HubInternalClient;
+        use sc_api::internal::hub_internal_client::HubInternalClient;
 
         let Ok(base) = std::env::var("SCBACKEND_TEST_POSTGRES") else { return };
         let schema = format!("hub_test_{}", std::process::id());

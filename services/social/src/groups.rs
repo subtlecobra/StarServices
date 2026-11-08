@@ -2,8 +2,8 @@
 //! pushes to them. The groups themselves are sc-social's, the only service that reads or writes them;
 //! the others ask it through [`Peers`](crate::peers::Peers).
 
+use sc_api::internal::{GroupMemberAccount, InternalGroup};
 use sc_proto::{
-    internal::{GroupMemberAccount, InternalGroup},
     services::social::v1::{ChatSettings, Group, GroupSettings, GroupType, InviteMode, RtcSettings},
 };
 use sc_runtime::state::Account;

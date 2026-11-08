@@ -8,7 +8,7 @@ use aes_gcm::{
     aead::{AeadInPlace, KeyInit},
     Aes128Gcm,
 };
-use sc_proto::internal::{DgsFrames, EntityBind, EntityTransform};
+use sc_api::internal::{DgsFrames, EntityBind, EntityTransform};
 
 pub const HEADER_LEN: usize = 8;
 pub const FLAG_ENCRYPTED: u8 = 0x02;
@@ -358,10 +358,11 @@ pub fn reported_state(body: &[u8]) -> Option<u8> {
     states.filter_map(|(_, payload)| payload.first().copied()).max()
 }
 
-/// The batch a `BindBatchAsyncSpawnsCompleted` message in this body names.
-pub fn completed_batch(body: &[u8]) -> Option<u32> {
-    let (_, payload) = messages(body).into_iter().find(|(id, _)| *id == MESSAGE_BIND_BATCH_SPAWNS_COMPLETED)?;
-    Some(u32::from_le_bytes(payload.get(..4)?.try_into().ok()?))
+/// The batches the `BindBatchAsyncSpawnsCompleted` messages of this body name, in order: a client that finished several
+/// batches in one frame sends them in one packet. The payload is the batch id alone.
+pub fn completed_batches(body: &[u8]) -> Vec<u32> {
+    let completed = messages(body).into_iter().filter(|(id, _)| *id == MESSAGE_BIND_BATCH_SPAWNS_COMPLETED);
+    completed.filter_map(|(_, payload)| Some(u32::from_le_bytes(payload.get(..4)?.try_into().ok()?))).collect()
 }
 
 /// As `FUN_141597530` reads it. Every field but a bit starts on a byte, so each bit here takes a byte of its own. The
@@ -461,7 +462,7 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sc_proto::internal::EntitySnapshot;
+    use sc_api::internal::EntitySnapshot;
 
     const UNIVERSE_ROOT_ID: u64 = 0xffff_ffff_ffff_fffc;
 
@@ -599,8 +600,17 @@ mod tests {
 
     #[test]
     fn a_completed_batch_is_read_from_its_message() {
-        assert_eq!(completed_batch(&bytes("0000000000000000ffffffff060100031d040007000000")), Some(7));
-        assert_eq!(completed_batch(&bytes("0000000000000000ffffffff06010003")), None);
+        assert_eq!(completed_batches(&bytes("0000000000000000ffffffff060100031d040007000000")), [7]);
+        assert!(completed_batches(&bytes("0000000000000000ffffffff06010003")).is_empty());
+    }
+
+    #[test]
+    fn every_completed_batch_of_a_packet_is_read_in_order() {
+        let body = bytes("0000000000000000ffffffff1d040007000000060100101d040003000000");
+        assert_eq!(completed_batches(&body), [7, 3]);
+        // A message cut short names no batch.
+        assert_eq!(completed_batches(&bytes("0000000000000000ffffffff1d040009000000")), [9]);
+        assert_eq!(completed_batches(&bytes("0000000000000000ffffffff1d0200090000")), Vec::<u32>::new());
     }
 
     #[test]

@@ -6,17 +6,12 @@
 use std::collections::{HashMap, HashSet};
 
 use sc_db::{internal, Arango};
+use sc_api::internal::{ AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, };
 use sc_proto::{
-    internal::{
-        AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem,
-        AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse,
-        AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest,
-        AdminSearchEntityClassesResponse,
-    },
     services::entitygraph::v1::{
-        create_command, entity_graph_command::Params, erase_command, move_command, node_properties, unstack_command,
-        CreateCommand, EntityGraph, EntityGraphCommand, EntityNodeProperties, EraseCommand, MoveCommand, Node,
-        NodeProperties, NodeType, UnstackCommand,
+    create_command, entity_graph_command::Params, erase_command, move_command, node_properties, unstack_command,
+    CreateCommand, EntityGraph, EntityGraphCommand, EntityNodeProperties, EraseCommand, MoveCommand, Node,
+    NodeProperties, NodeType, UnstackCommand,
     },
 };
 use serde_json::{json, Value};

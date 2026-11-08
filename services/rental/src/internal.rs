@@ -8,12 +8,8 @@ use sc_economy::{
     db,
     transaction::{retrying, Failure},
 };
+use sc_api::internal::{ rental_internal_server::RentalInternal, CreateRentalRequest, CreateRentalResponse, EndRentalRequest, EndRentalResponse, ExtendRentalRequest, ExtendRentalResponse, GetRentalRequest, GetRentalResponse, ListRentalsRequest, ListRentalsResponse, };
 use sc_proto::{
-    internal::{
-        rental_internal_server::RentalInternal, CreateRentalRequest, CreateRentalResponse, EndRentalRequest,
-        EndRentalResponse, ExtendRentalRequest, ExtendRentalResponse, GetRentalRequest, GetRentalResponse,
-        ListRentalsRequest, ListRentalsResponse,
-    },
     services::rental::v1::{Rental, RentalLogAction, RentalStatus},
 };
 use tonic::{Request, Response, Status};

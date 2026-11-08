@@ -2,7 +2,7 @@
 //! `set-password`. Bootstraps the first admin, who then uses the admin pages. `scripts/identity-admin.sh` port-forwards
 //! sc-identity and runs these.
 
-use sc_proto::internal::{
+use sc_api::internal::{
     identity_internal_client::IdentityInternalClient, AccountSummary, SearchAccountsRequest, SetAccountStateRequest,
 };
 use tonic::transport::{Channel, Endpoint};

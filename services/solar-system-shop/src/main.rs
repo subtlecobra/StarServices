@@ -9,14 +9,11 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Postgres, Row};
+use sc_api::internal::{ solar_system_shop_internal_server::{SolarSystemShopInternal, SolarSystemShopInternalServer}, RentalPrice, SeedRentalPricesRequest, SeedResponse, SeedShopItemsRequest, ShopItem, };
 use sc_proto::{
-    internal::{
-        solar_system_shop_internal_server::{SolarSystemShopInternal, SolarSystemShopInternalServer},
-        RentalPrice, SeedRentalPricesRequest, SeedResponse, SeedShopItemsRequest, ShopItem,
-    },
     services::solar_system_shop::v1::{
-        solar_system_shop_service_server::{SolarSystemShopService, SolarSystemShopServiceServer},
-        GetGlobalInventoryRequest, GetGlobalInventoryResponse, InventoryItem, RentalOffering, ShopLoadout,
+    solar_system_shop_service_server::{SolarSystemShopService, SolarSystemShopServiceServer},
+    GetGlobalInventoryRequest, GetGlobalInventoryResponse, InventoryItem, RentalOffering, ShopLoadout,
     },
 };
 use sc_runtime::{CommonArgs, MAX_MESSAGE_BYTES};

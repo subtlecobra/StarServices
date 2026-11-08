@@ -13,7 +13,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use sc_proto::internal::{
+use sc_api::internal::{
     dgs_control_client::DgsControlClient, DgsStatusRequest, DgsStatusResponse, EntityBind, InputFrame, JoinPlayerRequest, LeavePlayerRequest,
     LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerMovement, ShardEntitiesRequest, ShardEntitiesResponse,
 };

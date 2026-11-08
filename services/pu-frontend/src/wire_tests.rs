@@ -21,7 +21,7 @@ use sc_dgs::{
     solar_system::{solar_system_binds, SOLAR_SYSTEMS},
     universe::first_binds,
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     dgs_control_client::DgsControlClient, dgs_control_server::DgsControlServer, DgsStatusRequest, DgsStatusResponse, EntityBind,
 };
 use tokio::{
@@ -208,7 +208,8 @@ fn answered(peer: &Peer) -> bool {
 
 fn peer_of(session: &str) -> Peer {
     let request = ConnectRequest { session_guid: session.as_bytes().to_vec(), pubkeys: [[0; PUBKEY_LEN]; 3] };
-    Peer::new(&request, Vec::new(), &[[0; 16]; 3])
+    let identity = crate::sessions::test_identity(&request.session_guid).unwrap();
+    Peer::new(&request, Vec::new(), &[[0; 16]; 3], identity)
 }
 
 /// Takes a peer through every stage, with a client that has done everything, and writes what it sends as the golden
@@ -216,10 +217,12 @@ fn peer_of(session: &str) -> Peer {
 fn walk(peer: &mut Peer, session: &str, planet_zone: bool) -> Vec<String> {
     peer.reliable_acked = true;
     peer.client_state = 17;
-    // The bind batches, then the player's items a depth at a time (6 to 10).
-    peer.batches_completed = (1..=10).collect();
     let mut rows = Vec::new();
     loop {
+        // The client spawns each batch as it comes.
+        if let Some(batch) = peer.join_batch {
+            peer.batches.complete(batch);
+        }
         let before = peer.stage;
         peer.plan();
         if peer.stage == before {
@@ -375,6 +378,27 @@ async fn a_client_that_timed_out_leaves() {
     settle(&mut fleet, "pyro-1", 0).await;
 }
 
+/// Alt+F4: the client's five notices at once. The first ends the connection and its DGS frees the player, as a timeout
+/// would; every copy is answered.
+#[tokio::test]
+async fn a_client_that_says_it_is_going_leaves_at_once() {
+    let mut fleet = Fleet::running(AREAS, true).await;
+    let mut peers = HashMap::new();
+    let from = fleet.join(&mut peers, "hub-1000001", 1).await;
+    let stays = fleet.join(&mut peers, "hub-1000002", 2).await;
+    settle(&mut fleet, "pyro-1", 2).await;
+    let notice = disconnect_notice(0x7540, "User closed the application");
+    for _ in 0..5 {
+        assert_eq!(handle_packet(&notice, from, &mut peers), Some(disconnect_ack()));
+    }
+    settle(&mut fleet, "pyro-1", 1).await;
+    assert_eq!(live(&peers), 1);
+    assert!(peers[&stays].closed.is_none());
+    // An answer the DGS still had on its way for the connection that went sends nothing.
+    assert_eq!(receive_event(Event::Movement { from, session: 1, movement: None }, &mut peers), None);
+    assert!(peers[&from].closed.is_some());
+}
+
 #[tokio::test]
 async fn a_client_that_reconnects_keeps_its_entities_when_the_old_connection_leaves() {
     let mut fleet = Fleet::running(AREAS, true).await;
@@ -422,7 +446,6 @@ async fn an_unreachable_dgs_holds_the_join_and_nothing_is_built_here_until_it_co
     let peer = peers.get_mut(&from).unwrap();
     peer.stage = Stage::Unstowing;
     peer.client_state = 17;
-    peer.batches_completed = vec![1, 2, 3, 4];
     fleet.wait_for(&mut peers, HELD).await;
     let peer = peers.get_mut(&from).unwrap();
     peer.plan();
@@ -629,8 +652,8 @@ fn with_the_planet_zone_off_the_hangar_is_at_the_origin_of_its_system() {
 }
 
 /// A frame of the client's input, with `buttons` held, at `frame` thirtieths of a second.
-fn input_frame(frame: u64, buttons: u32) -> sc_proto::internal::InputFrame {
-    sc_proto::internal::InputFrame { time: 10_000_000 + frame * 333_333, move_buttons: buttons, ..Default::default() }
+fn input_frame(frame: u64, buttons: u32) -> sc_api::internal::InputFrame {
+    sc_api::internal::InputFrame { time: 10_000_000 + frame * 333_333, move_buttons: buttons, ..Default::default() }
 }
 
 #[tokio::test]

@@ -8,14 +8,14 @@ use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Postgres};
+use sc_api::internal::mission_scenario_internal_server::MissionScenarioInternalServer;
 use sc_proto::{
     common::mission::v1::ScenarioStatus,
-    internal::mission_scenario_internal_server::MissionScenarioInternalServer,
     services::mission_scenario::v1::{
-        query_scenario_status_response::Body,
-        scenario_service_server::{ScenarioService, ScenarioServiceServer},
-        GetContributorScenarioProgressRequest, GetContributorScenarioProgressResponse, QueryScenarioStatusRequest,
-        QueryScenarioStatusResponse,
+    query_scenario_status_response::Body,
+    scenario_service_server::{ScenarioService, ScenarioServiceServer},
+    GetContributorScenarioProgressRequest, GetContributorScenarioProgressResponse, QueryScenarioStatusRequest,
+    QueryScenarioStatusResponse,
     },
 };
 use sc_runtime::{CommonArgs, MAX_MESSAGE_BYTES};

@@ -49,7 +49,7 @@ use kube::{
     api::{ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
     Api, Client, CustomResourceExt, Resource, ResourceExt,
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     game_data_client::GameDataClient,
     shard_directory_server::{ShardDirectory, ShardDirectoryServer},
     AllocateShardRequest, AllocateShardResponse, ListGameBuildsRequest,

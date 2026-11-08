@@ -1,0 +1,213 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.dgs.v1;
+
+message DgsStatusRequest {}
+
+// Frame times of the DGS's tick over its last full window, in 100 ns ticks, as the overlay's `DebugServerInfo` wants them.
+message DgsFrames {
+  int64 fastest = 1;
+  int64 slowest = 2;
+  int64 average = 3;
+  int64 last = 4;
+  uint32 hitches = 5;
+}
+
+message DgsStatusResponse {
+  string shard_id = 1;
+  string name = 2;
+  string system = 3;
+  repeated string roots = 4;
+  uint64 governed_containers = 5;
+  uint64 governed_entities = 6;
+  DgsFrames frames = 7;
+  // Players this DGS holds entities for.
+  uint32 players = 8;
+  // The entities of those players.
+  uint64 player_entities = 9;
+  // Its solar system, quantum grid and planets, which belong to no player.
+  uint64 shard_entities = 10;
+  // Differs after a restart, which loses what the DGS held. See `JoinPlayer`.
+  uint64 boot_id = 11;
+}
+
+// A `QuatTS` with a scale of 1, relative to the entity's parent. A rotation of `0 0 0 1` is none.
+message EntityTransform {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double qx = 4;
+  double qy = 5;
+  double qz = 6;
+  double qw = 7;
+}
+
+// One variable of a bind: see `Bind` in docs/PROTOCOL.md.
+message EntitySnapshot {
+  fixed32 key = 1;
+  fixed32 type_id = 2;
+  bytes value = 3;
+}
+
+// An entity as a DGS decides it. The replicant adds the batch and what the wire needs, and changes nothing here.
+message EntityBind {
+  fixed64 entity_id = 1;
+  fixed32 class_crc = 2;
+  uint32 flags = 3;
+  EntityTransform transform = 4;
+  fixed64 parent_id = 5;
+  fixed32 parent_attach_id = 6;
+  repeated fixed32 components = 7;
+  repeated EntitySnapshot snapshots = 8;
+}
+
+message LocateHomeRequest {
+  // Absent when the session names none, and the DGS picks the default.
+  optional uint32 location_id = 1;
+}
+
+// What governs a home, for `SCBACKEND_DGS_AREAS` to turn into a DGS. A location without a hangar answers with where such
+// a player goes instead.
+message LocateHomeResponse {
+  string system = 1;
+  // The `name` of the planet's container. Empty for a place under no planet, which the `<system>system` root takes.
+  string planet = 2;
+}
+
+message ShardEntitiesRequest {}
+
+message ShardEntitiesResponse {
+  // The game rules and the game mode, which all go first. Every DGS with a `<system>system` root builds the same ones, as
+  // no system owns them.
+  repeated EntityBind universe = 1;
+  // Unset unless this DGS has the `<system>system` root.
+  EntityBind solar_system = 2;
+  EntityBind quantum_grid = 3;
+  // Where this system goes among the others, as the client's bind order is not the template's.
+  uint32 order = 4;
+}
+
+message JoinPlayerRequest {
+  // Differs each time the replicant starts. A DGS frees what it held for an earlier value.
+  uint64 replicant = 1;
+  // One connection. A later session of the same account takes over its entities.
+  uint64 session = 2;
+  uint64 account_id = 3;
+  optional uint32 location_id = 4;
+}
+
+message JoinPlayerResponse {
+  // Unset for a location with no planet, or with the planet zone off. Goes in the solar systems' batch.
+  EntityBind planet = 1;
+  // Unset for a location with no hangar.
+  EntityBind hangar = 2;
+  EntityBind player = 3;
+  DgsStatusResponse status = 4;
+  // The containers inside the hangar, under it. Bound in a batch of their own, after the hangar's. Empty with no hangar.
+  repeated EntityBind hangar_content = 5;
+  // What the player wears: its body, head, clothes and items, each under the item whose port holds it (the body under the
+  // player), parents first. The replicant binds them after the player's batch has ended, a batch per depth. See "Body and
+  // loadout" in docs/PROTOCOL.md.
+  repeated EntityBind player_items = 6;
+}
+
+message LeavePlayerRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+}
+
+message LeavePlayerResponse {
+  // Entities freed. 0 for a session the DGS does not hold, which is not an error.
+  uint32 released = 1;
+}
+
+// A rotation as `x y z w`.
+message Rotation {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+// One frame of the client's action stream (EntityRemoteMethod 7 on its player), with only what the replicant decodes.
+// A frame without a button mask means no movement button is held. See "Player movement" in docs/PROTOCOL.md.
+message InputFrame {
+  // The client's time at the end of the frame, in 100 ns ticks.
+  fixed64 time = 1;
+  // `SMoveButtonMask`: 1 forward, 2 back, 4 left, 8 right.
+  uint32 move_buttons = 2;
+  bool sprint = 3;
+  // `SDeltaRotation` (0x36): the view's aim at the start of the frame, `m_originAimRotation`, absolute in the zone's
+  // frame. Unset when the view did not turn.
+  Rotation aim_rotation = 4;
+  // The frame held an action the replicant cannot read the length of, so what came after it is missing: the buttons
+  // and sprint of a partial frame with none read are those of the frame before.
+  bool partial = 5;
+  // Jump actions in the frame: 1 start (0x9c), 2 `SJumpHold` (0x9d), 4 `SJumpRelease` (0x9e).
+  uint32 jump = 6;
+  // `SStance`: 1 stand, 2 crouch, 3 prone (inferred). Unset when the frame did not change it.
+  optional uint32 stance = 7;
+  // `SClientAuthoritativePosition` (0x32), sent while the player has `m_clientAuthoritative` set: where the client put
+  // its actor at the end of the frame. Unset otherwise.
+  ClientPosition client_position = 8;
+}
+
+// The end of a `SClientAuthoritativePosition`: the origin plus the delta, in the frame of the zone host it names.
+message ClientPosition {
+  fixed64 zone_host_id = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  // The base rotation at the end of the frame, `x y z w`.
+  Rotation base_rotation = 5;
+}
+
+message PlayerInputRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The player entity the frames are for.
+  fixed64 entity_id = 3;
+  // In the order the client sent them. May be empty, to read the state.
+  repeated InputFrame frames = 4;
+}
+
+// The server's movement state of a player, in the frame of its zone host: what `SCActorStateDataSynced::SMovement`
+// holds.
+message PlayerMovement {
+  fixed64 entity_id = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  Rotation base_rotation = 5;
+  Rotation aim_rotation = 6;
+  fixed64 zone_host_id = 7;
+  fixed64 parent_id = 8;
+  // Changes whenever anything above does.
+  uint64 revision = 9;
+  // The client's time at the end of the last input frame this state includes, in 100 ns ticks. 0 before the first.
+  fixed64 frame_time = 10;
+}
+
+message PlayerInputResponse {
+  PlayerMovement movement = 1;
+}
+
+// Answered by each sc-dgs pod, through its own Service of the shard's namespace. Only the replicant reaches it, by the
+// namespace's NetworkPolicy. It has no GRPCRoute.
+service DgsControl {
+  rpc Status(DgsStatusRequest) returns (DgsStatusResponse);
+  // Any DGS answers this, as every DGS has the table of home locations.
+  rpc LocateHome(LocateHomeRequest) returns (LocateHomeResponse);
+  // What this DGS owns that every client gets.
+  rpc ShardEntities(ShardEntitiesRequest) returns (ShardEntitiesResponse);
+  // Asked of the DGS that governs the player's home, which builds the player's entities and holds them. Calling it again
+  // gives the same entities, and is how a replicant restores what a restarted DGS forgot. INVALID_ARGUMENT means this
+  // account has no character, so there is no point in asking again. FAILED_PRECONDITION means another DGS governs it.
+  rpc JoinPlayer(JoinPlayerRequest) returns (JoinPlayerResponse);
+  // Frees a player's entities when its connection ends.
+  rpc LeavePlayer(LeavePlayerRequest) returns (LeavePlayerResponse);
+  // The client's input for a player this DGS holds, and the movement state it has led to. NOT_FOUND for a player it does
+  // not hold.
+  rpc PlayerInput(PlayerInputRequest) returns (PlayerInputResponse);
+}

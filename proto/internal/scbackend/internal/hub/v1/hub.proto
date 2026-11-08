@@ -1,0 +1,49 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.hub.v1;
+
+message GetPlayerShardRequest {
+  uint64 geid = 1;
+}
+
+// The shard the Hub last sent a player to, while its Hub connection lasts.
+message PlayerShard {
+  string shard_id = 1;
+  string public_address = 2;
+  uint32 public_port = 3;
+  uint64 location_id = 4;
+  // Players on this shard at the same location, the player included.
+  uint32 players_at_location = 5;
+  // Players on this shard.
+  uint32 players_on_shard = 6;
+}
+
+message GetPlayerShardResponse {
+  // Unset for a player on no shard.
+  PlayerShard shard = 1;
+}
+
+// A session the Hub handed a client at login (`AccountRecord.session`): 32 hex digits of 16 random bytes, as the real
+// backend's are. The client gives it back in its shard connect request, and the shard asks the Hub who it is, which is
+// the only place a player's identity on a shard comes from.
+message ResolveSessionRequest {
+  string session = 1;
+}
+
+message ResolveSessionResponse {
+  // False for a session the Hub did not issue, or that ended (its Hub connection closed, or it is a day old).
+  bool found = 1;
+  uint32 account_id = 2;
+  uint64 geid = 3;
+  string nickname = 4;
+  // The player's chosen home location (`player_home_location`) when the session began; 0 for none.
+  uint32 home_location = 5;
+}
+
+// Answered by sc-hub, which records the shard of each joining player and the sessions it issued. The Hub's own port
+// speaks its TLS protocol, so this is on a port of its own, behind the ClusterIP Service `sc-hub-internal`.
+service HubInternal {
+  rpc GetPlayerShard(GetPlayerShardRequest) returns (GetPlayerShardResponse);
+  rpc ResolveSession(ResolveSessionRequest) returns (ResolveSessionResponse);
+}

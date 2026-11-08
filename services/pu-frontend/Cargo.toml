@@ -1,6 +1,6 @@
 [package]
 name = "sc-pu-frontend"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -13,6 +13,7 @@ lz4_flex = { version = "0.11", default-features = false, features = ["safe-decod
 num-bigint = "0.4"
 num-traits = "0.2"
 rand_core = { version = "0.6", features = ["getrandom"] }
+sc-api.workspace = true
 sc-proto.workspace = true
 sc-runtime.workspace = true
 tokio.workspace = true

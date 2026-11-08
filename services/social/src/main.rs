@@ -11,15 +11,8 @@ use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs, Row};
+use sc_api::internal::{ social_internal_server::{SocialInternal, SocialInternalServer}, CreateGroupRequest as InternalCreateGroupRequest, CreateGroupResponse as InternalCreateGroupResponse, DestroyGroupRequest as InternalDestroyGroupRequest, DestroyGroupResponse as InternalDestroyGroupResponse, GetGroupsRequest, GetGroupsResponse, GetTeamsRequest, InternalGroup, JoinGroupRequest, JoinGroupResponse, ListGroupIdsRequest, ListGroupIdsResponse, MoveToTeamRequest, MoveToTeamResponse, SyncTeamsRequest, SyncTeamsResponse, };
 use sc_proto::{
-    internal::{
-        social_internal_server::{SocialInternal, SocialInternalServer},
-        CreateGroupRequest as InternalCreateGroupRequest, CreateGroupResponse as InternalCreateGroupResponse,
-        DestroyGroupRequest as InternalDestroyGroupRequest, DestroyGroupResponse as InternalDestroyGroupResponse,
-        GetGroupsRequest, GetGroupsResponse, GetTeamsRequest, InternalGroup, JoinGroupRequest, JoinGroupResponse,
-        ListGroupIdsRequest, ListGroupIdsResponse, MoveToTeamRequest, MoveToTeamResponse, SyncTeamsRequest,
-        SyncTeamsResponse,
-    },
     services::social::v1::{
     social_service_server::{SocialService, SocialServiceServer},
     AcceptInvitationRequest, AcceptInvitationResponse, AddGroupModeratorRequest, AddGroupModeratorResponse,

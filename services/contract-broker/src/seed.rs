@@ -4,9 +4,9 @@
 
 use prost::Message;
 use sc_db::{internal, Postgres};
+use sc_api::internal::{contract_broker_internal_server::ContractBrokerInternal, SeedMissionContractsRequest, SeedResponse};
 use sc_proto::{
     common::mission::v1::MissionContract,
-    internal::{contract_broker_internal_server::ContractBrokerInternal, SeedMissionContractsRequest, SeedResponse},
 };
 use tonic::{Request, Response, Status};
 use tracing::info;
@@ -56,7 +56,7 @@ impl ContractBrokerInternal for Broker {
 mod tests {
     use super::*;
 
-    use sc_proto::internal::MissionContractSeed;
+    use sc_api::internal::MissionContractSeed;
 
     /// Against a real database: `SC_TEST_POSTGRES=<url> cargo test -p sc-contract-broker -- --ignored`.
     #[tokio::test]

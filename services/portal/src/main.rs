@@ -23,7 +23,7 @@ use axum::{
     Form, Json, Router,
 };
 use clap::Parser;
-use sc_proto::internal::{
+use sc_api::internal::{
     identity_internal_client::IdentityInternalClient, AccountSummary, ChangePasswordRequest, GetAccountRequest,
     IssueGameTokenRequest, ListWebSessionsRequest, PasswordLoginRequest, RegisterAccountRequest,
     RevokeWebSessionRequest, VerifyWebSessionRequest, WebClient, WebSession,

@@ -3,7 +3,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use sc_proto::internal::{
+use sc_api::internal::{
     social_internal_server::{SocialInternal, SocialInternalServer},
     CreateGroupRequest, DestroyGroupRequest, GetGroupsRequest, GetTeamsRequest, JoinGroupRequest, ListGroupIdsRequest,
     MoveToTeamRequest, SyncTeamsRequest,

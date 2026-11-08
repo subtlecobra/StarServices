@@ -11,22 +11,19 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use prost::Message;
 use sc_db::{internal, DatabaseArgs};
+use sc_api::internal::{ group_data_internal_server::{GroupDataInternal, GroupDataInternalServer}, DeleteGroupDataRequest, DeleteGroupDataResponse, };
 use sc_proto::{
     common::network::v1::Region,
-    internal::{
-        group_data_internal_server::{GroupDataInternal, GroupDataInternalServer},
-        DeleteGroupDataRequest, DeleteGroupDataResponse,
-    },
     services::{
-        matchmaking::v1::MatchRequest,
-        social::v1::GroupType,
-        squad::v1::{
-            squad_service_server::{SquadService, SquadServiceServer},
-            AutoRequeueRequest, AutoRequeueResponse, CreateFromPartyRequest, CreateFromPartyResponse, CreateRequest,
-            CreateResponse, FindMatchRequest, FindMatchResponse, GetRequest, GetResponse, RecoverMatchRequest,
-            RecoverMatchResponse, Squad, SquadSettings, SquadSettingsChanged, UpdateSettingsRequest,
-            UpdateSettingsResponse,
-        },
+    matchmaking::v1::MatchRequest,
+    social::v1::GroupType,
+    squad::v1::{
+    squad_service_server::{SquadService, SquadServiceServer},
+    AutoRequeueRequest, AutoRequeueResponse, CreateFromPartyRequest, CreateFromPartyResponse, CreateRequest,
+    CreateResponse, FindMatchRequest, FindMatchResponse, GetRequest, GetResponse, RecoverMatchRequest,
+    RecoverMatchResponse, Squad, SquadSettings, SquadSettingsChanged, UpdateSettingsRequest,
+    UpdateSettingsResponse,
+    },
     },
 };
 use sc_runtime::{state::Account, CommonArgs, MAX_MESSAGE_BYTES};

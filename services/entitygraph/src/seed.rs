@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use futures_util::{Stream, StreamExt};
 use sc_db::{internal, Arango};
-use sc_proto::internal::{ContainerSeed, EntityClassSeed, LocalizedText, SeedContainersRequest, SeedEntityClassesRequest};
+use sc_api::internal::{ContainerSeed, EntityClassSeed, LocalizedText, SeedContainersRequest, SeedEntityClassesRequest};
 use serde_json::{json, Value};
 use tonic::Status;
 use tracing::info;
@@ -169,7 +169,7 @@ mod tests {
             guid_hash_crc: 7,
             class_name: "Crate".into(),
             occupancy_micro_scu: None,
-            inventory: Some(sc_proto::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true }),
+            inventory: Some(sc_api::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true }),
             ..Default::default()
         };
         let doc = class_doc(&class);

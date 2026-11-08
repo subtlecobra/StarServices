@@ -13,11 +13,11 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Postgres, Row};
 use sc_economy::ledger::{AUEC_LEDGER, OPENING_AUEC, OPENING_REC, REC_LEDGER};
+use sc_api::internal::ledger_internal_server::LedgerInternalServer;
 use sc_proto::{
-    internal::ledger_internal_server::LedgerInternalServer,
     services::ledger::v1::{
-        ledger_service_server::{LedgerService, LedgerServiceServer},
-        Currency, Funds, GetFundsRequest, GetFundsResponse, Ledger,
+    ledger_service_server::{LedgerService, LedgerServiceServer},
+    Currency, Funds, GetFundsRequest, GetFundsResponse, Ledger,
     },
 };
 use sc_runtime::{caller, state::{Account, State}, CommonArgs, MAX_MESSAGE_BYTES};

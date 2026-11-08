@@ -2,7 +2,7 @@
 //! reads from the archive and hands over. Only adds, as an operator may have started one since.
 
 use sc_db::{internal, Postgres};
-use sc_proto::internal::{mission_scenario_internal_server::MissionScenarioInternal, SeedResponse, SeedScenariosRequest};
+use sc_api::internal::{mission_scenario_internal_server::MissionScenarioInternal, SeedResponse, SeedScenariosRequest};
 use tonic::{Request, Response, Status};
 use tracing::info;
 
@@ -43,7 +43,7 @@ impl MissionScenarioInternal for Scenarios {
 mod tests {
     use super::*;
 
-    use sc_proto::internal::ScenarioSeed;
+    use sc_api::internal::ScenarioSeed;
 
     /// Against a real database: `SC_TEST_POSTGRES=<url> cargo test -p sc-mission-scenario -- --ignored`.
     #[tokio::test]

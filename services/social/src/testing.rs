@@ -17,18 +17,12 @@ use std::{
 };
 
 use sc_db::{DatabaseArgs, Postgres};
+use sc_api::internal::{ contacts_internal_server::{ContactsInternal, ContactsInternalServer}, group_data_internal_server::{GroupDataInternal, GroupDataInternalServer}, presence_internal_server::{PresenceInternal, PresenceInternalServer}, DeleteGroupDataRequest, DeleteGroupDataResponse, GetPresencesRequest, GetPresencesResponse, IsBlockedRequest, IsBlockedResponse, ListFriendsRequest, ListFriendsResponse, PlayerPresence, };
 use sc_proto::{
-    internal::{
-        contacts_internal_server::{ContactsInternal, ContactsInternalServer},
-        group_data_internal_server::{GroupDataInternal, GroupDataInternalServer},
-        presence_internal_server::{PresenceInternal, PresenceInternalServer},
-        DeleteGroupDataRequest, DeleteGroupDataResponse, GetPresencesRequest, GetPresencesResponse, IsBlockedRequest,
-        IsBlockedResponse, ListFriendsRequest, ListFriendsResponse, PlayerPresence,
-    },
     services::matchmaking::v1::{
-        frontend_service_server::{FrontendService, FrontendServiceServer},
-        AcceptRequest, AcceptResponse, CancelRequest, CancelResponse, GetLastAssignmentRequest,
-        GetLastAssignmentResponse, MatchRequest, MatchResponse,
+    frontend_service_server::{FrontendService, FrontendServiceServer},
+    AcceptRequest, AcceptResponse, CancelRequest, CancelResponse, GetLastAssignmentRequest,
+    GetLastAssignmentResponse, MatchRequest, MatchResponse,
     },
 };
 use sc_runtime::{state::Account, CommonArgs};

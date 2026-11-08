@@ -20,4 +20,5 @@ pub mod player;
 pub mod solar_system;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod testdata;
+pub mod transit;
 pub mod universe;

@@ -6,14 +6,8 @@
 use std::{collections::HashMap, time::Duration};
 
 use clap::Args;
+use sc_api::internal::{ contacts_internal_client::ContactsInternalClient, group_data_internal_client::GroupDataInternalClient, presence_internal_client::PresenceInternalClient, social_internal_client::SocialInternalClient, CreateGroupRequest, DeleteGroupDataRequest, DestroyGroupRequest, GetGroupsRequest, GetPresencesRequest, GetTeamsRequest, IsBlockedRequest, JoinGroupRequest, ListFriendsRequest, ListGroupIdsRequest, MoveToTeamRequest, PlayerPresence, SyncTeamsRequest, };
 use sc_proto::{
-    internal::{
-        contacts_internal_client::ContactsInternalClient, group_data_internal_client::GroupDataInternalClient,
-        presence_internal_client::PresenceInternalClient, social_internal_client::SocialInternalClient,
-        CreateGroupRequest, DeleteGroupDataRequest, DestroyGroupRequest, GetGroupsRequest, GetPresencesRequest,
-        GetTeamsRequest, IsBlockedRequest, JoinGroupRequest, ListFriendsRequest, ListGroupIdsRequest,
-        MoveToTeamRequest, PlayerPresence, SyncTeamsRequest,
-    },
     services::social::v1::GroupType,
 };
 use tonic::{

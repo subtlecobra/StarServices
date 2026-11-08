@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use sc_proto::internal::DgsFrames;
+use sc_api::internal::DgsFrames;
 use tokio::time::{interval, Instant, MissedTickBehavior};
 
 /// 30 frames a second.

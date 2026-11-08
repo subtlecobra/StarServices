@@ -3,18 +3,13 @@
 use std::time::Duration;
 
 use sc_economy::{command::Push, ledger::REC_LEDGER};
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, ledger_internal_client::LedgerInternalClient, rental_internal_client::RentalInternalClient, CreateRentalRequest, ExtendRentalRequest, ExtendRentalResponse, GetRentalRequest, GetRentalResponse, GrantPurchaseRequest, LedgerDebitRequest, LedgerDebitResponse, LedgerRefundRequest, LedgerRefundResponse, SetRentalExpiryRequest, };
 use sc_proto::{
-    internal::{
-        entitlement_internal_client::EntitlementInternalClient, ledger_internal_client::LedgerInternalClient,
-        rental_internal_client::RentalInternalClient, CreateRentalRequest, ExtendRentalRequest, ExtendRentalResponse,
-        GetRentalRequest, GetRentalResponse, GrantPurchaseRequest, LedgerDebitRequest, LedgerDebitResponse,
-        LedgerRefundRequest, LedgerRefundResponse, SetRentalExpiryRequest,
-    },
     services::{
-        ledger::v1::{varied_funds::Variation, Currency, Funds, VariedFunds},
-        solar_system_shop::v1::{
-            solar_system_shop_service_client::SolarSystemShopServiceClient, GetGlobalInventoryRequest, RentalOffering,
-        },
+    ledger::v1::{varied_funds::Variation, Currency, Funds, VariedFunds},
+    solar_system_shop::v1::{
+    solar_system_shop_service_client::SolarSystemShopServiceClient, GetGlobalInventoryRequest, RentalOffering,
+    },
     },
 };
 use sc_runtime::MAX_MESSAGE_BYTES;

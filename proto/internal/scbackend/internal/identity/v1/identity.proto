@@ -1,0 +1,190 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.identity.v1;
+
+// ---- Game data seed of sc-entitygraph (end) ----
+
+message GetAccountsRequest {
+  repeated uint64 geids = 1;
+}
+
+message PlayerAccount {
+  uint64 geid = 1;
+  uint32 account_id = 2;
+}
+
+message GetAccountsResponse {
+  // One for each known geid, in no set order. Unknown geids are left out.
+  repeated PlayerAccount accounts = 1;
+}
+
+// ---- Portal and admin: web accounts in sc-identity (begin). Asked by sc-portal, sc-admin-web and sc-admin. ----
+// Errors are gRPC codes: INVALID_ARGUMENT carries a message fit to show the user, UNAUTHENTICATED is the one answer to
+// every failed login, ALREADY_EXISTS the one answer to a taken handle or email, RESOURCE_EXHAUSTED a rate limit.
+
+// Where a web request came from, for the audit and the rate limits.
+message WebClient {
+  string ip = 1;
+  string user_agent = 2;
+}
+
+message RegisterAccountRequest {
+  string handle = 1;
+  string email = 2;
+  string password = 3;
+  WebClient client = 4;
+}
+
+message RegisterAccountResponse {
+  uint32 account_id = 1;
+  string handle = 2;
+}
+
+message PasswordLoginRequest {
+  // A handle or an email.
+  string login = 1;
+  string password = 2;
+  WebClient client = 3;
+}
+
+message PasswordLoginResponse {
+  // The `sc_session` cookie's value. Only its hash is stored.
+  string session_token = 1;
+  uint32 account_id = 2;
+  string handle = 3;
+  repeated string roles = 4;
+  int64 expires_at = 5;  // Unix ms
+}
+
+message VerifyWebSessionRequest {
+  string token = 1;
+}
+
+message VerifyWebSessionResponse {
+  bool valid = 1;
+  uint32 account_id = 2;
+  string handle = 3;
+  repeated string roles = 4;
+}
+
+message RevokeWebSessionRequest {
+  // Logout: the session with this token.
+  string token = 1;
+  // Or the session `session_id` of `account_id`, from ListWebSessions.
+  uint32 account_id = 2;
+  string session_id = 3;
+}
+
+message RevokeWebSessionResponse {
+  bool revoked = 1;
+}
+
+message ListWebSessionsRequest {
+  uint32 account_id = 1;
+  // Marks the caller's own session in the answer.
+  string current_token = 2;
+}
+
+message WebSession {
+  string session_id = 1;
+  int64 created_at = 2;    // Unix ms
+  int64 last_seen_at = 3;  // Unix ms
+  int64 expires_at = 4;    // Unix ms
+  string ip = 5;
+  string user_agent = 6;
+  bool current = 7;
+}
+
+message ListWebSessionsResponse {
+  // Live sessions, newest first.
+  repeated WebSession sessions = 1;
+}
+
+message ChangePasswordRequest {
+  uint32 account_id = 1;
+  string current_password = 2;
+  string new_password = 3;
+  // This session stays; every other session of the account is revoked.
+  string keep_session_token = 4;
+  WebClient client = 5;
+}
+
+message ChangePasswordResponse {}
+
+message IssueGameTokenRequest {
+  uint32 account_id = 1;
+}
+
+// What LoginData.json carries for the game.
+message IssueGameTokenResponse {
+  string token = 1;
+  string handle = 2;
+  int64 expires_at = 3;  // Unix ms
+}
+
+message GetAccountRequest {
+  uint32 account_id = 1;
+}
+
+message AccountSummary {
+  uint32 account_id = 1;
+  string handle = 2;
+  string email = 3;
+  repeated string roles = 4;
+  int64 created_at = 5;  // Unix ms
+  bool disabled = 6;
+  uint64 geid = 7;  // the account's player
+}
+
+message GetAccountResponse {
+  AccountSummary account = 1;
+}
+
+message SearchAccountsRequest {
+  // Part of a handle or an email, case ignored, or an account id. Empty lists every account.
+  string query = 1;
+  uint32 limit = 2;  // 50 when 0, at most 200
+  string page_token = 3;
+}
+
+message SearchAccountsResponse {
+  // By account id.
+  repeated AccountSummary accounts = 1;
+  // Empty on the last page.
+  string next_page_token = 2;
+}
+
+message SetAccountStateRequest {
+  uint32 account_id = 1;
+  // Disabling revokes the account's web sessions.
+  optional bool disabled = 2;
+  // Replaces the roles when `set_roles`. Known roles: `admin`.
+  repeated string roles = 3;
+  bool set_roles = 4;
+  // An admin's password reset. Revokes the account's web sessions.
+  optional string new_password = 5;
+}
+
+message SetAccountStateResponse {
+  AccountSummary account = 1;
+}
+
+// ---- Portal and admin (end) ----
+
+// Answered by sc-identity, which owns accounts. It shares that service's port, so no GRPCRoute may list it.
+service IdentityInternal {
+  rpc GetAccounts(GetAccountsRequest) returns (GetAccountsResponse);
+  // ---- Portal and admin (begin) ----
+  rpc RegisterAccount(RegisterAccountRequest) returns (RegisterAccountResponse);
+  rpc PasswordLogin(PasswordLoginRequest) returns (PasswordLoginResponse);
+  rpc VerifyWebSession(VerifyWebSessionRequest) returns (VerifyWebSessionResponse);
+  rpc RevokeWebSession(RevokeWebSessionRequest) returns (RevokeWebSessionResponse);
+  rpc ListWebSessions(ListWebSessionsRequest) returns (ListWebSessionsResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+  rpc IssueGameToken(IssueGameTokenRequest) returns (IssueGameTokenResponse);
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+  rpc SearchAccounts(SearchAccountsRequest) returns (SearchAccountsResponse);
+  rpc SetAccountState(SetAccountStateRequest) returns (SetAccountStateResponse);
+  // ---- Portal and admin (end) ----
+}

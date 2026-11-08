@@ -148,7 +148,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 }
 
 /// The rental price list, checked, or none.
-fn read_prices(path: Option<&Path>) -> Result<Vec<sc_proto::internal::RentalPrice>, String> {
+fn read_prices(path: Option<&Path>) -> Result<Vec<sc_api::internal::RentalPrice>, String> {
     match path {
         Some(path) => seed::rental_prices(&std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?),
         None => Ok(Vec::new()),

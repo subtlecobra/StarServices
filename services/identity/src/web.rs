@@ -17,7 +17,7 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
 };
 use sc_db::{internal, Postgres, Row};
-use sc_proto::internal::{
+use sc_api::internal::{
     AccountSummary, ChangePasswordRequest, ChangePasswordResponse, GetAccountRequest, GetAccountResponse,
     IssueGameTokenRequest, IssueGameTokenResponse, ListWebSessionsRequest, ListWebSessionsResponse,
     PasswordLoginRequest, PasswordLoginResponse, RegisterAccountRequest, RegisterAccountResponse,

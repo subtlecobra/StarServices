@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use sc_proto::internal::{AccountSummary, WebSession};
+use sc_api::internal::{AccountSummary, WebSession};
 
 use crate::User;
 

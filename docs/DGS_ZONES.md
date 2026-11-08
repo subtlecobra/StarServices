@@ -95,8 +95,10 @@ client marks authority on entities has not been read.
 - `LocateHome`, asked of any DGS, as the table is theirs: what governs a home, which `Directory` turns into a DGS.
 - `ShardEntities`, asked of each system's DGS for every connection: the batches that go to every client.
 - `JoinPlayer`, asked of the governing DGS: the player's planet, hangar and player, which it records under the account.
-- `LeavePlayer`, when the connection ends: by timeout, or a new handshake at its address. It frees the hangar and player. A
-  session that was taken over by a reconnect holds nothing, so its late leave changes nothing.
+- `LeavePlayer`, when the connection ends: at once when the client says it is going (its disconnect notice, transport
+  type 5, sent on quitting, Alt+F4 or exit to the menu, which the replicant answers with a type 6), after 60 seconds
+  without a packet (a crash or a lost network sends nothing), or on a new handshake at its address. It frees the hangar
+  and player. A session that was taken over by a reconnect holds nothing, so its late leave changes nothing.
 - `Status`, polled every 5 seconds for the DGSs that hold a player here: frame times, population and `boot_id`.
 - `PlayerInput`, for a player in game: the client's input frames, as the replicant decodes them, and the movement state
   they lead to, which the replicant sends to the client. See Player movement in the protocol notes, kept with the reverse-engineering work outside this repository.

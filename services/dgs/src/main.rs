@@ -1,4 +1,4 @@
-//! The DGS binary: loads the tables of its game build, then its area from sc-entitygraph, then the collision of its
+//! The DGS binary: loads the tables of its game build (the home locations and the hangar elevators), then its area from sc-entitygraph, then the collision of its
 //! system's hangars, and only then opens its port and answers the replicant. It has no database of its own. See the library for what a DGS is. sc-shard-operator runs
 //! one pod per DGS of a shard's ShardTemplate.
 
@@ -10,9 +10,9 @@ use sc_dgs::{
     control::{Control, Settings},
     frames,
     gamedata::{self, Backoff, GameData},
-    location,
+    location, transit,
 };
-use sc_proto::internal::{
+use sc_api::internal::{
     character_customizer_internal_client::CharacterCustomizerInternalClient, dgs_control_server::DgsControlServer,
     entity_graph_internal_client::EntityGraphInternalClient, LoadAreaRequest,
 };
@@ -112,6 +112,9 @@ async fn serve(args: Args) -> Result<(), String> {
     let tables = gamedata::retrying("tables", Backoff::default(), || gamedata.tables()).await;
     info!(source, locations = tables.locations(), "game data tables loaded");
     location::install(tables);
+    let elevators = gamedata::retrying("transit tables", Backoff::default(), || gamedata.transit_tables()).await;
+    info!(source, managers = elevators.managers().len(), hangars = elevators.hangars().len(), "hangar elevator tables loaded");
+    transit::install(elevators);
     let endpoint = Endpoint::from_shared(args.entitygraph.clone()).map_err(|e| format!("entitygraph address: {e}"))?;
     let graph = EntityGraphInternalClient::new(endpoint.connect_timeout(CONNECT_TIMEOUT).connect_lazy());
     let started = std::time::Instant::now();

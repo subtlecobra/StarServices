@@ -9,16 +9,13 @@ use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Row};
+use sc_api::internal::{ group_data_internal_server::{GroupDataInternal, GroupDataInternalServer}, DeleteGroupDataRequest, DeleteGroupDataResponse, };
 use sc_proto::{
-    internal::{
-        group_data_internal_server::{GroupDataInternal, GroupDataInternalServer},
-        DeleteGroupDataRequest, DeleteGroupDataResponse,
-    },
     services::chat::v1::{
-        chat_service_server::{ChatService, ChatServiceServer},
-        EditMessageRequest, EditMessageResponse, EraseMessageRequest, EraseMessageResponse, ListMessagesRequest,
-        ListMessagesResponse, Message, MessageEdited, MessageErased, MessageReceived, SendMessageRequest,
-        SendMessageResponse,
+    chat_service_server::{ChatService, ChatServiceServer},
+    EditMessageRequest, EditMessageResponse, EraseMessageRequest, EraseMessageResponse, ListMessagesRequest,
+    ListMessagesResponse, Message, MessageEdited, MessageErased, MessageReceived, SendMessageRequest,
+    SendMessageResponse,
     },
 };
 use sc_runtime::{CommonArgs, MAX_MESSAGE_BYTES};

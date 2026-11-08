@@ -8,15 +8,11 @@ use bus::PushBus;
 use clap::Parser;
 use futures_util::{Stream, StreamExt};
 use prost::Message;
+use sc_api::internal::{ push_publisher_client::PushPublisherClient, push_publisher_server::{PushPublisher, PushPublisherServer}, PublishRequest, PublishResponse, };
 use sc_proto::{
-    internal::{
-        push_publisher_client::PushPublisherClient,
-        push_publisher_server::{PushPublisher, PushPublisherServer},
-        PublishRequest, PublishResponse,
-    },
     push::{
-        push_service_server::{PushService, PushServiceServer},
-        ListenRequest, ListenResponse,
+    push_service_server::{PushService, PushServiceServer},
+    ListenRequest, ListenResponse,
     },
 };
 use sc_runtime::{caller, state::State, CommonArgs, MAX_MESSAGE_BYTES};
