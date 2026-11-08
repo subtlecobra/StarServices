@@ -47,6 +47,14 @@ Indexes, created at start: `inventories` on `id`, (`ownerId`, `context`), `holde
 `entities` on `ownerId`, `parentUrn` and a sparse one on `inventoryId`; `entity_classes` on `guidHashCrc`. The edge
 index covers `_from` and `_to`.
 
+## Item type restrictions
+
+A container refuses some item types: its `InventoryContainer` record lists `excludedItemSubTypes` (a type, or some of its
+subtypes) and `overrideStorableItemTypes` (when present, the only types it takes). The seed keeps both on the class of
+the item that holds the inventory (`entity_classes.inventory.excluded` and `.only`), and the filters of the
+`ItemBankContainer` record on the pseudo class `itembankcontainer` (`itemBank`), which `Location` inventories use. At
+the end of every plan, with the capacity count, a dirty inventory holding an item its rules refuse stops the transaction.
+
 ## Capacity
 
 Volumes are in micro-SCU, the game's own unit for container capacity (`InventoryContainer.capacityMicroSCU`) and

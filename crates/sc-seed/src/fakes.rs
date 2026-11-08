@@ -181,6 +181,15 @@ impl EntityGraphInternal for Owned {
     async fn get_owners(&self, _: Request<GetOwnersRequest>) -> Result<Response<GetOwnersResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }
+    async fn ensure_loadout(&self, _: Request<sc_api::internal::EnsureLoadoutRequest>) -> Result<Response<sc_api::internal::EnsureLoadoutResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
+    async fn grant_items(&self, _: Request<sc_api::internal::GrantItemsRequest>) -> Result<Response<sc_api::internal::GrantItemsResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
+    async fn revoke_items(&self, _: Request<sc_api::internal::RevokeItemsRequest>) -> Result<Response<sc_api::internal::RevokeItemsResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
     async fn admin_inventory_tree(&self, _: Request<AdminInventoryTreeRequest>) -> Result<Response<AdminInventoryTreeResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }

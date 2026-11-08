@@ -1,6 +1,6 @@
 [package]
 name = "sc-admin"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Prepares backend state: CA, certificates, accounts, destinations, client files and game content"

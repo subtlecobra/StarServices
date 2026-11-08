@@ -240,13 +240,37 @@ impl Plan {
                  LET capacity = NOT_NULL(i.configuration.physical.capacity, 0)
                  FILTER ASSERT(i.configuration == null OR capacity <= 0 OR used <= capacity,
                                CONCAT('precondition: inventory is full: ', i.id))
+                 LET rules = i.context == 'Location'
+                     ? FIRST(FOR c IN entity_classes FILTER c._key == @item_bank RETURN c.itemBank)
+                     : FIRST(
+                         FOR h IN entities FILTER h._key == TO_STRING(i.holderId)
+                             FOR c IN entity_classes FILTER c.guidHashCrc == h.classGuidCrc RETURN c.inventory
+                     )
+                 LET excluded = NOT_NULL(rules.excluded, [])
+                 LET only = NOT_NULL(rules.only, [])
+                 FILTER ASSERT(
+                     (LENGTH(excluded) == 0 AND LENGTH(only) == 0) OR LENGTH(
+                         FOR x IN entity_edges FILTER x._to == i._id AND x.type == @stowed
+                             LET e = DOCUMENT('entities', x.startId)
+                             FILTER e != null
+                             LET kind = FIRST(FOR c IN entity_classes FILTER c.guidHashCrc == e.classGuidCrc RETURN c)
+                             FILTER kind != null
+                             LET refused = LENGTH(FOR f IN excluded FILTER f.itemType == kind.itemType
+                                               AND (LENGTH(f.itemSubTypes) == 0 OR kind.itemSubType IN f.itemSubTypes) RETURN 1) > 0
+                             LET allowed = LENGTH(only) == 0 OR LENGTH(FOR f IN only FILTER f.itemType == kind.itemType
+                                               AND (LENGTH(f.itemSubTypes) == 0 OR kind.itemSubType IN f.itemSubTypes) RETURN 1) > 0
+                             FILTER refused OR NOT allowed
+                             LIMIT 1
+                             RETURN 1
+                     ) == 0,
+                     CONCAT('precondition: an item of that type is not allowed in inventory: ', i.id))
                  UPDATE i WITH {
                      dirty: null,
                      configuration: i.configuration == null ? null : { physical: { capacity: capacity, occupancy: used } },
                      updatedAt: @now
                  } IN inventories OPTIONS { keepNull: false, mergeObjects: false }"
                 .to_string(),
-            json!({ "stowed": EntityEdgeType::StowedIn as i32, "now": self.now }),
+            json!({ "stowed": EntityEdgeType::StowedIn as i32, "now": self.now, "item_bank": crate::seed::ITEM_BANK_CLASS }),
         )
     }
 

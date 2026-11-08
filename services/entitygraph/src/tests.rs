@@ -457,6 +457,60 @@ mod live {
         fixture.graph.db.aql(query, json!({ "id": id })).await.unwrap().pop()
     }
 
+    /// The type filters of an inventory: the item banks' (a `Location` inventory) and a container class's own.
+    #[tokio::test]
+    #[ignore]
+    async fn inventories_refuse_the_item_types_they_exclude() {
+        use sc_api::internal::AdminAddItemRequest;
+        let fixture = fixture().await;
+        let graph = &fixture.graph;
+        let base = fresh();
+        // A player of its own, so nothing is left for the tests that count the fixture's.
+        let me = 301_000_000_000 + base % 1_000_000;
+        let crc = |n: u64| ((base + n) % 0xffff_fff0) as u32 + 1;
+        let class = |name: &str, crc: u32, kind: &str, sub: &str| json!({ "_key": format!("{name}{base}"), "guid": format!("{name}{base}"),
+            "guidHashCrc": crc, "className": name, "itemType": kind, "itemSubType": sub, "occupancyMicroScu": 1000 });
+        let mut classes = vec![
+            class("cooler", crc(41), "Cooler", "UNDEFINED"),
+            class("pistol", crc(42), "WeaponPersonal", "Medium"),
+            class("suit", crc(43), "Char_Armor_Torso", "Heavy"),
+        ];
+        // The banks refuse coolers and only the heavy suit of armour; a box takes only pistols.
+        classes.push(json!({ "_key": "itembankcontainer", "guid": "itembankcontainer", "guidHashCrc": 0, "className": "ItemBankContainer",
+            "itemBank": { "capacityMicroScu": 0, "closed": false, "excluded": [{ "itemType": "Cooler", "itemSubTypes": [] }],
+                           "only": [] } }));
+        classes.push(json!({ "_key": format!("box{base}"), "guid": format!("box{base}"), "guidHashCrc": crc(44), "className": "Box",
+            "itemType": "Container", "itemSubType": "Box", "occupancyMicroScu": 1000,
+            "inventory": { "capacityMicroScu": 1_000_000, "closed": true, "excluded": [],
+                           "only": [{ "itemType": "WeaponPersonal", "itemSubTypes": [] }] } }));
+        graph.db.aql("FOR c IN @classes UPSERT { _key: c._key } INSERT c REPLACE c IN entity_classes", json!({ "classes": classes })).await.unwrap();
+        let add = |n: u32, inventory: &str, name: &str| AdminAddItemRequest {
+            command_id: format!("types:{base}:{n}"),
+            owner_id: me,
+            inventory_id: inventory.into(),
+            entity_class_guid: format!("{name}{base}"),
+            stack_size: 1,
+            actor: "admin:1:root".into(),
+            reason: "test".into(),
+        };
+        let bank = format!("{me}:Location:{base}");
+        let admit = |n: u32, inventory: String, name: &'static str| {
+            let graph = graph.clone();
+            let request = add(n, &inventory, name);
+            async move { EntityGraphInternal::admin_add_item(&*graph, Request::new(request)).await }
+        };
+        admit(1, bank.clone(), "pistol").await.unwrap();
+        admit(2, bank.clone(), "suit").await.unwrap();
+        let refused = admit(3, bank.clone(), "cooler").await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
+        // The box takes only pistols.
+        let boxed = admit(4, bank.clone(), "box").await.unwrap().into_inner().geid;
+        let inside = doc::container_inventory_id(boxed);
+        admit(5, inside.clone(), "pistol").await.unwrap();
+        let refused = admit(6, inside, "suit").await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
+    }
+
     /// `GrantItems`: several items stowed at once, once per command id, nothing for an unknown class or a full inventory.
     #[tokio::test]
     #[ignore]

@@ -244,9 +244,17 @@ service EntityGraphInternal {
 }
 
 // ---- Game data seed of sc-entitygraph (begin). Read from the game archive, see docs/DATA.md. ----
+// An item type, or some of its subtypes (all of them when none are listed).
+message ItemTypeFilter {
+  string item_type = 1;
+  repeated string item_sub_types = 2;
+}
+
 message EntityClassInventory {
   int64 capacity_micro_scu = 1;
   bool closed = 2;
+  repeated ItemTypeFilter excluded = 3;  // items of these types are refused
+  repeated ItemTypeFilter only = 4;      // when present, only items of these types are taken
 }
 
 // A localization token and its English text, empty when the game has none.

@@ -18,14 +18,30 @@ const CLASSES: &str = "entity_classes";
 const NODES: &str = "containers";
 const EDGES: &str = "container_edges";
 
+/// The key of the pseudo class that carries the item banks' type filters (sc-admin's `ITEM_BANK_CLASS`). It is no entity's
+/// class: its filters are kept as `itemBank`, never as `inventory`, which would give entities of class CRC 0 a container.
+pub const ITEM_BANK_CLASS: &str = "itembankcontainer";
+
 pub fn class_doc(class: &EntityClassSeed) -> Value {
     let inventory = class
         .inventory
         .as_ref()
-        .map(|inventory| json!({ "capacityMicroScu": inventory.capacity_micro_scu, "closed": inventory.closed }));
+        .map(|inventory| {
+            let filters = |list: &[sc_api::internal::ItemTypeFilter]| -> Vec<Value> {
+                list.iter().map(|filter| json!({ "itemType": filter.item_type, "itemSubTypes": filter.item_sub_types })).collect()
+            };
+            json!({
+                "capacityMicroScu": inventory.capacity_micro_scu,
+                "closed": inventory.closed,
+                "excluded": filters(&inventory.excluded),
+                "only": filters(&inventory.only),
+            })
+        });
+    let (inventory, item_bank) = if class.guid == ITEM_BANK_CLASS { (None, inventory) } else { (inventory, None) };
     json!({
         "occupancyMicroScu": class.occupancy_micro_scu,
         "inventory": inventory,
+        "itemBank": item_bank,
         "_key": class.guid,
         "guid": class.guid,
         "guidHashCrc": class.guid_hash_crc,
@@ -169,13 +185,13 @@ mod tests {
             guid_hash_crc: 7,
             class_name: "Crate".into(),
             occupancy_micro_scu: None,
-            inventory: Some(sc_api::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true }),
+            inventory: Some(sc_api::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true, ..Default::default() }),
             ..Default::default()
         };
         let doc = class_doc(&class);
         assert_eq!(doc["_key"], "g");
         assert_eq!(doc["occupancyMicroScu"], Value::Null);
-        assert_eq!(doc["inventory"], json!({ "capacityMicroScu": 5, "closed": true }));
+        assert_eq!(doc["inventory"], json!({ "capacityMicroScu": 5, "closed": true, "excluded": [], "only": [] }));
         assert_eq!(doc["name"], json!({ "token": "", "en": "" }));
         let without = class_doc(&EntityClassSeed { guid: "h".into(), occupancy_micro_scu: Some(3), ..Default::default() });
         assert_eq!(without["inventory"], Value::Null);

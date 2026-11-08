@@ -62,6 +62,31 @@ pub struct Class {
 pub struct Container {
     pub capacity_micro_scu: i64,
     pub closed: bool,
+    /// `excludedItemSubTypes`: item types (or only some subtypes of them) the container refuses.
+    pub excluded: Vec<TypeFilter>,
+    /// `overrideStorableItemTypes`: when not empty, the only types it takes.
+    pub only: Vec<TypeFilter>,
+}
+
+/// An `InventoryContainerItemTypeFilter`: a type and the subtypes of it meant, all of them when none are listed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeFilter {
+    pub item_type: String,
+    pub item_sub_types: Vec<String>,
+}
+
+fn type_filters(list: &Value) -> Vec<TypeFilter> {
+    list.as_array()
+        .map(|filters| {
+            filters
+                .iter()
+                .map(|filter| TypeFilter {
+                    item_type: text(filter, "itemType").to_string(),
+                    item_sub_types: filter["itemSubTypes"].as_array().map(|subs| subs.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub struct Starter {
@@ -230,12 +255,22 @@ fn container_of(data: &Value) -> Container {
     let kind = &data["inventoryType"];
     if text(kind, "__struct__") == "InventoryClosedContainerType" {
         let capacity = cargo_micro_scu(&kind["capacity"]).unwrap_or(0);
-        return Container { capacity_micro_scu: capacity, closed: true };
+        return Container { capacity_micro_scu: capacity, closed: true, ..filtered(data) };
     }
     let size = &data["interiorDimensions"];
     let cubes = |axis: &str| (size[axis].as_f64().unwrap_or(0.0) / SCU_EDGE_METRES + 1e-6).floor().max(0.0);
     let capacity = cubes("x") * cubes("y") * cubes("z") * 1_000_000.0;
-    Container { capacity_micro_scu: capacity as i64, closed: false }
+    Container { capacity_micro_scu: capacity as i64, closed: false, ..filtered(data) }
+}
+
+/// The type filters of a container record, with no capacity.
+fn filtered(data: &Value) -> Container {
+    Container {
+        capacity_micro_scu: 0,
+        closed: false,
+        excluded: type_filters(&data["excludedItemSubTypes"]),
+        only: type_filters(&data["inventoryType"]["overrideStorableItemTypes"]),
+    }
 }
 
 /// The classes every player owns: those under a policy that grants all modes to everyone.
@@ -420,6 +455,12 @@ impl Game {
     pub fn containers(&self) -> Result<HashMap<String, Container>, String> {
         let records = self.records("InventoryContainer", 3)?;
         Ok(records.into_iter().map(|record| (record.guid, container_of(&record.data))).collect())
+    }
+
+    /// The `ItemBankContainer` record, whose filters apply to every inventory of the item banks at the locations.
+    pub fn item_bank(&self) -> Result<Option<Container>, String> {
+        let records = self.records("InventoryContainer", 4)?;
+        Ok(records.into_iter().find(|record| record.name == "ItemBankContainer").map(|record| container_of(&record.data)))
     }
 
     /// A class's name and description: the localization token and its English text, which `entity_classes` keeps.
@@ -773,3 +814,4 @@ mod tests {
         assert_eq!(localized("@missing", &text).en, "");
     }
 }
+

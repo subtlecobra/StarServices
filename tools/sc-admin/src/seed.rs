@@ -5,7 +5,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use sc_api::internal::{ BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement, };
+use sc_api::internal::{ ItemTypeFilter, BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement, };
 use sc_proto::{
     services::solar_system_shop::v1::RentalOffering,
 };
@@ -150,10 +150,25 @@ pub fn read(game: &Game, rental_prices: Vec<RentalPrice>) -> Result<Content, Str
                 name,
                 description,
                 occupancy_micro_scu: class.occupancy_micro_scu,
-                inventory: inventory.map(|c| EntityClassInventory { capacity_micro_scu: c.capacity_micro_scu, closed: c.closed }),
+                inventory: inventory.map(|c| EntityClassInventory {
+                    capacity_micro_scu: c.capacity_micro_scu,
+                    closed: c.closed,
+                    excluded: type_filters(&c.excluded),
+                    only: type_filters(&c.only),
+                }),
             }
         })
         .collect();
+    let mut class_rows = class_rows;
+    // The item banks' type filters, kept as a class of their own: not an entity, but where sc-entitygraph looks them up.
+    if let Some(bank) = game.item_bank()? {
+        class_rows.push(EntityClassSeed {
+            guid: ITEM_BANK_CLASS.to_string(),
+            class_name: "ItemBankContainer".to_string(),
+            inventory: Some(EntityClassInventory { capacity_micro_scu: 0, closed: false, excluded: type_filters(&bank.excluded), only: type_filters(&bank.only) }),
+            ..Default::default()
+        });
+    }
     let tree = game.universe()?;
     let shop_items = shop_items(game.shop_inventories()?);
 
@@ -214,6 +229,13 @@ pub fn rental_prices(text: &str) -> Result<Vec<RentalPrice>, String> {
         .collect()
 }
 
+/// The key of the class that carries the item banks' type filters; sc-entitygraph reads it for `Location` inventories.
+pub const ITEM_BANK_CLASS: &str = "itembankcontainer";
+
+fn type_filters(filters: &[crate::content::TypeFilter]) -> Vec<ItemTypeFilter> {
+    filters.iter().map(|filter| ItemTypeFilter { item_type: filter.item_type.clone(), item_sub_types: filter.item_sub_types.clone() }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,3 +281,4 @@ mod tests {
         assert_eq!(items, [item("a", 5.0), item("b", 7.0)]);
     }
 }
+
