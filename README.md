@@ -78,18 +78,19 @@ cargo build --release
 ```
 
 The deployment (helmfile, environments, per-service values, kind config, `cluster-up.sh`) lives in
-[StarServices-CN](../StarServices-CN), which only deploys what this repository pushes:
+[StarServices-CN](../StarServices-CN), which only deploys what this repository pushes. The deploy host (this PC or
+another) runs StarServices-CN's scripts and makes its own backend state; this PC only populates its registry:
 
 ```sh
-scripts/build-and-push.sh                       # sc-admin init, images, charts, pushed to the registry
-scripts/gamedata-publish.sh --seed              # once per game build: game data and seed bundle, pushed to the registry
-../StarServices-CN/scripts/cluster-up.sh        # kind cluster, registry access, Secrets, helmfile sync; the sc-seed Job seeds
+../StarServices-CN/scripts/registry-up.sh       # on the deploy host: the cluster and its registry, ready for a push
+scripts/publish.sh                              # here: images, charts, game data and seed bundle, into that registry
+../StarServices-CN/scripts/cluster-up.sh        # on the deploy host: Secrets, helmfile sync; the sc-seed Job seeds
 # scripts/seed.sh                               # the manual seed: straight from the archive, through port-forwards
 <launcher>/sc-launch-private.sh                 # starts the game (the private client launcher, kept outside this repository)
 ../StarServices-CN/scripts/cluster-down.sh
 ```
 
-The services need the databases, so the cluster is the only way to run them. Re-run `build-and-push.sh`
+The services need the databases, so the cluster is the only way to run them. Re-run `publish.sh`
 (with service names to build only those images) and `cluster-up.sh` after rebuilding. The client script builds its private tree and starts the game. It stops if the backend is not
 reachable, and refuses to start next to a running game. `--dry-run` prints the plan, and `--prepare-only`
 builds the tree without launching. Logs are in `kubectl -n scbackend logs`, where every unimplemented call
@@ -109,12 +110,12 @@ default `../StarServices-CN`): `registry.alexandria.local:5000`, plain HTTP. `SC
 `SC_REGISTRY_PLAIN_HTTP` override it; until Alexandria runs, use `SC_REGISTRY=localhost:5001`, the local
 `kind-registry` container that StarServices-CN's `cluster-up.sh` starts, on every script (its README has
 the first-run order). A deploy host's cluster holds its own registry (StarServices-CN's `registry.yaml` mode
-`in-cluster`), where anyone pulls and pushes need a login (`podman login` and `helm registry login` as `push`);
-StarServices-CN's `scripts/deploy-remote.sh` logs in and runs these scripts against it from the build PC. Base images come from Docker Hub. Follow logs
+`in-cluster`), where anyone pulls and pushes need a login as `push`, with the password the host's `registry-up.sh`
+made: `scripts/publish.sh` asks for it once and logs podman and helm in. Base images come from Docker Hub. Follow logs
 with `kubectl -n scbackend logs -f deploy/sc-hub`. Stream idle and request timeouts are off in `sc-edge`,
-because the game holds streams open for a whole session. `state.json`, the certificates and `destinations.json`
-reach the pods as the `scbackend-data` Secret, so re-run StarServices-CN's `cluster-up.sh` after changing them. `ca.key`
-stays out of the cluster.
+because the game holds streams open for a whole session. The deploy host's
+backend state (`state.json` and the certificates, which its `cluster-up.sh` makes) reaches the pods as the
+`scbackend-data` Secret. `ca.key` stays out of the cluster.
 
 Shard clusters are listed in the `sc-shard-operator` chart values, and `kubectl -n scbackend get shc` shows
 them. Shards get random names, such as `usa-crimson-falcon`, and ids in the game's format, such as
@@ -130,9 +131,8 @@ with the region. A shard opens only once its build and its region's entity datab
 in the region until they close. The game reaches the `sc-entitygraph` of the region with `entityDb.clientRoute`
 through the gateway; see [docs/DATA.md](docs/DATA.md).
 
-`sc-admin init --p4k` reads the star systems from the game archive into `destinations.json`.
-`build-and-push.sh` does this with `SC_P4K`, the archive's path (set it in `local.env`, see below). Without it, `sc-hub` uses a built-in
-4.10.2 list.
+`sc-hub` offers the star systems of a built-in 4.10.2 list, or of a `destinations.json` in the backend state
+(`sc-admin init --p4k` writes one there, from the game archive).
 
 ## What the launcher leaves alone
 

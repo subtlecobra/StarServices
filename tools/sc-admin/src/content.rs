@@ -368,6 +368,15 @@ impl Game {
             .collect()
     }
 
+    /// The shop inventory files, as `(path, bytes)`.
+    pub fn shop_inventories(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let entries: Vec<_> = self.archive.find("Scripts/ShopInventories/", &[".json"]).collect();
+        entries
+            .into_iter()
+            .map(|entry| Ok((entry.name.to_string(), self.archive.read(entry).map_err(|e| format!("read {}: {e}", entry.name))?)))
+            .collect()
+    }
+
     /// The object container tree of the persistent universe.
     pub fn universe(&self) -> Result<Tree, String> {
         let names: HashMap<String, String> = self

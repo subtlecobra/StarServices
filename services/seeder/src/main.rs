@@ -67,7 +67,7 @@ struct Args {
     /// sc-contract-broker, for the mission contracts.
     #[arg(long, env = "SCBACKEND_CONTRACT_BROKER", default_value = "http://sc-contract-broker:50051")]
     contract_broker: String,
-    /// sc-solar-system-shop, for the rental prices.
+    /// sc-solar-system-shop, for the shop items and rental prices.
     #[arg(long, env = "SCBACKEND_SHOP", default_value = "http://sc-solar-system-shop:50051")]
     shop: String,
 }

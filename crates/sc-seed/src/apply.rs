@@ -15,7 +15,8 @@ use sc_proto::internal::{
     reputation_internal_client::ReputationInternalClient,
     solar_system_shop_internal_client::SolarSystemShopInternalClient, ContainerSeed, EntityClassSeed,
     SeedBlueprintDefaultsRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedMissionContractsRequest,
-    SeedRentalPricesRequest, SeedReputationRequest, SeedScenariosRequest, SeedStarterEntitlementsRequest,
+    SeedRentalPricesRequest, SeedReputationRequest, SeedScenariosRequest, SeedShopItemsRequest,
+    SeedStarterEntitlementsRequest,
 };
 use tonic::transport::{Channel, Endpoint};
 
@@ -105,6 +106,13 @@ async fn tree(graph: &mut EntityGraphInternalClient<Channel>, containers: &[Cont
 /// Hands each global owner its rows, in calls that fit a message.
 pub async fn hand_over(owners: &Owners, content: Content, wait: Duration) -> Result<(), String> {
     let mut shop = SolarSystemShopInternalClient::new(channel("shop", &owners.shop, wait).await?);
+    // The items first: a rental price adds a row for an item the shop lacks, which the items would then leave alone.
+    let mut written = 0;
+    for items in batches(content.shop_items, BYTES_PER_CALL) {
+        let request = SeedShopItemsRequest { items };
+        written += shop.seed_shop_items(request).await.map_err(failed("shop"))?.into_inner().rows;
+    }
+    println!("shop items: {written} new");
     let mut written = 0;
     for prices in batches(content.rental_prices, BYTES_PER_CALL) {
         let request = SeedRentalPricesRequest { prices };

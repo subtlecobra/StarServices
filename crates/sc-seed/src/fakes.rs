@@ -24,8 +24,8 @@ use sc_proto::internal::{
     QueryEntitlementsRequest, QueryEntitlementsResponse, RentalPrice, RevokeEntitlementRequest,
     RevokeEntitlementResponse, RevokeExpiredRentalsRequest, RevokeExpiredRentalsResponse, ScenarioSeed,
     SeedBlueprintDefaultsRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedMissionContractsRequest,
-    SeedRentalPricesRequest, SeedReputationRequest, SeedResponse, SeedScenariosRequest, SeedStarterEntitlementsRequest,
-    SetRentalExpiryRequest, SetRentalExpiryResponse, StarterEntitlement, UpdateLoadoutRequest, UpdateLoadoutResponse,
+    SeedRentalPricesRequest, SeedReputationRequest, SeedResponse, SeedScenariosRequest, SeedShopItemsRequest,
+    SeedStarterEntitlementsRequest, SetRentalExpiryRequest, SetRentalExpiryResponse, ShopItem, StarterEntitlement, UpdateLoadoutRequest, UpdateLoadoutResponse,
 };
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request, Response, Status, Streaming};
@@ -33,6 +33,8 @@ use tonic::{transport::Server, Request, Response, Status, Streaming};
 /// Every owner at once, keeping what each was sent.
 #[derive(Clone, Default)]
 pub struct Owned {
+    /// Per call of SeedShopItems: its items.
+    pub shop_items: Arc<Mutex<Vec<Vec<ShopItem>>>>,
     pub prices: Arc<Mutex<Vec<RentalPrice>>>,
     pub starters: Arc<Mutex<Vec<StarterEntitlement>>>,
     pub reputation: Arc<Mutex<Vec<SeedReputationRequest>>>,
@@ -50,6 +52,12 @@ fn seeded(rows: usize) -> Result<Response<SeedResponse>, Status> {
 
 #[tonic::async_trait]
 impl SolarSystemShopInternal for Owned {
+    async fn seed_shop_items(&self, request: Request<SeedShopItemsRequest>) -> Result<Response<SeedResponse>, Status> {
+        let items = request.into_inner().items;
+        let count = items.len();
+        self.shop_items.lock().unwrap().push(items);
+        seeded(count)
+    }
     async fn seed_rental_prices(&self, request: Request<SeedRentalPricesRequest>) -> Result<Response<SeedResponse>, Status> {
         let prices = request.into_inner().prices;
         let count = prices.len();

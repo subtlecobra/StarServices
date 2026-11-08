@@ -1074,8 +1074,23 @@ message SeedRentalPricesRequest {
   repeated RentalPrice prices = 1;
 }
 
-// Answered by sc-solar-system-shop, which owns `shop_inventory`. sc-admin supplies the rental price list here.
+// An item the game's shops sell, from the shop inventories in the archive.
+message ShopItem {
+  string id = 1;  // entity class GUID
+  double buy_price = 2;
+  double sell_price = 3;
+  int32 current_inventory = 4;
+  int32 max_inventory = 5;
+}
+
+message SeedShopItemsRequest {
+  repeated ShopItem items = 1;
+}
+
+// Answered by sc-solar-system-shop, which owns `shop_inventory`. The items come from the seed bundle and only new ids
+// are added, so an item an operator changed keeps its prices. sc-admin supplies the rental price list here.
 service SolarSystemShopInternal {
+  rpc SeedShopItems(SeedShopItemsRequest) returns (SeedResponse);
   rpc SeedRentalPrices(SeedRentalPricesRequest) returns (SeedResponse);
 }
 

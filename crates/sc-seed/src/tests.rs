@@ -6,7 +6,7 @@ use std::time::Duration;
 use sc_proto::{
     internal::{
         BlueprintDefault, ContainerSeed, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding,
-        ReputationScope, ReputationStanding, ScenarioSeed, StarterEntitlement,
+        ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement,
     },
     services::solar_system_shop::v1::RentalOffering,
 };
@@ -21,6 +21,16 @@ fn content() -> Content {
             ContainerSeed { geid: 2, parent: Some(1), ..Default::default() },
         ],
         rental_prices: vec![RentalPrice { id: "ship".into(), offerings: vec![RentalOffering { days: 3, price: 150.0 }] }],
+        // Big enough to need two calls.
+        shop_items: (0..80_000)
+            .map(|n| ShopItem {
+                id: format!("00000000-0000-0000-0000-{n:012}"),
+                buy_price: n as f64,
+                sell_price: 1.5,
+                current_inventory: 10,
+                max_inventory: 20,
+            })
+            .collect(),
         starters: vec![StarterEntitlement { class_guid: "g".into(), source: "s".into(), ..Default::default() }],
         scopes: vec![ReputationScope { scope: "scope".into(), ..Default::default() }],
         standings: vec![ReputationStanding { id: "standing".into(), ..Default::default() }],
@@ -41,6 +51,9 @@ async fn each_owner_receives_its_own_rows_in_calls_that_fit() {
     let expected = content();
     assert_eq!(*owned.classes.lock().unwrap(), [expected.classes.clone(), expected.classes.clone()], "every region");
     assert_eq!(*owned.containers.lock().unwrap(), [expected.containers.clone(), expected.containers.clone()]);
+    let shop_calls = owned.shop_items.lock().unwrap().clone();
+    assert_eq!(shop_calls.len(), 2);
+    assert_eq!(shop_calls.concat(), expected.shop_items);
     assert_eq!(owned.prices.lock().unwrap()[0].offerings, [RentalOffering { days: 3, price: 150.0 }]);
     assert_eq!(owned.starters.lock().unwrap()[0].class_guid, "g");
     let reputation = owned.reputation.lock().unwrap().clone();

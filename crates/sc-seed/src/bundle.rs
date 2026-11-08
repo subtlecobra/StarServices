@@ -14,14 +14,14 @@ use std::{
 use prost::Message;
 use sc_proto::internal::{
     BlueprintDefault, ContainerSeed, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding,
-    ReputationScope, ReputationStanding, ScenarioSeed, StarterEntitlement,
+    ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const MANIFEST: &str = "manifest.json";
-/// The layout described here. A reader refuses any other.
-pub const FORMAT: u32 = 1;
+/// The layout described here. A reader refuses any other. 2 added the shop items.
+pub const FORMAT: u32 = 2;
 
 pub const ENTITY_CLASSES: &str = "entitygraph/entity_classes.pb";
 pub const CONTAINERS: &str = "entitygraph/containers.pb";
@@ -33,9 +33,10 @@ pub const BLUEPRINT_DEFAULTS: &str = "blueprint-library/blueprint_defaults.pb";
 pub const SCENARIOS: &str = "mission-scenario/scenarios.pb";
 pub const MISSION_CONTRACTS: &str = "contract-broker/mission_contracts.pb";
 pub const RENTAL_PRICES: &str = "solar-system-shop/rental_prices.pb";
+pub const SHOP_ITEMS: &str = "solar-system-shop/shop_items.pb";
 
 /// Every file of a bundle, in the manifest's order.
-pub const FILES: [&str; 10] = [
+pub const FILES: [&str; 11] = [
     BLUEPRINT_DEFAULTS,
     MISSION_CONTRACTS,
     STARTER_ENTITLEMENTS,
@@ -46,6 +47,7 @@ pub const FILES: [&str; 10] = [
     REPUTATION_SCOPES,
     REPUTATION_STANDINGS,
     RENTAL_PRICES,
+    SHOP_ITEMS,
 ];
 
 /// Everything a build seeds: the rows of each owner.
@@ -54,6 +56,7 @@ pub struct Content {
     pub classes: Vec<EntityClassSeed>,
     pub containers: Vec<ContainerSeed>,
     pub rental_prices: Vec<RentalPrice>,
+    pub shop_items: Vec<ShopItem>,
     pub starters: Vec<StarterEntitlement>,
     pub scopes: Vec<ReputationScope>,
     pub standings: Vec<ReputationStanding>,
@@ -125,6 +128,7 @@ impl Content {
             (SCENARIOS, encode(&self.scenarios), self.scenarios.len()),
             (MISSION_CONTRACTS, encode(&self.contracts), self.contracts.len()),
             (RENTAL_PRICES, encode(&self.rental_prices), self.rental_prices.len()),
+            (SHOP_ITEMS, encode(&self.shop_items), self.shop_items.len()),
         ];
         files.sort_by_key(|(path, ..)| *path);
         files
@@ -248,6 +252,7 @@ impl Bundle {
             classes: self.rows(ENTITY_CLASSES)?,
             containers: self.rows(CONTAINERS)?,
             rental_prices: self.rows(RENTAL_PRICES)?,
+            shop_items: self.rows(SHOP_ITEMS)?,
             starters: self.rows(STARTER_ENTITLEMENTS)?,
             scopes: self.rows(REPUTATION_SCOPES)?,
             standings: self.rows(REPUTATION_STANDINGS)?,
@@ -273,6 +278,7 @@ mod tests {
             starters: vec![StarterEntitlement { class_guid: "g1".into(), ..Default::default() }],
             scenarios: vec![ScenarioSeed { template_id: "t".into(), status: 1 }],
             contracts: vec![MissionContractSeed { id: "c".into(), body: vec![1, 2, 3] }],
+            shop_items: vec![ShopItem { id: "g1".into(), buy_price: 10.0, max_inventory: 5, ..Default::default() }],
             ..Default::default()
         }
     }

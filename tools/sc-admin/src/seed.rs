@@ -3,12 +3,12 @@
 //! the entity classes and the container tree go to each region's sc-entitygraph, every other table to the service that
 //! owns it, each through its seed RPC.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use sc_proto::{
     internal::{
         BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice,
-        ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, StarterEntitlement,
+        ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement,
     },
     services::solar_system_shop::v1::RentalOffering,
 };
@@ -85,6 +85,34 @@ pub fn container(node: &Node) -> ContainerSeed {
     }
 }
 
+/// Items sold in the game's shops, from the shop inventory files (`(path, bytes)`). The dated anniversary sale files
+/// are left out, and an item with a price wins over a listing without one. In id order.
+pub fn shop_items(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Vec<ShopItem> {
+    let mut items: BTreeMap<String, ShopItem> = BTreeMap::new();
+    for (name, bytes) in files {
+        if name.contains("Sale") {
+            continue;
+        }
+        let Ok(inventory) = serde_json::from_slice::<Value>(&bytes) else { continue };
+        for item in inventory["Inventory"].as_array().into_iter().flatten() {
+            let Some(id) = item["ID"]["ID"][0].as_str() else { continue };
+            let buy_price = item["BuyPrice"].as_f64().unwrap_or(0.0);
+            let known_price = items.get(id).map_or(0.0, |known| known.buy_price);
+            if !items.contains_key(id) || (buy_price > 0.0 && known_price == 0.0) {
+                let row = ShopItem {
+                    id: id.to_string(),
+                    buy_price,
+                    sell_price: item["SellPrice"].as_f64().unwrap_or(0.0),
+                    current_inventory: item["CurrentInventory"].as_f64().unwrap_or(0.0) as i32,
+                    max_inventory: item["MaxInventory"].as_f64().unwrap_or(0.0) as i32,
+                };
+                items.insert(id.to_string(), row);
+            }
+        }
+    }
+    items.into_values().collect()
+}
+
 /// The build of the archive: the change number in `build_manifest.id` beside it, as gamedata-build reads it.
 pub fn build_of(p4k: &Path) -> Result<String, String> {
     let path = p4k.parent().unwrap_or(Path::new(".")).join("build_manifest.id");
@@ -130,8 +158,10 @@ pub fn read(game: &Game, rental_prices: Vec<RentalPrice>) -> Result<Content, Str
         })
         .collect();
     let tree = game.universe()?;
+    let shop_items = shop_items(game.shop_inventories()?);
 
     println!("entity classes: {}", class_rows.len());
+    println!("shop items: {}", shop_items.len());
     println!("containers: {} nodes, {} edges", tree.nodes.len(), tree.nodes.iter().filter(|node| node.parent.is_some()).count());
     for (system, count) in &tree.per_system {
         println!("  {system}: {count} nodes");
@@ -150,6 +180,7 @@ pub fn read(game: &Game, rental_prices: Vec<RentalPrice>) -> Result<Content, Str
         classes: class_rows,
         containers: tree.nodes.iter().map(container).collect(),
         rental_prices,
+        shop_items,
         starters: starters.iter().map(starter).collect(),
         scopes: scope_rows.iter().map(scope).collect(),
         standings: standing_rows.iter().map(standing).collect(),
@@ -207,5 +238,27 @@ mod tests {
         ] {
             assert!(rental_prices(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn shop_items_skip_sales_and_prefer_a_priced_listing() {
+        let file = |entries: &str| format!(r#"{{"Inventory": [{entries}]}}"#).into_bytes();
+        let entry = |id: &str, buy: f64| {
+            format!(r#"{{"ID": {{"ID": ["{id}"]}}, "BuyPrice": {buy}, "SellPrice": 2, "CurrentInventory": 3.0, "MaxInventory": 4}}"#)
+        };
+        let items = shop_items([
+            ("Scripts/ShopInventories/a.json".to_string(), file(&format!("{},{}", entry("b", 0.0), entry("a", 5.0)))),
+            ("Scripts/ShopInventories/b.json".to_string(), file(&format!("{},{}", entry("b", 7.0), entry("a", 9.0)))),
+            ("Scripts/ShopInventories/AnniversarySale.json".to_string(), file(&entry("c", 1.0))),
+            ("Scripts/ShopInventories/broken.json".to_string(), b"{".to_vec()),
+        ]);
+        let item = |id: &str, buy_price: f64| ShopItem {
+            id: id.into(),
+            buy_price,
+            sell_price: 2.0,
+            current_inventory: 3,
+            max_inventory: 4,
+        };
+        assert_eq!(items, [item("a", 5.0), item("b", 7.0)]);
     }
 }

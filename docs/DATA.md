@@ -204,17 +204,18 @@ Neither touches a database:
 | `blueprint_defaults` | sc-blueprint-library, `BlueprintLibraryInternal.SeedBlueprintDefaults` |
 | `scenarios`, only added | sc-mission-scenario, `MissionScenarioInternal.SeedScenarios` |
 | `mission_contracts` | sc-contract-broker, `ContractBrokerInternal.SeedMissionContracts` |
+| `shop_inventory` items, only added (an item an operator changed keeps its prices) | sc-solar-system-shop, `SolarSystemShopInternal.SeedShopItems`, before the rental prices |
 | `shop_inventory` rental offerings, from the price list | sc-solar-system-shop, `SolarSystemShopInternal.SeedRentalPrices` |
 
-The shop's items come from `shop_inventory.json`, which `sc-admin init` writes and the shop reads at start (with the
-star systems, `destinations.json`; both reach the pods in the `scbackend-data` Secret, not through the seed).
+The star systems, `destinations.json`, which `sc-admin init` writes, still reach the pods in the `scbackend-data`
+Secret, not through the seed.
 
 The seed bundle (`crates/sc-seed`) is the directory `<out>/<build>/`, pushed as `<registry>/scbackend/seed:<build>` with
 the files under `/seed/<build>/`:
 
 | Path | Rows, as length-delimited protobuf messages |
 |---|---|
-| `manifest.json` | `format` (1), `build`, and each other file's `path`, `size`, `sha256` and `rows`. Written last |
+| `manifest.json` | `format` (2), `build`, and each other file's `path`, `size`, `sha256` and `rows`. Written last |
 | `entitygraph/entity_classes.pb` | `EntityClassSeed` |
 | `entitygraph/containers.pb` | `ContainerSeed`, parents before children |
 | `entitlement/starter_entitlements.pb` | `StarterEntitlement` |
@@ -223,10 +224,11 @@ the files under `/seed/<build>/`:
 | `mission-scenario/scenarios.pb` | `ScenarioSeed` |
 | `contract-broker/mission_contracts.pb` | `MissionContractSeed` |
 | `solar-system-shop/rental_prices.pb` | `RentalPrice`, from the price list given to the export; empty without one |
+| `solar-system-shop/shop_items.pb` | `ShopItem`, from `Scripts/ShopInventories/` (sale files left out, a priced listing wins) |
 
 For 4.10.2 (build 12913470): 29,693 classes, 197,814 containers, 374 starter entitlements, 46 scopes, 355 standings,
 377 ladder rows, 9 blueprints, 15 scenarios, 2,239 contracts; 30.6 MB, an 8.1 MB layer. The same archive gives the same
-bytes. A reader refuses another format, a file the manifest does not list or one whose size or sha256 differs.
+bytes. A reader refuses another format (format 1, before the shop items, included), a file the manifest does not list or one whose size or sha256 differs.
 
 sc-seeder finds the regions through the Kubernetes API: every ShardRegion (or those its `regions` value names), once
 `status.entityDb.state` is Ready, at `status.entityDb.service`. `scripts/seed.sh`, on a machine with the archive,

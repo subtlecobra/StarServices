@@ -1,18 +1,18 @@
 //! sc.external.services.solar_system_shop.v1.SolarSystemShopService. The same to every player, so no
 //! caller is needed. An item id is an entity class GUID, which is how sc-eatransaction finds its price.
 //!
-//! This service owns `shop_inventory` and is its only seeder: the items come from `shop_inventory.json`
-//! at start, which `sc-admin init` reads from the game data, and the rental prices, which the game data
-//! lacks, from `SolarSystemShopInternal.SeedRentalPrices`, which `sc-admin seed` calls.
+//! This service owns `shop_inventory` and is its only seeder, through `SolarSystemShopInternal`, which sc-seeder and
+//! `sc-admin seed` call with a seed bundle's rows: the items, which `sc-admin seed-export` reads from the game data, in
+//! `SeedShopItems`, and the rental prices, which the game data lacks, in `SeedRentalPrices`.
 
-use std::{net::SocketAddr, path::Path, process::ExitCode, sync::Arc};
+use std::{net::SocketAddr, process::ExitCode, sync::Arc};
 
 use clap::Parser;
 use sc_db::{internal, DatabaseArgs, Postgres, Row};
 use sc_proto::{
     internal::{
         solar_system_shop_internal_server::{SolarSystemShopInternal, SolarSystemShopInternalServer},
-        RentalPrice, SeedRentalPricesRequest, SeedResponse,
+        RentalPrice, SeedRentalPricesRequest, SeedResponse, SeedShopItemsRequest, ShopItem,
     },
     services::solar_system_shop::v1::{
         solar_system_shop_service_server::{SolarSystemShopService, SolarSystemShopServiceServer},
@@ -24,7 +24,6 @@ use serde_json::Value;
 use tonic::{codec::CompressionEncoding, transport::Server, Request, Response, Status};
 use tracing::info;
 
-const SEED_FILE: &str = "shop_inventory.json";
 /// Unchanged from when this was shared, so an existing table is left as it is. Plain columns and JSON.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS shop_inventory (
@@ -164,8 +163,40 @@ async fn seed_rental_prices(db: &Postgres, prices: &[RentalPrice]) -> Result<u64
     Ok(written)
 }
 
+/// Adds the items the shop does not have yet. Rows an operator has changed keep their prices, because only new ids
+/// are added.
+async fn seed_shop_items(db: &Postgres, items: &[ShopItem]) -> Result<u64, Status> {
+    if items.iter().any(|item| item.id.is_empty()) {
+        return Err(Status::invalid_argument("shop item with no id"));
+    }
+    let mut written = 0;
+    for chunk in items.chunks(SEED_ROWS) {
+        let ids: Vec<&str> = chunk.iter().map(|item| item.id.as_str()).collect();
+        let buy: Vec<f64> = chunk.iter().map(|item| item.buy_price).collect();
+        let sell: Vec<f64> = chunk.iter().map(|item| item.sell_price).collect();
+        let current: Vec<i32> = chunk.iter().map(|item| item.current_inventory).collect();
+        let max: Vec<i32> = chunk.iter().map(|item| item.max_inventory).collect();
+        written += db
+            .execute(
+                "INSERT INTO shop_inventory (id, buy_price, sell_price, current_inventory, max_inventory)
+                 SELECT * FROM unnest($1::text[], $2::float8[], $3::float8[], $4::int4[], $5::int4[])
+                 ON CONFLICT DO NOTHING",
+                &[&ids, &buy, &sell, &current, &max],
+            )
+            .await
+            .map_err(internal)?;
+    }
+    Ok(written)
+}
+
 #[tonic::async_trait]
 impl SolarSystemShopInternal for Shop {
+    async fn seed_shop_items(&self, request: Request<SeedShopItemsRequest>) -> Result<Response<SeedResponse>, Status> {
+        let rows = seed_shop_items(&self.db, &request.into_inner().items).await?;
+        info!(rows, "shop items seeded");
+        Ok(Response::new(SeedResponse { rows }))
+    }
+
     async fn seed_rental_prices(
         &self,
         request: Request<SeedRentalPricesRequest>,
@@ -176,36 +207,8 @@ impl SolarSystemShopInternal for Shop {
     }
 }
 
-/// Copies the items sc-admin read from the game data into the table. Rows an operator has changed since
-/// keep their prices, because only new ids are added.
-async fn seed(db: &Postgres, data_dir: &Path) -> Result<(), String> {
-    let path = data_dir.join(SEED_FILE);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        info!(path = %path.display(), "no shop seed file");
-        return Ok(());
-    };
-    let items: Vec<Value> = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    for item in &items {
-        db.execute(
-            "INSERT INTO shop_inventory (id, buy_price, sell_price, current_inventory, max_inventory)
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-            &[
-                &item["id"].as_str().unwrap_or_default(),
-                &item["buy_price"].as_f64().unwrap_or(0.0),
-                &item["sell_price"].as_f64().unwrap_or(0.0),
-                &(item["current_inventory"].as_f64().unwrap_or(0.0) as i32),
-                &(item["max_inventory"].as_f64().unwrap_or(0.0) as i32),
-            ],
-        )
-        .await?;
-    }
-    info!(items = items.len(), "shop seeded");
-    Ok(())
-}
-
 async fn serve(args: Args) -> Result<(), String> {
     let db = Postgres::connect(&args.database.postgres, SCHEMA).await?;
-    seed(&db, &args.common.data).await?;
     let service = Arc::new(Shop { db });
     let server = SolarSystemShopServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)

@@ -83,12 +83,13 @@ async fn live_pull_and_apply() {
     args.wait_secs = Duration::from_secs(5).as_secs();
     run(args).await.unwrap();
     println!(
-        "owners got: {} starter entitlements, {} reputation calls, {} blueprints, {} scenarios, {} contracts, {} rental prices",
+        "owners got: {} starter entitlements, {} reputation calls, {} blueprints, {} scenarios, {} contracts, {} shop items, {} rental prices",
         owned.starters.lock().unwrap().len(),
         owned.reputation.lock().unwrap().len(),
         owned.blueprints.lock().unwrap().len(),
         owned.scenarios.lock().unwrap().len(),
         owned.contracts.lock().unwrap().iter().map(Vec::len).sum::<usize>(),
+        owned.shop_items.lock().unwrap().iter().map(Vec::len).sum::<usize>(),
         owned.prices.lock().unwrap().len(),
     );
 }

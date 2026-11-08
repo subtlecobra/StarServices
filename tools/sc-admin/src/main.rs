@@ -34,7 +34,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create or update state.json, the certificates and destinations.json.
+    /// Create or update state.json, the certificates and destinations.json. The shop's items are not written here:
+    /// they travel in the seed bundle (seed-export, then sc-seeder or `seed`).
     Init {
         /// Address the game uses to reach the backend; becomes a certificate name.
         #[arg(long, default_value = DEFAULT_HOST)]
@@ -80,7 +81,7 @@ enum Command {
         /// sc-contract-broker, for the mission contracts.
         #[arg(long, env = "SCBACKEND_CONTRACT_BROKER", default_value = "http://sc-contract-broker:50051")]
         contract_broker: String,
-        /// sc-solar-system-shop, for the rental prices.
+        /// sc-solar-system-shop, for the shop items and rental prices.
         #[arg(long, env = "SCBACKEND_SHOP", default_value = "http://sc-solar-system-shop:50051")]
         shop: String,
         /// The game archive to read.
@@ -226,11 +227,6 @@ fn run(cli: Cli) -> Result<(), String> {
                 let list = destinations::from_p4k(&path)?;
                 stored::save(&cli.data, &list)?;
                 println!("{} destinations read from {}", list.len(), path.display());
-                let items = destinations::shop_items_from_p4k(&path)?;
-                let file = cli.data.join("shop_inventory.json");
-                std::fs::write(&file, serde_json::to_string(&items).map_err(|e| e.to_string())?)
-                    .map_err(|e| format!("write {}: {e}", file.display()))?;
-                println!("{} shop items read", items.len());
             }
             println!("state ready in {}", cli.data.display());
             Ok(())
