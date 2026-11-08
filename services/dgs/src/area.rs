@@ -88,6 +88,13 @@ mod tests {
             Err(Status::unimplemented("get_owners"))
         }
 
+        async fn revoke_items(
+            &self,
+            _: Request<sc_api::internal::RevokeItemsRequest>,
+        ) -> Result<Response<sc_api::internal::RevokeItemsResponse>, Status> {
+            Err(Status::unimplemented("revoke_items"))
+        }
+
         async fn grant_items(
             &self,
             _: Request<sc_api::internal::GrantItemsRequest>,

@@ -155,6 +155,18 @@ message LoadoutItem {
   int32 parent = 3;      // the index of its parent in the same list, before it, or -1 for the player
 }
 
+message RevokeItemsRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  repeated uint64 geids = 3;
+  string reason = 4;
+}
+
+message RevokeItemsResponse {
+  uint32 erased = 1;  // entities erased, the items and what they held
+  bool replayed = 2;
+}
+
 message GrantedItem {
   string entity_class_guid = 1;  // a seeded entity class
   uint32 stack_size = 2;         // 0 is 1
@@ -187,6 +199,9 @@ message EnsureLoadoutResponse {
 // Answered by sc-entitygraph, which owns entities and the container tree. It shares that service's port, so no GRPCRoute
 // may list it.
 service EntityGraphInternal {
+  // Erases items a service granted, and everything they hold, once per command id (a rental that ended). An item that is
+  // already gone counts as erased. FAILED_PRECONDITION for an item that is not stowed or is live on a shard.
+  rpc RevokeItems(RevokeItemsRequest) returns (RevokeItemsResponse);
   // New items of seeded classes, with GEIDs sc-entitygraph allocates, stowed in an inventory of a player that is not live
   // on a shard (an entitlement claimed, a delivery, a rental). All or none, once per command id: a repeat returns the
   // GEIDs of the first. A container class gets its inventory with it. NOT_FOUND for a class that is not seeded or an

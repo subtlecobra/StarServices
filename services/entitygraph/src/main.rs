@@ -25,7 +25,7 @@ use commands::{Plan, WRITES};
 use futures_util::{stream, Stream, StreamExt};
 use prost::Message;
 use sc_db::{internal, Arango, DatabaseArgs};
-use sc_api::internal::{ entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
+use sc_api::internal::{ entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
 use sc_proto::{
     common::command::v1::{notify_destination, CommandResponseBody},
     services::entitygraph::v1::{
@@ -240,6 +240,10 @@ impl EntityGraphInternal for Graph {
 
     async fn admin_move_item(&self, request: Request<AdminMoveItemRequest>) -> Reply<AdminMoveItemResponse> {
         Ok(Response::new(admin::move_item(&self.db, request.into_inner()).await?))
+    }
+
+    async fn revoke_items(&self, request: Request<RevokeItemsRequest>) -> Reply<RevokeItemsResponse> {
+        Ok(Response::new(grant::revoke(&self.db, request.into_inner()).await?))
     }
 
     async fn grant_items(&self, request: Request<GrantItemsRequest>) -> Reply<GrantItemsResponse> {

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use sc_api::internal::{GrantItemsRequest, GrantItemsResponse};
+use sc_api::internal::{AdminRemoveItemRequest, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse};
 use sc_db::{internal, Arango};
 use sc_proto::services::entitygraph::v1::EntityNodeProperties;
 use serde_json::{json, Value};
@@ -96,6 +96,36 @@ pub async fn grant(db: &Arango, request: GrantItemsRequest) -> Result<GrantItems
     let (result, replayed) = apply_once(db, &request.command_id, owner, plan, result).await?;
     info!(owner, reason = %request.reason, inventory = to, items = geids.len(), replayed, "items granted");
     Ok(GrantItemsResponse { geids: geids_of(&result), replayed })
+}
+
+/// Erases the items of a grant. Each goes by the admin removal under a command id of its own, so a repeat of the whole
+/// request erases nothing twice; an item that is not there any more is not an error.
+pub async fn revoke(db: &Arango, request: RevokeItemsRequest) -> Result<RevokeItemsResponse, Status> {
+    need_command(&request.command_id)?;
+    need_owner(request.owner_id)?;
+    if request.geids.is_empty() || request.geids.len() > MAX_ITEMS as usize {
+        return Err(invalid("1 to 500 items are needed"));
+    }
+    let (mut erased, mut replayed) = (0, true);
+    for geid in &request.geids {
+        let removal = AdminRemoveItemRequest {
+            command_id: format!("{}:{geid}", request.command_id),
+            owner_id: request.owner_id,
+            geid: *geid,
+            actor: "service".into(),
+            reason: request.reason.clone(),
+        };
+        match crate::admin::remove_item(db, removal).await {
+            Ok(done) => {
+                erased += done.erased;
+                replayed &= done.replayed;
+            }
+            Err(status) if status.code() == tonic::Code::NotFound => {}
+            Err(status) => return Err(status),
+        }
+    }
+    info!(owner = request.owner_id, reason = %request.reason, items = request.geids.len(), erased, replayed, "items revoked");
+    Ok(RevokeItemsResponse { erased, replayed })
 }
 
 #[cfg(test)]

@@ -199,7 +199,7 @@ impl RentalInternal for Rentals {
         let response = end(&self.db, &request).await?;
         if response.ended {
             info!(player = request.player_id, rental = %request.id, "rental ended early");
-            if let Err(error) = expire_rentals(&self.db, &self.entitlements).await {
+            if let Err(error) = expire_rentals(&self.db, &self.entitlements, self.graph.as_ref()).await {
                 warn!(%error, "ended rental left for the sweep");
             }
         }

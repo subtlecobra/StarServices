@@ -487,6 +487,14 @@ mod live {
         assert_eq!((held.owner_id, held.inventory_id.as_deref()), (me, Some(location.as_str())));
         let unknown = EntityGraphInternal::grant_items(&**graph, Request::new(request(&format!("{command}-x"), &[("nothing", 1)]))).await;
         assert_eq!(unknown.unwrap_err().code(), tonic::Code::NotFound);
+        // Revoked once, and a missing item is not an error.
+        let revoke = |command: &str, geids: Vec<u64>| sc_api::internal::RevokeItemsRequest { command_id: command.into(), owner_id: me, geids, reason: "test".into() };
+        let gone = EntityGraphInternal::revoke_items(&**graph, Request::new(revoke(&format!("{command}-r"), first.geids.clone()))).await.unwrap().into_inner();
+        assert_eq!((gone.erased, gone.replayed), (2, false));
+        let twice = EntityGraphInternal::revoke_items(&**graph, Request::new(revoke(&format!("{command}-r"), first.geids.clone()))).await.unwrap().into_inner();
+        assert!(twice.replayed);
+        let missing = EntityGraphInternal::revoke_items(&**graph, Request::new(revoke(&format!("{command}-m"), first.geids.clone()))).await.unwrap().into_inner();
+        assert_eq!(missing.erased, 0, "already gone");
     }
 
     /// `EnsureLoadout`: the items of a loadout made once per command id, each attached to its parent's port.

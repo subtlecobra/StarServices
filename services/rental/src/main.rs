@@ -18,7 +18,7 @@ use sc_economy::{
     transaction::{retrying, Failure},
     ReplyStream,
 };
-use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_graph_internal_client::EntityGraphInternalClient, GrantItemsRequest, GrantedItem, rental_internal_server::RentalInternalServer, RevokeExpiredRentalsRequest, SetRentalExpiryRequest, };
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_graph_internal_client::EntityGraphInternalClient, GrantItemsRequest, GrantedItem, RevokeItemsRequest, rental_internal_server::RentalInternalServer, RevokeExpiredRentalsRequest, SetRentalExpiryRequest, };
 use sc_proto::{
     services::rental::v1::{
     external_rental_service_server::{ExternalRentalService, ExternalRentalServiceServer},
@@ -51,8 +51,10 @@ CREATE TABLE IF NOT EXISTS rentals (
     entitlement_urn TEXT NOT NULL,
     renewals INT NOT NULL DEFAULT 0,
     entity_class_guid TEXT NOT NULL,
-    target_inventory TEXT NOT NULL DEFAULT ''
+    target_inventory TEXT NOT NULL DEFAULT '',
+    item_geid BIGINT NOT NULL DEFAULT 0
 );
+ALTER TABLE rentals ADD COLUMN IF NOT EXISTS item_geid BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS rentals_by_player ON rentals (player_id);
 CREATE INDEX IF NOT EXISTS rentals_by_expiry ON rentals (expire_at) WHERE status = 2;
 CREATE TABLE IF NOT EXISTS rental_history (
@@ -149,10 +151,14 @@ fn rental(row: &Row) -> Rental {
 /// Ends what has run out. The entitlements are revoked first, so a failure leaves the rental active and
 /// the next sweep tries again. Revoking twice changes nothing, and a rental renewed meanwhile is kept, as
 /// both its own expiry and its entitlement's have moved on.
-async fn expire_rentals(db: &Postgres, entitlements: &EntitlementInternalClient<Channel>) -> Result<u64, String> {
+async fn expire_rentals(
+    db: &Postgres,
+    entitlements: &EntitlementInternalClient<Channel>,
+    graph: Option<&EntityGraphInternalClient<Channel>>,
+) -> Result<u64, String> {
     let due = db
         .query(
-            "SELECT id, entitlement_urn FROM rentals WHERE status = $1 AND expire_at <= now() ORDER BY expire_at LIMIT $2",
+            "SELECT id, entitlement_urn, player_id, item_geid FROM rentals WHERE status = $1 AND expire_at <= now() ORDER BY expire_at LIMIT $2",
             &[&(RentalStatus::Active as i32), &EXPIRY_BATCH],
         )
         .await?;
@@ -161,6 +167,26 @@ async fn expire_rentals(db: &Postgres, entitlements: &EntitlementInternalClient<
     }
     let ids: Vec<String> = due.iter().map(|row| row.get("id")).collect();
     let urns: Vec<String> = due.iter().map(|row| row.get("entitlement_urn")).collect();
+    if let Some(graph) = graph {
+        for row in due.iter().filter(|row| row.get::<_, i64>("item_geid") != 0) {
+            let (id, player, geid): (String, i64, i64) = (row.get("id"), row.get("player_id"), row.get("item_geid"));
+            let request = RevokeItemsRequest {
+                command_id: format!("rental-end:{id}"),
+                owner_id: player as u64,
+                geids: vec![geid as u64],
+                reason: format!("rental {id} ended"),
+            };
+            match graph.clone().revoke_items(request).await {
+                Ok(_) => {}
+                // The graph is away: the rental stays active and the next sweep asks again.
+                Err(status) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::DeadlineExceeded) => {
+                    return Err(format!("revoking the item of rental {id}: {status}"));
+                }
+                // Refused (the item is out on a shard, or moved): a retry would be refused the same way.
+                Err(status) => warn!(rental = %id, %status, "the rented item stays"),
+            }
+        }
+    }
     entitlements
         .clone()
         .revoke_expired_rentals(RevokeExpiredRentalsRequest { urns })
@@ -177,11 +203,11 @@ async fn expire_rentals(db: &Postgres, entitlements: &EntitlementInternalClient<
     .await
 }
 
-async fn sweep_expired(db: Postgres, entitlements: EntitlementInternalClient<Channel>) {
+async fn sweep_expired(db: Postgres, entitlements: EntitlementInternalClient<Channel>, graph: Option<EntityGraphInternalClient<Channel>>) {
     let mut ticks = tokio::time::interval(EXPIRY_SWEEP);
     loop {
         ticks.tick().await;
-        match expire_rentals(&db, &entitlements).await {
+        match expire_rentals(&db, &entitlements, graph.as_ref()).await {
             Ok(0) => {}
             Ok(ended) => info!(ended, "rentals expired"),
             Err(error) => warn!(%error, "rental expiry failed"),
@@ -253,7 +279,15 @@ impl Rentals {
         };
         match graph.grant_items(request).await {
             Ok(reply) => {
-                info!(rental, geids = ?reply.into_inner().geids, "rented item made");
+                let geids = reply.into_inner().geids;
+                info!(rental, ?geids, "rented item made");
+                if let Some(geid) = geids.first() {
+                    let _ = self
+                        .db
+                        .execute("UPDATE rentals SET item_geid = $2 WHERE id = $1 AND item_geid = 0", &[&rental, &(*geid as i64)])
+                        .await
+                        .inspect_err(|error| warn!(rental, %error, "the rented item is not recorded"));
+                }
                 Ok(())
             }
             Err(status) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::DeadlineExceeded) => Err(status),
@@ -353,7 +387,6 @@ async fn serve(args: Args) -> Result<(), String> {
     let db = Postgres::connect(&args.database.postgres, SCHEMA).await?;
     let owner = Endpoint::from_shared(args.entitlement.clone()).map_err(|e| format!("--entitlement: {e}"))?;
     let entitlements = EntitlementInternalClient::new(owner.connect_lazy());
-    tokio::spawn(sweep_expired(db.clone(), entitlements.clone()));
     let graph = match &args.entitygraph {
         Some(address) => {
             let endpoint = Endpoint::from_shared(address.clone()).map_err(|e| format!("--entitygraph: {e}"))?;
@@ -364,6 +397,7 @@ async fn serve(args: Args) -> Result<(), String> {
             None
         }
     };
+    tokio::spawn(sweep_expired(db.clone(), entitlements.clone(), graph.clone()));
     let service = Arc::new(Rentals { state: State::load(&args.common.data)?, db, push: Push::connect(&args.push)?, entitlements, graph });
     let server = ExternalRentalServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)

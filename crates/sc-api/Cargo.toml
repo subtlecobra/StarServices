@@ -1,6 +1,6 @@
 [package]
 name = "sc-api"
-version = "0.1.1"
+version = "0.2.0"
 description = "The backend's internal gRPC API, one package per owning service (proto/internal)"
 edition.workspace = true
 license.workspace = true
