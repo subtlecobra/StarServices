@@ -5,7 +5,7 @@
 //! The tree it writes is the contract with `scripts/gamedata-push.sh` and `sc-gamedata`:
 //!
 //! - `<out>/<build>/tables/home_locations.tsv`, `hangar_content.tsv`, `entity_counts.tsv` and the hangar elevators'
-//!   `transit_managers.tsv`, `transit_gateways.tsv` and `transit_hangars.tsv`: the DGS's tables of the build, see
+//!   `transit_managers.tsv`, `transit_gateways.tsv`, `transit_hangars.tsv` and `transit_prefab_entities.tsv`: the DGS's tables of the build, see
 //!   tables.rs and transit.rs. Written first, on every run, as the hangars come from the first. `--tables-only` writes
 //!   only them, in seconds, and leaves no manifest: the directory is a whole build again after a run without it, which
 //!   then converts only the collision that is missing.

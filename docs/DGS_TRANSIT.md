@@ -222,6 +222,33 @@ carriages of a trip never outnumber its riders.
 - The doors' timings come from the manager's data; the hold time from Transport's class defaults, as Transit's data has
   none.
 
+## Running it
+
+`transit::elevators` runs one simulated line per Transit manager that serves the hangar of a player the DGS holds.
+
+- **Stops.** A player's hangar becomes a stop of its manager's line when the player joins, and stops being one when
+  they leave. Its gateways are those of the transit tables. Each is matched to its gateway prefab by the gateway
+  entity's place, which gives the call panel, the door and the limbo node.
+- **Gateway entities.** The DGS binds every entity of a gateway prefab itself (`transit_prefab_entities.tsv`): a
+  client would make them locally, own them, and run their interactions without telling the server.
+- **Calls.** A press of "Call elevator" reaches the DGS as the panel's `SvRequestInteract` (method 10), through the
+  replicant's `EntityMethod`. The DGS answers it with `ClOnInteract` (method 11) and gives the line a `Call`.
+- **Carriages and doors.** The line's commands reach the client through the session's `SessionUpdates` stream:
+  - a carriage is bound to the client of the hangar it is at, or is coming to, and unbound when it leaves for a stop
+    no client of this DGS has;
+  - it sits at the gateway while present and at the limbo node below it otherwise;
+  - the gateway's door opens and closes with the line's doors.
+- **Variables whose index is unknown.** Some variables have no known index in their entity's layout yet: the door's
+  `Door_OpenState` and the carriage's position. Such a change is sent by binding the entity again with the new value
+  as a snapshot, which is keyed by name. Once the index is read from a running client, the change goes in
+  `EntitySnapshotUpdate` (`transit::wire`).
+- **Not done yet** (logged where it would happen):
+  - rides to the lobby, which is not bound;
+  - moving a rider between carriages: the server follows the zone the client reports, and a forced move needs a
+    message that moves the player's entity, which is not known yet (only a split asks for it);
+  - saving a rider who left aboard: nothing to do while the DGS keeps no player position (they spawn in their hangar);
+    it becomes work with position persistence.
+
 ## Still open
 
 - Whether a rider moved between two carriages in limbo sees a break (a test on our server).

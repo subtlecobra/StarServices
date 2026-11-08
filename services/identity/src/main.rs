@@ -20,7 +20,7 @@ use sc_api::internal::{
     GetAccountsResponse, IssueGameTokenRequest, IssueGameTokenResponse, ListWebSessionsRequest, ListWebSessionsResponse,
     PasswordLoginRequest, PasswordLoginResponse, PlayerAccount, RegisterAccountRequest, RegisterAccountResponse,
     RevokeWebSessionRequest, RevokeWebSessionResponse, SearchAccountsRequest, SearchAccountsResponse,
-    SetAccountStateRequest, SetAccountStateResponse, VerifyWebSessionRequest, VerifyWebSessionResponse,
+    GameBadgesRequest, GameBadgesResponse, SetAccountStateRequest, SetAccountStateResponse, VerifyWebSessionRequest, VerifyWebSessionResponse,
 };
 use sc_runtime::{caller, state::State, CommonArgs, MAX_MESSAGE_BYTES};
 use tonic::{codec::CompressionEncoding, transport::Server, Request, Response, Status};
@@ -207,6 +207,11 @@ impl IdentityInternal for Identity {
     ) -> Result<Response<SetAccountStateResponse>, Status> {
         self.web.set_state(request.into_inner()).await.map(Response::new)
     }
+
+    async fn game_badges(&self, _: Request<GameBadgesRequest>) -> Result<Response<GameBadgesResponse>, Status> {
+        let badges = web::GAME_BADGES.iter().filter_map(|(id, _)| web::game_badge(*id)).collect();
+        Ok(Response::new(GameBadgesResponse { badges }))
+    }
 }
 
 /// Accounts are issued by sc-admin, so each start copies new ones into the database.
@@ -254,6 +259,14 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use sc_api::internal::{WebClient, WebSession};
+
+    #[tokio::test]
+    async fn the_badge_catalog_has_the_developer_badges() {
+        let ids: Vec<u32> = web::GAME_BADGES.iter().map(|(id, _)| *id).collect();
+        assert!([0x65, 0x67, 0x6b].iter().all(|id| ids.contains(id)), "STAFF, QA and GM");
+        assert!([1, 14, 126].iter().all(|id| ids.contains(id)), "the console's developer badges");
+        assert!(web::game_badge(0x42).is_none());
+    }
 
     /// A private schema of the server in `SCBACKEND_TEST_POSTGRES`, with identity's tables. Without it the tests do
     /// nothing, so `cargo test` stays offline.
@@ -462,6 +475,18 @@ mod tests {
         assert_eq!(verify(identity, &session.session_token).await.roles, ["admin"]);
         let bad_role = SetAccountStateRequest { account_id: made.account_id, roles: vec!["god".into()], set_roles: true, ..Default::default() };
         assert!(identity.set_account_state(Request::new(bad_role)).await.is_err());
+
+        // In-game badges: replaced as a set, kept apart from the roles, and only known ids.
+        let badges = SetAccountStateRequest { account_id: made.account_id, game_badges: vec![0x6b, 0x67], set_game_badges: true, ..Default::default() };
+        let badged = identity.set_account_state(Request::new(badges)).await.unwrap().into_inner().account.unwrap();
+        let ids: Vec<u32> = badged.game_badges.iter().map(|badge| badge.id).collect();
+        assert_eq!(ids, [0x67, 0x6b]);
+        assert_eq!(badged.game_badges[0].name, "QA (account mask)");
+        assert_eq!(badged.roles, ["admin"]);
+        let unknown = SetAccountStateRequest { account_id: made.account_id, game_badges: vec![0x42], set_game_badges: true, ..Default::default() };
+        assert!(identity.set_account_state(Request::new(unknown)).await.is_err());
+        let fetched = identity.get_account(Request::new(GetAccountRequest { account_id: made.account_id })).await.unwrap().into_inner().account.unwrap();
+        assert_eq!(fetched.game_badges.len(), 2);
 
         let disable = SetAccountStateRequest { account_id: made.account_id, disabled: Some(true), ..Default::default() };
         assert!(identity.set_account_state(Request::new(disable)).await.unwrap().into_inner().account.unwrap().disabled);

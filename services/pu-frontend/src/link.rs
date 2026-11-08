@@ -14,7 +14,8 @@ use std::{
 };
 
 use sc_api::internal::{
-    dgs_control_client::DgsControlClient, DgsStatusRequest, DgsStatusResponse, EntityBind, InputFrame, JoinPlayerRequest, LeavePlayerRequest,
+    dgs_control_client::DgsControlClient, session_update::Update, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall,
+    EntityMethodRequest, InputFrame, JoinPlayerRequest, LeavePlayerRequest, SessionUpdate, SessionUpdatesRequest,
     LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerMovement, ShardEntitiesRequest, ShardEntitiesResponse,
 };
 use tokio::{
@@ -83,6 +84,10 @@ pub enum Event {
     Status { dgs: String, status: Option<DgsStatusResponse> },
     /// Where the DGS has the player after its input. `None` when it did not answer.
     Movement { from: SocketAddr, session: u64, movement: Option<PlayerMovement> },
+    /// What the DGS sends back to a client for one of its remote method calls.
+    Calls { from: SocketAddr, session: u64, calls: Vec<EntityMethodCall> },
+    /// What the DGS has for the client of its own accord, such as a carriage of its hangar's elevator.
+    Update { from: SocketAddr, session: u64, update: Update },
 }
 
 enum Command {
@@ -267,16 +272,67 @@ impl Link {
             }
         };
         if connected {
-            while let Some(Command::Rejoin) = commands.recv().await {
-                let Some(account) = identity.account else { continue };
-                while self.join(session, account, identity.location, &asked).await.is_err() && !commands.is_closed() {
-                    sleep(self.retry).await;
+            // The DGS's updates for this session, until the connection ends. A stream that ends, as when the DGS restarts,
+            // is opened again; a rejoin opens it on the DGS that took the player back.
+            let mut updates: Option<tonic::Streaming<SessionUpdate>> = None;
+            loop {
+                if updates.is_none() {
+                    let dgs = asked.lock().unwrap().clone();
+                    if let Some(dgs) = dgs {
+                        updates = self.subscribe(&dgs, session).await;
+                    }
+                }
+                let next = async {
+                    match updates.as_mut() {
+                        Some(stream) => stream.message().await,
+                        None => {
+                            sleep(self.retry).await;
+                            Ok(None)
+                        }
+                    }
+                };
+                tokio::select! {
+                    command = commands.recv() => match command {
+                        Some(Command::Rejoin) => {
+                            updates = None;
+                            let Some(account) = identity.account else { continue };
+                            while self.join(session, account, identity.location, &asked).await.is_err() && !commands.is_closed() {
+                                sleep(self.retry).await;
+                            }
+                        }
+                        None => break,
+                    },
+                    message = next => match message {
+                        Ok(Some(SessionUpdate { update: Some(update) })) => {
+                            let _ = self.events.send(Event::Update { from, session, update });
+                        }
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => {
+                            if updates.take().is_some() {
+                                debug!(%from, session, "the DGS's updates ended, subscribing again");
+                                sleep(self.retry).await;
+                            }
+                        }
+                    },
                 }
             }
         }
         let dgs = asked.lock().unwrap().clone();
         if let Some(dgs) = dgs {
             self.leave(&dgs, session).await;
+        }
+    }
+
+    /// Opens a session's stream of updates on `dgs`. `None` when the DGS does not answer.
+    async fn subscribe(&self, dgs: &str, session: u64) -> Option<tonic::Streaming<SessionUpdate>> {
+        let mut client = self.client(dgs).inspect_err(|reason| debug!(%reason, "no updates")).ok()?;
+        let request = SessionUpdatesRequest { replicant: self.replicant, session };
+        match client.session_updates(Request::new(request)).await {
+            Ok(response) => Some(response.into_inner()),
+            Err(status) => {
+                debug!(reason = %reason(dgs, &status), "no updates");
+                None
+            }
         }
     }
 
@@ -299,6 +355,28 @@ impl Link {
             };
             let movement = reply.map(|reply| reply.into_inner().movement).inspect_err(|reason| debug!(%reason, "input not taken")).ok().flatten();
             let _ = link.events.send(Event::Movement { from, session, movement });
+        });
+    }
+
+    /// Hands a client's remote method call on an entity other than its player to the DGS that holds the player, and the
+    /// calls it answers with back to the loop. A DGS that does not hold the entity, or does not answer, sends nothing.
+    pub fn entity_method(self: &Arc<Self>, from: SocketAddr, session: u64, dgs: String, call: EntityMethodRequest) {
+        let link = self.clone();
+        tokio::spawn(async move {
+            let (entity, method) = (call.entity_id, call.method);
+            let request = EntityMethodRequest { replicant: link.replicant, session, ..call };
+            let reply = match link.client(&dgs) {
+                Ok(mut client) => client.entity_method(Request::new(request)).await.map_err(|status| format!("{} {}", status.code(), status.message())),
+                Err(reason) => Err(reason),
+            };
+            match reply {
+                Ok(reply) => {
+                    let calls = reply.into_inner().to_caller;
+                    info!(%from, entity, method, answers = calls.len(), "entity method taken by the DGS");
+                    let _ = link.events.send(Event::Calls { from, session, calls });
+                }
+                Err(reason) => info!(%from, entity, method, %reason, "entity method not taken"),
+            }
         });
     }
 

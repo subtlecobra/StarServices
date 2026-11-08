@@ -18,7 +18,7 @@ use sc_economy::{
     transaction::{retrying, Failure},
     ReplyStream,
 };
-use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, rental_internal_server::RentalInternalServer, RevokeExpiredRentalsRequest, SetRentalExpiryRequest, };
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_graph_internal_client::EntityGraphInternalClient, GrantItemsRequest, GrantedItem, rental_internal_server::RentalInternalServer, RevokeExpiredRentalsRequest, SetRentalExpiryRequest, };
 use sc_proto::{
     services::rental::v1::{
     external_rental_service_server::{ExternalRentalService, ExternalRentalServiceServer},
@@ -115,6 +115,10 @@ struct Args {
     /// Address of sc-entitlement, which owns the rentals' entitlements.
     #[arg(long, env = "SCBACKEND_ENTITLEMENT", default_value = "http://sc-entitlement:50051")]
     entitlement: String,
+    /// Address of the sc-entitygraph of the players' region, which keeps their items. With none a started rental makes no
+    /// item.
+    #[arg(long, env = "SCBACKEND_ENTITYGRAPH")]
+    entitygraph: Option<String>,
 }
 
 struct Rentals {
@@ -122,6 +126,8 @@ struct Rentals {
     db: Postgres,
     push: Push,
     entitlements: EntitlementInternalClient<Channel>,
+    /// sc-entitygraph, which keeps the players' items. Without it a started rental makes none.
+    graph: Option<EntityGraphInternalClient<Channel>>,
 }
 
 fn rental(row: &Row) -> Rental {
@@ -196,19 +202,19 @@ impl Rentals {
         id: &str,
         log_message: &str,
         target_inventory: &str,
-    ) -> Result<(String, i64), Failure> {
+    ) -> Result<(String, i64, String), Failure> {
         let mut client = self.db.client().await.map_err(internal)?;
         let transaction = db!(client.transaction());
         let started = db!(transaction.query_opt(
             "UPDATE rentals SET status = $3, began_at = now(), expire_at = now() + duration * interval '1 day',
                  target_inventory = $4
              WHERE id = $1 AND player_id = $2 AND status = $5
-             RETURNING entitlement_urn, (extract(epoch FROM expire_at) * 1000)::bigint AS expire_ms",
+             RETURNING entitlement_urn, entity_class_guid, (extract(epoch FROM expire_at) * 1000)::bigint AS expire_ms",
             &[&id, &geid, &(RentalStatus::Active as i32), &target_inventory, &(RentalStatus::Available as i32)],
         ));
         let Some(started) = started else {
             let existing = db!(transaction.query_opt(
-                "SELECT status, entitlement_urn, (extract(epoch FROM expire_at) * 1000)::bigint AS expire_ms
+                "SELECT status, entitlement_urn, entity_class_guid, (extract(epoch FROM expire_at) * 1000)::bigint AS expire_ms
                  FROM rentals WHERE id = $1 AND player_id = $2",
                 &[&id, &geid],
             ))
@@ -216,14 +222,46 @@ impl Rentals {
             if existing.get::<_, i32>("status") != RentalStatus::Active as i32 {
                 return Err(Status::failed_precondition("rental has finished").into());
             }
-            return Ok((existing.get("entitlement_urn"), existing.get::<_, Option<i64>>("expire_ms").unwrap_or(0)));
+            return Ok((
+                existing.get("entitlement_urn"),
+                existing.get::<_, Option<i64>>("expire_ms").unwrap_or(0),
+                existing.get("entity_class_guid"),
+            ));
         };
         db!(transaction.execute(
             "INSERT INTO rental_history (rental_id, player_id, log_action, log_message) VALUES ($1, $2, $3, $4)",
             &[&id, &geid, &(RentalLogAction::Started as i32), &log_message],
         ));
         db!(transaction.commit());
-        Ok((started.get("entitlement_urn"), started.get("expire_ms")))
+        Ok((started.get("entitlement_urn"), started.get("expire_ms"), started.get("entity_class_guid")))
+    }
+
+    /// The rented item, a new one of the rental's class in the inventory the player named, once per rental. A failure to
+    /// reach sc-entitygraph is the client's to retry, which asks again for the same item; one it refuses (a class that
+    /// is not seeded, an inventory it will not take) is logged, since a retry would be refused the same way.
+    async fn make_item(&self, player: u64, rental: &str, class_guid: &str, inventory: &str) -> Result<(), Status> {
+        let Some(mut graph) = self.graph.clone() else { return Ok(()) };
+        if inventory.is_empty() || class_guid.is_empty() {
+            return Ok(());
+        }
+        let request = GrantItemsRequest {
+            command_id: format!("rental:{rental}"),
+            owner_id: player,
+            inventory_id: inventory.to_string(),
+            items: vec![GrantedItem { entity_class_guid: class_guid.to_string(), stack_size: 1 }],
+            reason: format!("rental {rental}"),
+        };
+        match graph.grant_items(request).await {
+            Ok(reply) => {
+                info!(rental, geids = ?reply.into_inner().geids, "rented item made");
+                Ok(())
+            }
+            Err(status) if matches!(status.code(), tonic::Code::Unavailable | tonic::Code::DeadlineExceeded) => Err(status),
+            Err(status) => {
+                warn!(rental, %status, "no item for the rental");
+                Ok(())
+            }
+        }
     }
 }
 
@@ -237,7 +275,7 @@ impl ExternalRentalService for Rentals {
         command_id(request.arguments.as_ref())?;
         let body = request.body.ok_or_else(|| Status::invalid_argument("missing body"))?;
         let geid = account.geid as i64;
-        let (urn, expire_ms) =
+        let (urn, expire_ms, class_guid) =
             retrying(|| Rentals::start(self, geid, &body.id, &body.log_message, &body.target_inventory)).await?;
         // After every start, a repeated one included, so a failure here is mended by the client's retry.
         if expire_ms > 0 {
@@ -251,6 +289,7 @@ impl ExternalRentalService for Rentals {
             };
             self.entitlements.clone().set_rental_expiry(expiry).await?;
         }
+        self.make_item(account.geid, &body.id, &class_guid, &body.target_inventory).await?;
         info!(handle = %account.handle, rental = %body.id, "rental started");
         let arguments = request.arguments.unwrap_or_default();
         self.push.complete(account.account_id, &arguments, START_RESPONSE, &StartResponse::default()).await;
@@ -315,7 +354,17 @@ async fn serve(args: Args) -> Result<(), String> {
     let owner = Endpoint::from_shared(args.entitlement.clone()).map_err(|e| format!("--entitlement: {e}"))?;
     let entitlements = EntitlementInternalClient::new(owner.connect_lazy());
     tokio::spawn(sweep_expired(db.clone(), entitlements.clone()));
-    let service = Arc::new(Rentals { state: State::load(&args.common.data)?, db, push: Push::connect(&args.push)?, entitlements });
+    let graph = match &args.entitygraph {
+        Some(address) => {
+            let endpoint = Endpoint::from_shared(address.clone()).map_err(|e| format!("--entitygraph: {e}"))?;
+            Some(EntityGraphInternalClient::new(endpoint.connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(10)).connect_lazy()))
+        }
+        None => {
+            warn!("no entitygraph, a started rental makes no item");
+            None
+        }
+    };
+    let service = Arc::new(Rentals { state: State::load(&args.common.data)?, db, push: Push::connect(&args.push)?, entitlements, graph });
     let server = ExternalRentalServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)
         .max_decoding_message_size(MAX_MESSAGE_BYTES);

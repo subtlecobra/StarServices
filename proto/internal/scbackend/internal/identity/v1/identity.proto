@@ -127,6 +127,12 @@ message GetAccountRequest {
   uint32 account_id = 1;
 }
 
+// A badge the game client knows by its `PlatformBadge` id, such as QA (0x67), which marks a developer account.
+message GameBadge {
+  uint32 id = 1;
+  string name = 2;
+}
+
 message AccountSummary {
   uint32 account_id = 1;
   string handle = 2;
@@ -135,6 +141,8 @@ message AccountSummary {
   int64 created_at = 5;  // Unix ms
   bool disabled = 6;
   uint64 geid = 7;  // the account's player
+  // The account's in-game badges, by id. The login sends them to the client.
+  repeated GameBadge game_badges = 8;
 }
 
 message GetAccountResponse {
@@ -164,6 +172,16 @@ message SetAccountStateRequest {
   bool set_roles = 4;
   // An admin's password reset. Revokes the account's web sessions.
   optional string new_password = 5;
+  // Replaces the in-game badges, by id, when `set_game_badges`. Only ids of `GameBadges` are taken.
+  repeated uint32 game_badges = 6;
+  bool set_game_badges = 7;
+}
+
+message GameBadgesRequest {}
+
+message GameBadgesResponse {
+  // Every badge an account can be given, by id.
+  repeated GameBadge badges = 1;
 }
 
 message SetAccountStateResponse {
@@ -186,5 +204,7 @@ service IdentityInternal {
   rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
   rpc SearchAccounts(SearchAccountsRequest) returns (SearchAccountsResponse);
   rpc SetAccountState(SetAccountStateRequest) returns (SetAccountStateResponse);
+  // The in-game badges an account can be given.
+  rpc GameBadges(GameBadgesRequest) returns (GameBadgesResponse);
   // ---- Portal and admin (end) ----
 }

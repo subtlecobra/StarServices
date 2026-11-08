@@ -457,6 +457,74 @@ mod live {
         fixture.graph.db.aql(query, json!({ "id": id })).await.unwrap().pop()
     }
 
+    /// `GrantItems`: several items stowed at once, once per command id, nothing for an unknown class or a full inventory.
+    #[tokio::test]
+    #[ignore]
+    async fn grant_items_stows_them_once() {
+        use sc_api::internal::{GrantItemsRequest, GrantedItem};
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        graph.get_inventories(signed(&fixture.token, GetInventoriesRequest { body: Some(GetInventoriesRequestBody::default()) })).await.unwrap();
+        let base = fresh();
+        let guid = format!("grant{base}");
+        let class = json!([{ "_key": guid, "guid": guid, "guidHashCrc": ((base + 31) % 0xffff_fff0) as u32 + 1, "className": "Grant",
+                             "occupancyMicroScu": 300_000 }]);
+        graph.db.aql("FOR c IN @classes INSERT c INTO entity_classes", json!({ "classes": class })).await.unwrap();
+        let location = format!("{me}:Location:{base}");
+        let request = |command: &str, items: &[(&str, u32)]| GrantItemsRequest {
+            command_id: command.into(),
+            owner_id: me,
+            inventory_id: location.clone(),
+            items: items.iter().map(|(guid, stack)| GrantedItem { entity_class_guid: guid.to_uppercase(), stack_size: *stack }).collect(),
+            reason: "test".into(),
+        };
+        let command = format!("grant:{base}");
+        let first = EntityGraphInternal::grant_items(&**graph, Request::new(request(&command, &[(&guid, 0), (&guid, 3)]))).await.unwrap().into_inner();
+        assert_eq!((first.geids.len(), first.replayed), (2, false));
+        let again = EntityGraphInternal::grant_items(&**graph, Request::new(request(&command, &[(&guid, 0), (&guid, 3)]))).await.unwrap().into_inner();
+        assert_eq!((again.geids.clone(), again.replayed), (first.geids.clone(), true), "a repeat grants nothing");
+        let held = stow_of(&fixture, first.geids[1]).await;
+        assert_eq!((held.owner_id, held.inventory_id.as_deref()), (me, Some(location.as_str())));
+        let unknown = EntityGraphInternal::grant_items(&**graph, Request::new(request(&format!("{command}-x"), &[("nothing", 1)]))).await;
+        assert_eq!(unknown.unwrap_err().code(), tonic::Code::NotFound);
+    }
+
+    /// `EnsureLoadout`: the items of a loadout made once per command id, each attached to its parent's port.
+    #[tokio::test]
+    #[ignore]
+    async fn ensure_loadout_makes_the_items_once() {
+        use sc_api::internal::{EnsureLoadoutRequest, LoadoutItem};
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let base = fresh();
+        let crc = |n: u64| ((base + n) % 0xffff_fff0) as u32 + 1;
+        let (body, head) = (crc(21), crc(22));
+        let classes = json!([
+            { "_key": format!("body{base}"), "guid": format!("body{base}"), "guidHashCrc": body, "className": "Body" },
+            { "_key": format!("head{base}"), "guid": format!("head{base}"), "guidHashCrc": head, "className": "Head" },
+        ]);
+        graph.db.aql("FOR c IN @classes INSERT c INTO entity_classes", json!({ "classes": classes })).await.unwrap();
+        let items = vec![
+            LoadoutItem { class_crc: body, port_crc: 0xab63_41ac, parent: -1 },
+            LoadoutItem { class_crc: head, port_crc: 0x1234_5678, parent: 0 },
+        ];
+        let request = |command: &str, items: Vec<LoadoutItem>| EnsureLoadoutRequest { command_id: command.into(), player_id: me, items };
+        let command = format!("loadout:{me}:{base}");
+        let first = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request(&command, items.clone()))).await.unwrap().into_inner();
+        assert_eq!((first.geids.len(), first.replayed), (2, false));
+        assert!(first.geids[0] >= admin::FIRST_ITEM_GEID && first.geids[1] == first.geids[0] + 1);
+        let again = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request(&command, items.clone()))).await.unwrap().into_inner();
+        assert_eq!((again.geids.clone(), again.replayed), (first.geids.clone(), true), "a repeat makes nothing");
+        let query = "FOR e IN entity_edges FILTER e.startId == @geid RETURN { to: e.endId, port: e.attachmentPortCrc }";
+        let head_edge = graph.db.aql(query, json!({ "geid": first.geids[1].to_string() })).await.unwrap();
+        assert_eq!(head_edge, [json!({ "to": first.geids[0].to_string(), "port": 0x1234_5678 })]);
+        let body_edge = graph.db.aql(query, json!({ "geid": first.geids[0].to_string() })).await.unwrap();
+        assert_eq!(body_edge[0]["to"], json!(me.to_string()), "a root is attached to the player");
+        let unknown = vec![LoadoutItem { class_crc: crc(99), port_crc: 1, parent: -1 }];
+        let refused = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request(&format!("{command}-x"), unknown))).await;
+        assert_eq!(refused.unwrap_err().code(), tonic::Code::NotFound);
+    }
+
     /// Location, ship and container inventories: created when first needed, sized by class, nested, guarded
     /// against loops, over-filling and other players.
     #[tokio::test]

@@ -193,6 +193,69 @@ message PlayerInputResponse {
   PlayerMovement movement = 1;
 }
 
+// A client's call of a remote method (`EntityRemoteMethod`) of an entity other than its player, as the client sent it.
+message EntityMethodRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The caller's player entity.
+  fixed64 player_id = 3;
+  fixed64 entity_id = 4;
+  // The method's index on the entity, in the order the entity's components registered their remote methods.
+  uint32 method = 5;
+  // The arguments, as serialized by the client.
+  bytes args = 6;
+}
+
+// A remote method call for the replicant to send to a client, as `EntityRemoteMethod`.
+message EntityMethodCall {
+  fixed64 entity_id = 1;
+  uint32 method = 2;
+  bytes args = 3;
+}
+
+message EntityMethodResponse {
+  // What to send back to the caller alone, in order. Empty when the call has no answer, as a refused interaction has none.
+  repeated EntityMethodCall to_caller = 1;
+}
+
+message SessionUpdatesRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+}
+
+// Entities to bind to a client, as one bind batch in this order. `key` names the batch in the replicant's logs.
+message EntityBinds {
+  string key = 1;
+  repeated EntityBind binds = 2;
+}
+
+// Entities to unbind from a client.
+message EntityUnbinds {
+  repeated fixed64 entity_ids = 1;
+}
+
+// A variable of an entity, by its index in the entity's serialized layout, as `EntitySnapshotUpdate` carries it.
+message EntityVariable {
+  uint32 index = 1;
+  bytes value = 2;
+}
+
+// Changed variables of one entity, for one `EntitySnapshotUpdate`.
+message EntityVariables {
+  fixed64 entity_id = 1;
+  repeated EntityVariable variables = 2;
+}
+
+// Something a DGS has for a client of its own accord, such as a carriage of the client's hangar elevator.
+message SessionUpdate {
+  oneof update {
+    EntityBinds binds = 1;
+    EntityUnbinds unbinds = 2;
+    EntityVariables variables = 3;
+    EntityMethodCall call = 4;
+  }
+}
+
 // Answered by each sc-dgs pod, through its own Service of the shard's namespace. Only the replicant reaches it, by the
 // namespace's NetworkPolicy. It has no GRPCRoute.
 service DgsControl {
@@ -210,4 +273,10 @@ service DgsControl {
   // The client's input for a player this DGS holds, and the movement state it has led to. NOT_FOUND for a player it does
   // not hold.
   rpc PlayerInput(PlayerInputRequest) returns (PlayerInputResponse);
+  // A client's call of a method of an entity this DGS holds for that client's session, such as an interaction with its
+  // hangar's elevator call panel. NOT_FOUND for an entity it does not hold for that session.
+  rpc EntityMethod(EntityMethodRequest) returns (EntityMethodResponse);
+  // What this DGS has for a session's client from now on, in order, for as long as the session is held. A later call
+  // for the same session takes over from an earlier one, whose stream ends.
+  rpc SessionUpdates(SessionUpdatesRequest) returns (stream SessionUpdate);
 }

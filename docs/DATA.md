@@ -20,7 +20,7 @@ Valkey cluster of the region, owned by `sc-gamedata`: see Game data per region b
   graph.
 - Each record has one owner. The link between the databases is the GEID, which both store.
 - Only the owning service reads or writes its tables and collections. Another service asks it over gRPC, through an
-  internal service in `proto/scbackend/internal.proto` that no GRPCRoute lists, such as:
+  internal service in `proto/internal/` (one package per owning service) that no GRPCRoute lists, such as:
 
 | Asks | Owner | For |
 |---|---|---|
@@ -143,7 +143,7 @@ with a file agree. In the client only `SeedingProcessor` and the code that sends
 ## Ownership
 
 Each table has one service that creates it and is the only one to read or write it. Any other service asks
-that one over gRPC, through the `*Internal` services of `proto/scbackend/internal.proto`, which share the
+that one over gRPC, through the `*Internal` services of `proto/internal/`, which share the
 owner's port and are listed by no GRPCRoute, so the game client cannot reach them.
 
 ### A purchase
@@ -359,6 +359,7 @@ a game patch needs a new game data image, not new service images.
 | `tables/transit_managers.tsv` | One row per Transit manager that serves a hangar of `home_locations.tsv`: the hash of the socpak that holds it, its entity GUID, name and transform in that socpak's frame, the carriage class and its CRC, the cab (`carriageInterior`) socpak hash, the fleet size (its `SpawnLocation`s), then `carriageWaitTime`, `carriageDoorTimeout`, `idealTimeBetweenArrivals`, `pauseDistance`, `carriageAcceleration`, `doorFindDistance` and, as 0 or 1, `allowOneDestination`, `sortDestinationsByName`, `sortDestinationsByPriority`, `forceStreamableTransit`, `carriageDoorOpenByDefault` | sc-dgs, at start |
 | `tables/transit_gateways.tsv` | One row per gateway (a stop's door) of those managers and of each hangar socpak's stop: its owner (socpak hash and GUID of the manager, or of the hangar's `TransitDynamicDestination` or Transport access point), its index among the owner's, the destination's index, name, important and enabled flags, how many carriages start there, the containers from the owner's down to the gateway's (comma separated socpak hashes, then their `<Child>` GUIDs), the gateway's GUID and transform, then the door, the call panel and the limbo node, each a GUID (empty when there is none) and a transform; all in the owner's socpak's frame | sc-dgs, at start |
 | `tables/transit_hangars.tsv` | One row per home location and hangar class, every size: location id, hangar class, class CRC, hangar socpak hash, system (`transit` or `transport`), the manager (socpak hash, GUID, name), how it was found (`link+tags`, `link`, `tags`, `iim-interface`), the stop's owner (GUID, name), the dynamic destination's radius, its transform in the hangar's frame, and whether its gateways are `baked` in the hangar's data or `gathered` from its prefabs | sc-dgs, at start |
+| `tables/transit_prefab_entities.tsv` | One row per entity of each prefab inside a hangar that holds a gateway (its call panel, door, gateway and limbo node), and of the cab interior of each manager that serves a hangar (its door, panel, lights and shapes): the prefab's socpak hash, the entity's index among its `.soc`'s entities in document order (the order the client gives them the ids of `ocIdRange`), its class CRC (CRC-32C of its `EntityClassGUID`), its name, its own geometry (`EntityGeometryResource`) and material, each empty where it takes its class's, and its transform in the prefab's frame. Only prefabs with a single `.soc` | sc-dgs, at start |
 | `collision/<socpak hash>.col` | The static collision of each hangar socpak of `home_locations.tsv`, see [DGS_PHYSICS.md](DGS_PHYSICS.md) | sc-dgs, at start, for its system's hangars |
 
 The tables are tab separated, one row per line, no header. `tools/gamedata-build/src/transit.rs` says how the transit

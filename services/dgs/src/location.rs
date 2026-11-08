@@ -44,7 +44,7 @@ const UINT32_TYPE: u32 = 0x5d4e_4bea;
 const HANGAR_FLAGS: u32 = 0x1400;
 /// FNV-1a of `ObjectContainerPhysicsController`, as registry slot +0x58 hashes it. A running client's hangar lacked
 /// this component, and with it the grid that makes the hangar a zone host.
-const OC_PHYSICS_CONTROLLER: u32 = 0x702b_110a;
+pub(crate) const OC_PHYSICS_CONTROLLER: u32 = 0x702b_110a;
 /// `AddChildrenToBatch` (0x1470c85e0) spawns an unstreamable container with `0x3000`, and `0x400` for a node with a
 /// planet (0x14058e0a0). A client's spawn hook takes the `0x2000` path to `PrepareObjectContainer` (0x1429322f0).
 const PLANET_FLAGS: u32 = 0x3400;
@@ -92,8 +92,33 @@ const TILE: u32 = 0xb272_936b;
 /// as true (0x1428e5f40). A server's `CreateStreamingBatch` (0x1470df4d2) writes it as true for a node whose xml has a
 /// node with a callback (`+0x25e`, 0x1470ffe2a).
 const SOC_HAS_METADATA_KEY: u32 = 0x06d0_5294;
+/// CRC-32 of `basegeometryresource.screengeometryoverride.geometry` and `...material`, `CBaseEntityGeometryResource`'s
+/// string variables (0x1428e4960). A non-empty geometry wins over the class's and the instance's (`RefreshGeometryInt`,
+/// 0x142943dc0), so it gives a bound gateway entity the model its `.soc` gives it, which no `entdata` holds.
+const GEOMETRY_OVERRIDE_KEY: u32 = 0xedfc_cdfc;
+const MATERIAL_OVERRIDE_KEY: u32 = 0x0410_b6c2;
 /// The halves of FNV-1a 64 of `bool`, xored (0x14035af50), as `player.rs`'s.
 const BOOL_TYPE: u32 = 0x0b9f_c026;
+
+/// The entities of a container that the DGS binds itself instead of letting the client make them from `ocIdRange`:
+/// those of a gateway prefab (`crate::transit::PrefabEntity`). The client makes a `.soc`'s statics in a local batch
+/// with flag `0x10` (`CreateImmovableEntities`, 0x1470d5b80), so it has authority over them and runs their
+/// interactions locally: a press on such a call panel never reaches the network. Bound as replicated entities, as
+/// official servers bind an instanced hangar's content, the panel sends `RmAuthorityRequestInteract` to the server
+/// (seen on a running client) and the door is the server's to open. Such a container gets no id ranges, so the client
+/// makes none of its statics; their ids stay reserved and each entity takes the one the client would have given it.
+/// Empty for any other container, and for a prefab whose table does not list exactly its statics.
+fn server_bound(socpak_hash: u32) -> &'static [crate::transit::PrefabEntity] {
+    let entities = crate::transit::tables().prefab_entities(socpak_hash);
+    let (statics, _) = entity_counts(socpak_hash);
+    if entities.len() as u64 != statics {
+        if !entities.is_empty() {
+            warn!(socpak = socpak_hash, statics, listed = entities.len(), "a gateway prefab's entities do not match its statics: the client makes them");
+        }
+        return &[];
+    }
+    entities
+}
 
 /// The planet of a location. `class_crc` is its `<Child>`'s `OrbitingObjectContainer`.
 #[derive(Clone, Debug, PartialEq)]
@@ -458,19 +483,23 @@ impl HomeHangar {
     /// The client skips these in its own `AddChildrenToBatch`, as their graph nodes have no ids (see the protocol notes (kept outside this repository)),
     /// and the hangar's shell and floor are brushes of the `.soc` of one of them, so without them there is no floor.
     /// One with tile item ports lists the components they need, see `TILE`.
+    ///
+    /// The entities of the gateway prefabs follow (`server_bound`), under the hangar as well.
     pub fn content_binds(&self) -> Vec<Bind> {
         let content = hangar_content(self.location.socpak_hash);
         let ids = HangarIds::new(self.entity_id, self.location.socpak_hash, &content).containers;
-        content
-            .into_iter()
-            .zip(ids)
-            .map(|(content, (entity_id, content_ids))| {
+        let mut binds: Vec<Bind> = content
+            .iter()
+            .zip(&ids)
+            .map(|(content, &(entity_id, content_ids))| {
                 let mut snapshots = vec![filename_snapshot(content.socpak_hash)];
                 if content.entity_crc != 0 {
                     snapshots.push(uint32_snapshot(ENT_SOCPAK_KEY, content.entity_socpak_hash));
                     snapshots.push(uint32_snapshot(ENT_CRC_KEY, content.entity_crc));
                 }
-                snapshots.extend(content_ids.snapshots());
+                if server_bound(content.socpak_hash).is_empty() {
+                    snapshots.extend(content_ids.snapshots());
+                }
                 let components = content_components(content.socpak_hash);
                 if !components.is_empty() {
                     snapshots.push(Snapshot { key: SOC_HAS_METADATA_KEY, type_id: BOOL_TYPE, value: vec![1] });
@@ -486,12 +515,122 @@ impl HomeHangar {
                     snapshots,
                 }
             })
-            .collect()
+            .collect();
+        binds.extend(self.server_static_binds(&content, &ids));
+        binds
+    }
+
+    /// The binds of the gateway prefabs' entities (`server_bound`): class defaults, and the instance's geometry and
+    /// material as overrides.
+    fn server_static_binds(&self, content: &[Content], ids: &[(u64, ContentIds)]) -> Vec<Bind> {
+        let mut binds = Vec::new();
+        for (content, (_, content_ids)) in content.iter().zip(ids) {
+            let (first, _) = content_ids.statics;
+            for entity in server_bound(content.socpak_hash) {
+                binds.push(Bind {
+                    entity_id: first + entity.index,
+                    class_crc: entity.class_crc,
+                    flags: CONTENT_FLAGS,
+                    transform: content.transform.then(&entity.pose),
+                    parent_id: self.entity_id,
+                    parent_attach_id: ZONE_ATTACHMENT,
+                    components: Vec::new(),
+                    snapshots: geometry_overrides(entity),
+                });
+            }
+        }
+        binds
+    }
+
+    /// The gateway prefabs among the containers of `content_binds`, with their entities' ids and places.
+    pub fn gateway_prefabs(&self) -> Vec<GatewayPrefab> {
+        let content = hangar_content(self.location.socpak_hash);
+        let ids = HangarIds::new(self.entity_id, self.location.socpak_hash, &content).containers;
+        let mut prefabs = Vec::new();
+        for (content, (_, content_ids)) in content.iter().zip(&ids) {
+            let entities = server_bound(content.socpak_hash);
+            if entities.is_empty() {
+                continue;
+            }
+            let mut prefab = GatewayPrefab { name: content.name.clone(), gateway: None, panel: None, door: None, limbo: None };
+            for entity in entities {
+                let placed = Some(Placed { entity_id: content_ids.statics.0 + entity.index, transform: content.transform.then(&entity.pose) });
+                match entity.class_crc {
+                    GATEWAY_CLASS | TRANSPORT_GATEWAY_CLASS => prefab.gateway = placed,
+                    CALL_PANEL_CLASS | TRANSPORT_PANEL_CLASS => prefab.panel = placed,
+                    LIMBO_NODE_CLASS => prefab.limbo = placed,
+                    _ => prefab.door = placed,
+                }
+            }
+            prefabs.push(prefab);
+        }
+        prefabs
+    }
+
+    /// The call panels among the entities of `content_binds`.
+    pub fn call_panels(&self) -> Vec<CallPanel> {
+        let prefabs = self.gateway_prefabs().into_iter();
+        // A Transport control panel's interactions are not a Transit panel's, and are not handled yet.
+        let transit = prefabs.filter(|prefab| prefab.limbo.is_some());
+        let panels = transit.filter_map(|prefab| Some(CallPanel { entity_id: prefab.panel?.entity_id, hangar_id: self.entity_id, gateway: prefab.name }));
+        panels.collect()
     }
 
     pub fn placement(&self) -> Placement {
         Placement { parent_id: self.entity_id, attach_id: ZONE_ATTACHMENT, transform: self.location.spawn }
     }
+}
+
+/// `TransitInteractionUIPanel_Elevator_Ext`, the class of every hangar elevator's call panel.
+pub const CALL_PANEL_CLASS: u32 = 3_016_690_202;
+
+/// `TransitGateway` and `TransitLimboNode`, the classes of a gateway prefab's gateway and limbo node.
+pub const GATEWAY_CLASS: u32 = 3_160_160_724;
+pub const LIMBO_NODE_CLASS: u32 = 157_523_774;
+/// The door classes of the gateway prefabs and the cab interiors: `ElevatorDoorDefaultTemplate` and its lowtech and
+/// Levski kin, and Area18's Transport door.
+pub const DOOR_CLASSES: [u32; 4] = [257_190_916, 621_302_575, 415_121_244, 4_092_652_084];
+/// The gateway and the control panel of Area18's Transport access point, which has no limbo node.
+const TRANSPORT_GATEWAY_CLASS: u32 = 2_791_990_256;
+const TRANSPORT_PANEL_CLASS: u32 = 3_633_828_005;
+
+/// An entity of a gateway prefab that the DGS binds, with where it is in the hangar's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub entity_id: u64,
+    pub transform: Transform,
+}
+
+/// The entities of one gateway prefab in a hangar, by role: the gateway, the call panel, the door and the limbo node.
+/// The door is the entity of none of the other classes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GatewayPrefab {
+    /// The name of the prefab's `<Child>` in the hangar.
+    pub name: String,
+    pub gateway: Option<Placed>,
+    pub panel: Option<Placed>,
+    pub door: Option<Placed>,
+    pub limbo: Option<Placed>,
+}
+
+/// A hangar elevator's call panel that the DGS binds, see `server_bound`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallPanel {
+    pub entity_id: u64,
+    /// The hangar's entity.
+    pub hangar_id: u64,
+    /// The name of the gateway prefab's `<Child>` in the hangar, such as `playerhangar_elev_hangar_ht_gateway-014`.
+    pub gateway: String,
+}
+
+/// The geometry and material of a prefab entity as override snapshots, each only when the instance has its own.
+pub(crate) fn geometry_overrides(entity: &crate::transit::PrefabEntity) -> Vec<Snapshot> {
+    use crate::universe::{string_value, STRING_TYPE};
+    [(GEOMETRY_OVERRIDE_KEY, &entity.geometry), (MATERIAL_OVERRIDE_KEY, &entity.material)]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| Snapshot { key, type_id: STRING_TYPE, value: string_value(value) })
+        .collect()
 }
 
 /// A player's hangar: `location` as the session names it, or the default. `None` for one with no usable row, or an
@@ -765,8 +904,10 @@ mod tests {
     #[test]
     fn orbituarys_hangar_binds_its_shell_after_its_spawn_closets() {
         let hangar = HomeHangar::new(ORBITUARY, 1, true).unwrap();
-        let binds = hangar.content_binds();
-        assert_eq!(binds.len(), 7);
+        let mut binds = hangar.content_binds();
+        assert_eq!(binds.len(), 11, "7 containers, then the 4 entities of the elevator's gateway prefab");
+        let gateway = binds.split_off(7);
+        assert!(gateway.iter().all(|bind| bind.entity_id > 220_000_065_588));
         let ids: Vec<u64> = binds.iter().map(|bind| bind.entity_id).collect();
         assert_eq!(ids, (220_000_065_581..220_000_065_588).collect::<Vec<_>>());
         assert!(binds.iter().all(|bind| (bind.parent_id, bind.parent_attach_id, bind.flags) == (220_000_065_536, 0x46c0_1eb2, 0x1000)));
@@ -783,6 +924,37 @@ mod tests {
         assert_eq!(keys, [OC_FILENAME_KEY, OC_ID_RANGE_KEY, OC_ID_RANGE_MOV_KEY, SOC_HAS_METADATA_KEY], "no entity XML: the socpak, the ranges and its tile port");
     }
 
+    /// Orison's small front hangar has four elevator gateways, `playerhangar_elev_hangar_ht_gateway-012` to `-015`, 4
+    /// statics each from H+235: limbo node, gateway, door and panel, all bound by the DGS, and the gateways get no
+    /// ranges.
+    #[test]
+    fn orisons_call_panels_are_bound_by_the_server_at_the_ids_the_client_would_give_them() {
+        const ORISON: u32 = 1_105_811_199;
+        let hangar = HomeHangar::new(ORISON, 1, true).unwrap();
+        let h = hangar.entity_id;
+        let binds = hangar.content_binds();
+        let panels: Vec<&Bind> = binds.iter().filter(|bind| bind.class_crc == 3_016_690_202).collect();
+        let ids: Vec<u64> = panels.iter().map(|bind| bind.entity_id - h).collect();
+        assert_eq!(ids, [238, 242, 246, 250]);
+        let listed: Vec<(u64, String)> = hangar.call_panels().into_iter().map(|panel| (panel.entity_id - h, panel.gateway)).collect();
+        assert_eq!(listed[2], (246, "playerhangar_elev_hangar_ht_gateway-014".to_string()));
+        assert_eq!(listed.len(), 4);
+        let bound: Vec<u64> = binds.iter().map(|bind| bind.entity_id - h).filter(|id| *id >= 235).collect();
+        assert_eq!(bound, (235..=250).collect::<Vec<_>>());
+        assert!(panels.iter().all(|bind| (bind.parent_id, bind.parent_attach_id, bind.flags) == (h, 0x46c0_1eb2, 0x1000)));
+        // The panel and the door take their `.soc`'s models as overrides; the limbo node and the gateway have none.
+        let panel_geometry = crate::universe::string_value("Objects/buildingsets/human/hightech/prop/interactive/console/console_elevator_1_panel_a.cgf");
+        assert!(panels.iter().all(|bind| matches!(bind.snapshots.as_slice(), [geometry] if (geometry.key, geometry.type_id, &geometry.value) == (GEOMETRY_OVERRIDE_KEY, crate::universe::STRING_TYPE, &panel_geometry))));
+        let door = binds.iter().find(|bind| bind.entity_id == h + 245).unwrap();
+        let keys: Vec<u32> = door.snapshots.iter().map(|snapshot| snapshot.key).collect();
+        assert_eq!(keys, [GEOMETRY_OVERRIDE_KEY, MATERIAL_OVERRIDE_KEY]);
+        assert!(binds.iter().filter(|bind| [h + 243, h + 244].contains(&bind.entity_id)).all(|bind| bind.snapshots.is_empty()));
+        let gateways = binds.iter().filter(|bind| bind.snapshots.first().is_some_and(|snapshot| snapshot.value == 2_432_330_252u32.to_le_bytes()));
+        assert!(gateways.clone().count() == 4 && gateways.into_iter().all(|bind| bind.snapshots.len() == 1), "the gateways get no id ranges");
+        let gateway = hangar_content(hangar.location.socpak_hash).into_iter().find(|content| content.name.ends_with("gateway-014")).unwrap();
+        assert_eq!(panels[2].transform, gateway.transform.then(&crate::transit::tables().prefab_entities(2_432_330_252)[3].pose));
+    }
+
     /// The fire extinguisher cabinets of `hangar_smlfrnt_002` (4) and `cargo_elevator_sml_001_rund_a` (1) attach to
     /// tile ports of their container, which need an item port container and a tile on its entity.
     #[test]
@@ -792,9 +964,9 @@ mod tests {
         let hangar = HomeHangar::new(ORBITUARY, 1, true).unwrap();
         let components: Vec<Vec<u32>> = hangar.content_binds().into_iter().map(|bind| bind.components).collect();
         let tiles = vec![ITEM_PORT_CONTAINER, TILE];
-        assert_eq!(components, [vec![], vec![], tiles.clone(), tiles, vec![], vec![], vec![]]);
+        assert_eq!(components[..7], [vec![], vec![], tiles.clone(), tiles, vec![], vec![], vec![]]);
         let flagged: Vec<bool> = hangar.content_binds().iter().map(|bind| bind.snapshots.iter().any(|snapshot| snapshot.key == SOC_HAS_METADATA_KEY)).collect();
-        assert_eq!(flagged, [false, false, true, true, false, false, false], "socHasMetadata, which runs the TileXmlEntry handler");
+        assert_eq!(flagged[..7], [false, false, true, true, false, false, false], "socHasMetadata, which runs the TileXmlEntry handler");
         assert_eq!(ENTITY_COUNTS.lines().filter_map(|row| counts_row(row.split('\t').next()?.parse().ok()?)).count(), ENTITY_COUNTS.lines().count());
     }
 

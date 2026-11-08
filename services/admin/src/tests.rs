@@ -11,7 +11,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
-use sc_api::internal::{ AccountSummary, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
+use sc_api::internal::{ AccountSummary, GameBadge, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter, EntitlementStatus},
@@ -89,7 +89,14 @@ impl Identity for Fake {
         Ok(Fake::summary(account_id))
     }
 
+    async fn game_badges(&self) -> Result<Vec<GameBadge>, Status> {
+        Ok(vec![GameBadge { id: 1, name: "RSI_STAFF".into() }, GameBadge { id: 0x67, name: "QA".into() }, GameBadge { id: 0x68, name: "SUBSCRIBER".into() }])
+    }
+
     async fn set_account_state(&self, request: SetAccountStateRequest) -> Result<AccountSummary, Status> {
+        if request.set_game_badges {
+            self.called(format!("badges {:?}", request.game_badges));
+        }
         self.called(format!("state {:?} {:?} {:?}", request.disabled, request.roles, request.new_password.is_some()));
         let mut account = Fake::summary(request.account_id).ok_or_else(|| Status::not_found("account"))?;
         account.disabled = request.disabled.unwrap_or(false);
@@ -566,6 +573,21 @@ async fn locations_change_only_while_the_player_is_off_a_shard() {
     assert!(notice(&stale).contains("changed meanwhile"));
     let unknown = site.act(&path, &[("location", "12345"), ("revision", "1"), ("reason", "r")]).await;
     assert!(unknown.location.contains("error=1"));
+}
+
+/// The account page offers every badge, marks the developer ones, and a change sends the ticked ones as a set.
+#[tokio::test]
+async fn an_admin_sets_an_accounts_in_game_badges() {
+    let site = site();
+    let page = site.get(&format!("/admin/accounts/{PLAYER}"), Some("admin")).await;
+    assert!(page.body.contains(r#"name="badge_103""#) && page.body.contains("RSI_STAFF (developer)") && page.body.contains("SUBSCRIBER"));
+    assert!(!page.body.contains("QA (developer)"));
+    let path = format!("/admin/accounts/{PLAYER}/state");
+    let done = site.act(&path, &[("op", "badges"), ("badge_1", "1"), ("badge_103", "1"), ("badge_104", "1"), ("badge_66", "1")]).await;
+    assert!(!done.location.contains("error=1"));
+    assert_eq!(site.fake.calls()[0], "badges [1, 103, 104]", "only known badges, in the catalog's order");
+    let records = site.audit.list(Some(PLAYER), 10).await.unwrap();
+    assert!(records[0].entry.detail.to_string().contains("QA"));
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@ use std::{
 };
 
 use blake2::{digest::consts::U16, Blake2s, Digest};
-use sc_api::internal::{DgsFrames, DgsStatusResponse, EntityBind, InputFrame, PlayerMovement, Rotation};
+use sc_api::internal::{session_update::Update, DgsFrames, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, InputFrame, PlayerMovement, Rotation};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
@@ -31,12 +31,14 @@ use tracing::{debug, info, warn};
 
 use crate::batches::{Batches, Completion};
 use crate::dgs::Directory;
-use crate::input::{action_frame, client_authority, indexes_hold, movement_update, MESSAGE_ENTITY_REMOTE_METHOD};
+use crate::input::{
+    action_frame, client_authority, indexes_hold, movement_update, remote_method, remote_method_message, variables_update, MESSAGE_ENTITY_REMOTE_METHOD,
+};
 use crate::link::{Event, Identity, Link, PlayerEntities, Session, World};
 use crate::sessions::Sessions;
 use crate::{
     channel::{
-        acknowledges, bind_batch, bind_batch_end, completed_batches, debug_server_info, debug_server_stats, greeting, later_packet, messages, normalized_header, packet_runs, reported_state, state_change,
+        acknowledges, bind_batch, bind_batch_end, completed_batches, debug_server_info, debug_server_stats, greeting, later_packet, messages, normalized_header, packet_runs, reported_state, state_change, unbind_batch,
         update_bubble_create, MAX_PACKET_MESSAGES, Channel, DataHeader, Receiver, FLAG_ENCRYPTED, FLAG_PLAINTEXT, FLAG_RESEND, HEADER_LEN,
     },
     curve::{KeyPair, Point, KEY_LEN as PUBKEY_LEN},
@@ -267,6 +269,12 @@ struct Peer {
     last_seen: Instant,
     /// The player's input frames not yet given to its DGS.
     input: Vec<InputFrame>,
+    /// The client's remote method calls on entities other than its player, not yet given to its DGS.
+    methods: Vec<EntityMethodRequest>,
+    /// Bind batches of the DGS's updates sent and not yet reported spawned, which end when they are.
+    update_batches: Vec<u32>,
+    /// The last unbind batch's id. Unbind batches are counted apart from bind batches.
+    unbind_batch: u32,
     input_in_flight: bool,
     /// The last frame that held nothing, which starts the next frame that does: the DGS moves a player over the time
     /// between frames.
@@ -551,6 +559,73 @@ impl Peer {
         true
     }
 
+    /// Keeps a client's call of a method of another entity than its player for its DGS, which may hold that entity, such
+    /// as a press of its hangar's elevator call panel. Only once in game.
+    fn receive_method(&mut self, payload: &[u8]) {
+        let Some(player) = self.joined().map(|joined| joined.player.entity_id) else { return };
+        let Some((entity_id, method, args)) = remote_method(payload) else { return };
+        if self.stage != Stage::InGame || entity_id == player {
+            return;
+        }
+        self.methods.push(EntityMethodRequest { replicant: 0, session: 0, player_id: player, entity_id, method, args: args.to_vec() });
+    }
+
+    fn forward_methods(&mut self, link: &Arc<Link>, from: SocketAddr) {
+        let Some(dgs) = self.joined().map(|joined| joined.dgs.clone()) else { return };
+        for call in std::mem::take(&mut self.methods) {
+            link.entity_method(from, self.session_id, dgs.clone(), call);
+        }
+    }
+
+    /// What the DGS sends of its own accord: binds as a batch of their own, ended once the client reports it spawned;
+    /// unbinds; changed variables; remote method calls. Only once in game: what comes before is the DGS's state from
+    /// before the client's, which a join has sent anyway.
+    fn receive_update(&mut self, update: Update) {
+        if self.stage != Stage::InGame {
+            info!(stage = ?self.stage, "a DGS update before the client is in game, dropped");
+            return;
+        }
+        match update {
+            Update::Binds(binds) => {
+                let ids: Vec<u64> = binds.binds.iter().map(|bind| bind.entity_id).collect();
+                let id = self.batches.open(binds.key.clone());
+                info!(batch = id, key = %binds.key, entities = ?ids, "binding the DGS's entities");
+                self.pending.push_back(bind_batch(id, &binds.binds));
+                self.update_batches.push(id);
+            }
+            Update::Unbinds(unbinds) => {
+                self.unbind_batch = self.unbind_batch.wrapping_add(1).max(1);
+                info!(batch = self.unbind_batch, entities = ?unbinds.entity_ids, "unbinding the DGS's entities");
+                self.pending.push_back(unbind_batch(self.unbind_batch, &unbinds.entity_ids));
+            }
+            Update::Variables(variables) => {
+                let indexes: Vec<u32> = variables.variables.iter().map(|variable| variable.index).collect();
+                info!(entity = variables.entity_id, ?indexes, "variables from the DGS");
+                let values = variables.variables.into_iter().map(|variable| (variable.index as usize, variable.value)).collect();
+                self.pending.push_back(variables_update(variables.entity_id, values));
+            }
+            Update::Call(call) => self.receive_calls(vec![call]),
+        }
+    }
+
+    /// Ends the update batches the client has spawned.
+    fn end_update_batches(&mut self) {
+        let batches = &self.batches;
+        let (done, open): (Vec<u32>, Vec<u32>) = self.update_batches.iter().partition(|id| batches.is_completed(**id));
+        self.update_batches = open;
+        for id in done {
+            self.pending.push_back(bind_batch_end(id));
+        }
+    }
+
+    /// The DGS's answers to the client's calls, each as the client sends its own.
+    fn receive_calls(&mut self, calls: Vec<EntityMethodCall>) {
+        for call in calls {
+            info!(entity = call.entity_id, method = call.method, args = %hex(&call.args), "entity method to the client");
+            self.pending.push_back(remote_method_message(call.entity_id, call.method, &call.args));
+        }
+    }
+
     /// The frames the DGS should have now, if any: one call at a time, and after the frame that stopped the player nothing
     /// until it moves again.
     fn input_to_forward(&mut self) -> Option<Vec<InputFrame>> {
@@ -688,6 +763,9 @@ impl Peer {
             client_state: 0,
             last_seen: Instant::now(),
             input: Vec::new(),
+            methods: Vec::new(),
+            update_batches: Vec::new(),
+            unbind_batch: 0,
             input_in_flight: false,
             input_idle: None,
             input_active: false,
@@ -754,6 +832,18 @@ fn receive_event(event: Event, peers: &mut HashMap<SocketAddr, Peer>) -> Option<
         Event::Movement { from, session, movement } => {
             if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
                 peer.receive_movement(movement);
+                return Some(from);
+            }
+        }
+        Event::Update { from, session, update } => {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
+                peer.receive_update(update);
+                return Some(from);
+            }
+        }
+        Event::Calls { from, session, calls } => {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
+                peer.receive_calls(calls);
                 return Some(from);
             }
         }
@@ -887,6 +977,7 @@ fn replication_data(data: &[u8], from: SocketAddr, peer: &mut Peer) -> Option<Ve
             Completion::Unknown => warn!(%from, batch, "client reported a batch it was not sent"),
         }
     }
+    peer.end_update_batches();
     if peer.data_packets <= MAX_LOGGED_DATA {
         info!(%from, flags = data[2], ?header, body = %hex(&body), "replication data");
     }
@@ -894,6 +985,9 @@ fn replication_data(data: &[u8], from: SocketAddr, peer: &mut Peer) -> Option<Ve
         // Action frames come 30 times a second.
         if id == MESSAGE_ENTITY_REMOTE_METHOD && peer.receive_input(payload) {
             debug!(%from, id, payload = %hex(payload), "client message");
+        } else if id == MESSAGE_ENTITY_REMOTE_METHOD {
+            info!(%from, id, payload = %hex(payload), "client message");
+            peer.receive_method(payload);
         } else {
             info!(%from, id, payload = %hex(payload), "client message");
         }
@@ -1059,6 +1153,7 @@ pub async fn serve(
             }
             peer.shard_population = population;
             peer.forward_input(&link, from);
+            peer.forward_methods(&link, from);
             if let Some(packet) = peer.greet(&shard_id, &shard_name).or_else(|| peer.advance()).or_else(|| peer.reliable_resend()) {
                 if peer.stage == Stage::InGame {
                     debug!(%from, resend = packet[2] & FLAG_RESEND != 0, "shard reliable packet sent");
@@ -1466,7 +1561,8 @@ mod tests {
         let messages = peer.pending.pop_back().unwrap();
         assert_eq!(&messages[..7], hex_bytes("1a040001000000").as_slice());
         let under_hangar = hex_bytes(concat!("0098063933000000", "b21ec046"));
-        assert_eq!(messages.windows(under_hangar.len()).filter(|window| *window == under_hangar).count(), 7);
+        // Its 7 containers and the 4 entities of its elevator's gateway prefab.
+        assert_eq!(messages.windows(under_hangar.len()).filter(|window| *window == under_hangar).count(), 11);
         let shell_socpak = hex_bytes(concat!("e6bca1ff", "ea4b4e5d", "38e0597f"));
         assert!(messages.windows(shell_socpak.len()).any(|window| window == shell_socpak));
     }

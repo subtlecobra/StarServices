@@ -171,6 +171,12 @@ const MESSAGE_BIND_BATCH_ADD_BIND: u8 = 27;
 const MESSAGE_BIND_BATCH_WAITING: u8 = 28;
 const MESSAGE_BIND_BATCH_SPAWNS_COMPLETED: usize = 29;
 const MESSAGE_BIND_BATCH_END: u8 = 30;
+const MESSAGE_UNBIND_BATCH: u8 = 31;
+const MESSAGE_UNBIND_BATCH_BEGIN: u8 = 32;
+const MESSAGE_UNBIND_BATCH_ADD: u8 = 33;
+const MESSAGE_UNBIND_BATCH_END: u8 = 34;
+/// The most ids an unbind message takes (0x1414fd120).
+const MAX_UNBINDS: usize = 15;
 const MESSAGE_UPDATE_BUBBLE_CREATE: u8 = 42;
 const MESSAGE_GAME_CONTEXT_INFO: u8 = 45;
 const CONTEXT_VALUE_LEN: usize = 16;
@@ -416,6 +422,34 @@ pub fn bind_batch(batch: u32, binds: &[EntityBind]) -> Vec<u8> {
     out
 }
 
+/// `UnbindBatch` (31), or for more ids than one message takes `UnbindBatchBegin` (32), `UnbindBatchAddUnbind` (33) and
+/// `UnbindBatchEnd` (34), all read by 0x1414fd120 as `[varint batch][varint count][count × u64 entity]`. Each takes at
+/// most `MAX_UNBINDS` ids and drops the rest. The client removes each entity with its children, except a child bound
+/// with `0x1000` and not `0x800`, and answers nothing (`RecvMsgUnbindBatch`, 0x1415b5da0).
+pub fn unbind_batch(batch: u32, entities: &[u64]) -> Vec<u8> {
+    let part = |id: u8, ids: &[u64], out: &mut Vec<u8>| {
+        let mut payload = Vec::new();
+        varint(batch as usize, &mut payload);
+        varint(ids.len(), &mut payload);
+        for entity in ids {
+            payload.extend_from_slice(&entity.to_le_bytes());
+        }
+        message(id, &payload, out);
+    };
+    let mut out = Vec::new();
+    if entities.len() <= MAX_UNBINDS {
+        part(MESSAGE_UNBIND_BATCH, entities, &mut out);
+        return out;
+    }
+    let mut chunks = entities.chunks(MAX_UNBINDS).peekable();
+    part(MESSAGE_UNBIND_BATCH_BEGIN, chunks.next().unwrap_or_default(), &mut out);
+    while let Some(chunk) = chunks.next() {
+        let id = if chunks.peek().is_some() { MESSAGE_UNBIND_BATCH_ADD } else { MESSAGE_UNBIND_BATCH_END };
+        part(id, chunk, &mut out);
+    }
+    out
+}
+
 pub fn bind_batch_end(batch: u32) -> Vec<u8> {
     let mut out = Vec::new();
     message(MESSAGE_BIND_BATCH_END, &batch.to_le_bytes(), &mut out);
@@ -461,6 +495,23 @@ impl Receiver {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unbind_names_its_batch_and_entities_and_a_long_one_goes_in_parts() {
+        let one = super::unbind_batch(7, &[0x34_bfa6_98f6]);
+        assert_eq!(one, [31, 10, 0, 7, 1, 0xf6, 0x98, 0xa6, 0xbf, 0x34, 0, 0, 0]);
+        let ids: Vec<u64> = (1..=31).collect();
+        let long = super::unbind_batch(9, &ids);
+        // Each part is `[id][length][0][batch][count][ids]`: 15 ids are 122 bytes, one is 10.
+        let mut parts = Vec::new();
+        let mut at = 0;
+        while at < long.len() {
+            let length = usize::from(long[at + 1]);
+            parts.push((long[at], long[at + 3], long[at + 4]));
+            at += 3 + length;
+        }
+        assert_eq!(parts, [(32, 9, 15), (33, 9, 15), (34, 9, 1)]);
+    }
+
     use super::*;
     use sc_api::internal::EntitySnapshot;
 

@@ -69,7 +69,7 @@ step "3/4 DGS test data (services/dgs/testdata/)"
 testdata=services/dgs/testdata
 # `REST_STOP` in services/dgs/src/physics/world.rs: hangar_smlfrnt_002_rest_rund, Orbituary's hangar.
 fixtures=(tables/home_locations.tsv tables/hangar_content.tsv tables/entity_counts.tsv tables/transit_managers.tsv
-  tables/transit_gateways.tsv tables/transit_hangars.tsv collision/1200814982.col)
+  tables/transit_gateways.tsv tables/transit_hangars.tsv tables/transit_prefab_entities.tsv collision/1200814982.col)
 for file in "${fixtures[@]}"; do
   [[ -f $built/$file ]] || fail "build $build has no $file; the tests' hangar may have changed with the patch"
 done

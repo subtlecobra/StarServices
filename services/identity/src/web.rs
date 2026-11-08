@@ -18,7 +18,7 @@ use ring::{
 };
 use sc_db::{internal, Postgres, Row};
 use sc_api::internal::{
-    AccountSummary, ChangePasswordRequest, ChangePasswordResponse, GetAccountRequest, GetAccountResponse,
+    AccountSummary, ChangePasswordRequest, GameBadge, ChangePasswordResponse, GetAccountRequest, GetAccountResponse,
     IssueGameTokenRequest, IssueGameTokenResponse, ListWebSessionsRequest, ListWebSessionsResponse,
     PasswordLoginRequest, PasswordLoginResponse, RegisterAccountRequest, RegisterAccountResponse,
     RevokeWebSessionRequest, RevokeWebSessionResponse, SearchAccountsRequest, SearchAccountsResponse,
@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS account_roles (
     role TEXT NOT NULL,
     granted_at_ms BIGINT NOT NULL,
     PRIMARY KEY (account_id, role)
+);
+CREATE TABLE IF NOT EXISTS account_game_badges (
+    account_id BIGINT NOT NULL,
+    badge INTEGER NOT NULL,
+    granted_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (account_id, badge)
 );
 CREATE TABLE IF NOT EXISTS web_sessions (
     session_id TEXT PRIMARY KEY,
@@ -83,6 +89,33 @@ const FIRST_GEID: i64 = 300_000_000_000;
 const LAST_REGISTERED_INDEX: i64 = 1_199_999;
 
 pub const ROLES: &[&str] = &["admin"];
+
+/// The badges the game client knows, by their `PlatformBadge` id. It maps them to two mask words (0x140536600). The
+/// console takes an account as a developer's when the second word has bit 0, 1 or 2, which ids 14, 1 and 126 set
+/// (`CXConsole::IsCommandExecutionAllowed`): that unlocks its restricted commands and cvars. STAFF, QA, GM and the others
+/// set bits of the first word only. The `RSI_` ones are named for the bit they set in the client's `EAccountBadgeMask`,
+/// the second word (reflected at 0x142d4d3e0): QA 0x01 (id 14), STAFF 0x02 (1), GM 0x04 (126), SUBSCRIBER 0x08 (5),
+/// CONCIERGE 0x10 (9), MMHC 0x20 (123), BACKER 0x40 (4). The client reads only the ids.
+pub const GAME_BADGES: &[(u32, &str)] = &[
+    (1, "RSI_STAFF"),
+    (14, "RSI_QA"),
+    (126, "RSI_GM"),
+    (5, "RSI_SUBSCRIBER"),
+    (9, "RSI_CONCIERGE"),
+    (123, "RSI_MMHC"),
+    (4, "RSI_BACKER"),
+    (0x65, "STAFF (account mask)"),
+    (0x66, "CONCIERGE (account mask)"),
+    (0x67, "QA (account mask)"),
+    (0x68, "SUBSCRIBER (account mask)"),
+    (0x6b, "GM (account mask)"),
+    (0x6d, "MMHC (account mask)"),
+    (0x71, "BACKER (account mask)"),
+];
+
+pub fn game_badge(id: u32) -> Option<GameBadge> {
+    GAME_BADGES.iter().find(|(known, _)| *known == id).map(|(id, name)| GameBadge { id: *id, name: (*name).to_string() })
+}
 
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 24 * 60 * MINUTE_MS;
@@ -266,8 +299,18 @@ impl Web {
         Ok(rows.iter().map(|row| row.get("role")).collect())
     }
 
+    async fn game_badges(&self, account_id: u32) -> Result<Vec<GameBadge>, Status> {
+        let rows = self
+            .db
+            .query("SELECT badge FROM account_game_badges WHERE account_id = $1 ORDER BY badge", &[&i64::from(account_id)])
+            .await
+            .map_err(internal)?;
+        Ok(rows.iter().filter_map(|row| game_badge(row.get::<_, i32>("badge") as u32)).collect())
+    }
+
     async fn summary(&self, stored: Stored) -> Result<AccountSummary, Status> {
         Ok(AccountSummary {
+            game_badges: self.game_badges(stored.account.account_id).await?,
             account_id: stored.account.account_id,
             roles: self.roles(stored.account.account_id).await?,
             handle: stored.account.handle,
@@ -620,6 +663,11 @@ impl Web {
                 return Err(Status::invalid_argument(format!("unknown role '{unknown}'")));
             }
         }
+        if request.set_game_badges {
+            if let Some(unknown) = request.game_badges.iter().find(|badge| game_badge(**badge).is_none()) {
+                return Err(Status::invalid_argument(format!("unknown game badge {unknown:#x}")));
+            }
+        }
         let hash = match &request.new_password {
             Some(password) => {
                 let email = found.email.clone().unwrap_or_default();
@@ -672,6 +720,19 @@ impl Web {
                     .map_err(internal)?;
             }
         }
+        if request.set_game_badges {
+            transaction.execute("DELETE FROM account_game_badges WHERE account_id = $1", &[&id]).await.map_err(internal)?;
+            for badge in &request.game_badges {
+                transaction
+                    .execute(
+                        "INSERT INTO account_game_badges (account_id, badge, granted_at_ms) VALUES ($1, $2, $3)
+                         ON CONFLICT DO NOTHING",
+                        &[&id, &(*badge as i32), &now],
+                    )
+                    .await
+                    .map_err(internal)?;
+            }
+        }
         transaction.commit().await.map_err(internal)?;
         if request.disabled == Some(true) || hash.is_some() {
             self.revoke_all(account_id, None).await?;
@@ -682,6 +743,10 @@ impl Web {
         }
         if request.set_roles {
             changes.push(format!("roles={}", request.roles.join(",")));
+        }
+        if request.set_game_badges {
+            let names: Vec<String> = request.game_badges.iter().filter_map(|badge| game_badge(*badge)).map(|badge| badge.name).collect();
+            changes.push(format!("game_badges={}", names.join(",")));
         }
         if hash.is_some() {
             changes.push("password reset".to_string());

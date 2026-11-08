@@ -57,6 +57,26 @@ const PARENT_ENTITY_KEY: u32 = 0x2f3f_d8e1;
 /// `EntityId`, one `u64` (0x140617300), the type `ssQuantumGridId` also has. Read from the running client (0x149e30c40).
 const ENTITY_ID_TYPE: u32 = 0x728a_e36a;
 
+/// CRC-32 of the lowercased `scplayer.rsiBadges`: the player's badges, which the client builds its account badge mask
+/// from in `CSCPlayer::Initialize` (0x142eca720), the same ids the login reply carries (QA 0x67 and so on).
+const RSI_BADGES_KEY: u32 = 0xfc2f_88a6;
+/// A sequence of `int16`: FNV-1a 64 of `Sequence` then `int16`, halves xored (0x142a41df0). Its value is a varint count,
+/// then each id as a little-endian `u16` (0x142f5c7c0).
+const INT16_SEQUENCE_TYPE: u32 = 0x62bd_6940;
+
+/// The player's in-game badges, for its bind.
+pub fn badges_snapshot(badges: &[u32]) -> Snapshot {
+    let mut value = Vec::new();
+    let mut count = badges.len();
+    while count >= 0x80 {
+        value.push(count as u8 | 0x80);
+        count >>= 7;
+    }
+    value.push(count as u8);
+    value.extend(badges.iter().flat_map(|badge| (*badge as u16).to_le_bytes()));
+    Snapshot { key: RSI_BADGES_KEY, type_id: INT16_SEQUENCE_TYPE, value }
+}
+
 /// CRC-32 of `networknodeid`.
 const NETWORK_NODE_ID_KEY: u32 = 0xd8c4_66e5;
 /// `TNetworkNodeId`, a struct of `m_val`, a `CryGUID` of `hipart` and `lopart` (0x1414d8840).
@@ -199,6 +219,16 @@ pub fn player_record(geid: u64, account: u64, placement: Placement, location_id:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn badges_go_as_a_counted_sequence_of_int16() {
+        let crc = !b"scplayer.rsibadges".iter().fold(!0u32, |crc, byte| {
+            (0..8).fold(crc ^ u32::from(*byte), |crc, _| if crc & 1 == 1 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 })
+        });
+        let snapshot = badges_snapshot(&[0x67, 0x6b]);
+        assert_eq!((snapshot.key, snapshot.type_id), (crc, 0x62bd_6940));
+        assert_eq!(snapshot.value, [2, 0x67, 0, 0x6b, 0]);
+    }
+
     use super::*;
 
     const GEID: u64 = 300_000_000_001;

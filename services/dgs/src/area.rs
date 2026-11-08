@@ -88,6 +88,20 @@ mod tests {
             Err(Status::unimplemented("get_owners"))
         }
 
+        async fn grant_items(
+            &self,
+            _: Request<sc_api::internal::GrantItemsRequest>,
+        ) -> Result<Response<sc_api::internal::GrantItemsResponse>, Status> {
+            Err(Status::unimplemented("grant_items"))
+        }
+
+        async fn ensure_loadout(
+            &self,
+            _: Request<sc_api::internal::EnsureLoadoutRequest>,
+        ) -> Result<Response<sc_api::internal::EnsureLoadoutResponse>, Status> {
+            Err(Status::unimplemented("ensure_loadout"))
+        }
+
         // ---- Admin inventories: not used by this test ----
         async fn admin_inventory_tree(
             &self,

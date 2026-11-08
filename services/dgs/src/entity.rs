@@ -24,6 +24,26 @@ pub struct Transform {
 
 impl Transform {
     pub const IDENTITY: Self = Self { position: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0] };
+
+    /// `child`, given in this transform's frame, in this transform's parent's frame.
+    pub fn then(&self, child: &Self) -> Self {
+        let [x, y, z, w] = self.rotation;
+        let [cx, cy, cz, cw] = child.rotation;
+        let v = child.position;
+        // v + 2w(u × v) + 2u × (u × v), u = (x, y, z).
+        let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let u = [x, y, z];
+        let uv = cross(u, v);
+        let uuv = cross(u, uv);
+        let position = [0, 1, 2].map(|axis| self.position[axis] + v[axis] + 2.0 * (w * uv[axis] + uuv[axis]));
+        let rotation = [
+            w * cx + x * cw + y * cz - z * cy,
+            w * cy - x * cz + y * cw + z * cx,
+            w * cz + x * cy - y * cx + z * cw,
+            w * cw - x * cx - y * cy - z * cz,
+        ];
+        Self { position, rotation }
+    }
 }
 
 /// The fields of a `BindBatchAddBind` a DGS chooses. The rest are the values of an entity with no tags or owner, and the
@@ -65,5 +85,22 @@ impl From<Bind> for EntityBind {
             components: bind.components,
             snapshots: bind.snapshots.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_turns_and_moves_with_its_parent() {
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let parent = Transform { position: [10.0, 0.0, 0.0], rotation: [0.0, 0.0, half, half] };
+        let child = Transform { position: [1.0, 0.0, 0.0], rotation: [0.0, 0.0, half, half] };
+        let both = parent.then(&child);
+        let close = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-12);
+        assert!(close(&both.position, &[10.0, 1.0, 0.0]), "{:?}", both.position);
+        assert!(close(&both.rotation, &[0.0, 0.0, 1.0, 0.0]), "{:?}", both.rotation);
+        assert_eq!(Transform::IDENTITY.then(&child), child);
     }
 }

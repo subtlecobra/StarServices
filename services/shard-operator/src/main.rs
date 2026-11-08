@@ -101,6 +101,9 @@ struct Args {
     /// The `sc-character-customizer` address of the DGS pods, which they ask for saved characters. A full service name.
     #[arg(long, env = "SCBACKEND_DGS_CUSTOMIZER", default_value = "http://sc-character-customizer.scbackend.svc:50051")]
     dgs_customizer: String,
+    /// The `sc-identity` address of the DGS pods, which they ask for an account's in-game badges. A full service name.
+    #[arg(long, env = "SCBACKEND_DGS_IDENTITY", default_value = "http://sc-identity.scbackend.svc:50051")]
+    dgs_identity: String,
     /// The sc-gamedata image of each ShardRegion's game data. Required to run the operator.
     #[arg(long, env = "SCBACKEND_GAMEDATA_IMAGE")]
     gamedata_image: Option<String>,
@@ -1367,7 +1370,7 @@ async fn install(namespace: String, templates: PathBuf, regions: Option<PathBuf>
 async fn serve(args: Args) -> Result<(), String> {
     let client = kube_client().await?;
     let shared = Arc::new(Mutex::new(Shared::default()));
-    let dgs = DgsSettings { image: args.dgs_image.clone().unwrap_or_default(), customizer: args.dgs_customizer.clone() };
+    let dgs = DgsSettings { image: args.dgs_image.clone().unwrap_or_default(), customizer: args.dgs_customizer.clone(), identity: args.dgs_identity.clone() };
     let gamedata = GamedataSettings {
         image: args.gamedata_image.clone().unwrap_or_default(),
         registry: args.gamedata_registry.clone(),

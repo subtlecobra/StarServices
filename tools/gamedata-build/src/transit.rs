@@ -5,6 +5,8 @@
 //! - `transit_gateways.tsv`: one row per gateway (a stop's door) of those managers, and of each hangar socpak.
 //! - `transit_hangars.tsv`: one row per home location and hangar class, every size (`defaultHangars`), with the system
 //!   and the manager that serves it.
+//! - `transit_prefab_entities.tsv`: the entities of each prefab below a hangar socpak that holds a gateway, in the
+//!   order of its `.soc`, for the DGS to bind them itself (a client makes them local and runs their interactions there).
 //!
 //! The game has two elevator systems. Transit (`SCTransit*`) serves the hangars of Orison, New Babbage, Lorville, Levski
 //! and the rest stops; Transport (`SCTransport*`) those of Area18. A hangar's system is the kind of gateway its tree
@@ -50,7 +52,7 @@
 //! times (a lobby's doors) and only the GUIDs tell its instances apart.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write,
 };
 
@@ -68,6 +70,7 @@ use crate::tables::{children, exists, HangarClass, HomeHangars, folded, guid_crc
 pub const MANAGERS: &str = "tables/transit_managers.tsv";
 pub const GATEWAYS: &str = "tables/transit_gateways.tsv";
 pub const HANGARS: &str = "tables/transit_hangars.tsv";
+pub const PREFAB_ENTITIES: &str = "tables/transit_prefab_entities.tsv";
 
 const MAX_DEPTH: usize = 16;
 /// How far a gateway taken from a hangar's prefabs may be from where its baked list puts it, in metres.
@@ -78,6 +81,10 @@ pub struct Tables {
     pub managers: String,
     pub gateways: String,
     pub hangars: String,
+    /// The entities of each prefab inside a hangar that holds a gateway, which the DGS binds itself.
+    pub prefab_entities: String,
+    /// The cab interiors of the managers written, whose entity counts the counts table takes too.
+    pub cab_paths: Vec<String>,
 }
 
 /// `w,x,y,z` as a normalized `x y z w`.
@@ -214,6 +221,8 @@ struct Manager {
     carriage_class: String,
     carriage_crc: u32,
     cab_hash: u32,
+    /// The cab interior's socpak, from `Data/` on, for its entity counts.
+    cab_path: String,
     carriages: usize,
     numbers: [f64; 6],
     flags: [bool; 5],
@@ -266,6 +275,8 @@ impl Manager {
             carriage_class: carriage_class.rsplit('.').next().unwrap_or_default().to_string(),
             carriage_crc: if carriage.is_empty() { 0 } else { guid_crc(&carriage) },
             cab_hash: socpak_hash(&interior).unwrap_or(0),
+            // The data names it from `ObjectContainers/` on; the archive from `Data/`.
+            cab_path: if interior.is_empty() || folded(&interior).starts_with("data/") { interior.clone() } else { format!("Data/{interior}") },
             carriages: 0,
             numbers: NUMBERS.map(number),
             flags: FLAGS.map(flag),
@@ -429,6 +440,8 @@ struct Hangar {
     /// the hangar is taken.
     source: &'static str,
     gateways: Vec<Gateway>,
+    /// The containers below the hangar socpak that hold a gateway entity, by path.
+    prefabs: Vec<String>,
 }
 
 /// A container found in a hangar: its path, its frame in the hangar's, the `<Child>` GUIDs and socpak hashes from the
@@ -539,12 +552,17 @@ fn transport_gateway(zip: &SocZip, frame: &Frame, chain: &[String], hashes: &[u3
 fn hangar(socpaks: &Socpaks, path: &str) -> Hangar {
     let mut transit: Vec<Gateway> = Vec::new();
     let mut transport: Vec<(Gateway, String, String, Frame)> = Vec::new();
+    let mut prefabs: Vec<String> = Vec::new();
     let mut found = |container: &str, frame: &Frame, chain: &[String], hashes: &[u32], name: &str| {
         let Some(bytes) = socpaks.bytes(container) else { return };
         let Ok(zip) = SocZip::open(&bytes) else { return };
+        let before = transit.len() + transport.len();
         transit.extend(transit_gateways(&zip, frame, chain, hashes));
         if let Some(gateway) = transport_gateway(&zip, frame, chain, hashes) {
             transport.push((gateway, chain.last().cloned().unwrap_or_default(), name.to_string(), *frame));
+        }
+        if transit.len() + transport.len() > before && !hashes.is_empty() && !prefabs.contains(&folded(container)) {
+            prefabs.push(folded(container));
         }
     };
     found(path, &IDENTITY, &[], &[], "");
@@ -555,7 +573,7 @@ fn hangar(socpaks: &Socpaks, path: &str) -> Hangar {
     let bytes = socpaks.bytes(path).unwrap_or_else(|| panic!("{path} is not in the archive"));
     let zip = SocZip::open(&bytes).unwrap_or_else(|error| panic!("{path}: {error}"));
     if transit.is_empty() {
-        let mut hangar = Hangar { system: "none", owner_guid: String::new(), owner_name: String::new(), radius: 0.0, frame: IDENTITY, source: "", gateways: Vec::new() };
+        let mut hangar = Hangar { system: "none", owner_guid: String::new(), owner_name: String::new(), radius: 0.0, frame: IDENTITY, source: "", gateways: Vec::new(), prefabs };
         if let Some((gateway, guid, name, frame)) = transport.into_iter().next() {
             hangar = Hangar { system: "transport", owner_guid: guid, owner_name: name, frame, source: "gathered", gateways: vec![gateway], ..hangar };
         }
@@ -575,6 +593,7 @@ fn hangar(socpaks: &Socpaks, path: &str) -> Hangar {
         frame: frame(&destination, "Pos", "Rotate"),
         source: "gathered",
         gateways: Vec::new(),
+        prefabs,
     };
     let Some(baked) = member(&zip, "sctransitdynamicdestination.xml") else {
         hangar.gateways = transit;
@@ -618,11 +637,44 @@ fn serving<'a>(site: &'a Site, hangar: &Hangar) -> (Option<&'a Manager>, &'stati
     }
 }
 
+/// The entities of a prefab's `.soc` in document order, the order the client gives them the ids of `ocIdRange` in
+/// (`CreateImmovableEntities`, 0x1470d5b80), each as `<socpak hash> <index> <class CRC> <name> <geometry> <material>
+/// <frame>`, the frame in the prefab's. The geometry (`EntityGeometryResource`'s path) and the material (the entity's
+/// `Material`) are the instance's own, empty where it takes its class's: a bound entity gets them only as overrides, as
+/// no `entdata` holds these entities. None for a prefab with other than one `.soc`, whose order across them is not
+/// known.
+fn prefab_entity_rows(socpaks: &Socpaks, path: &str) -> Vec<String> {
+    let (Some(hash), Some(bytes)) = (socpak_hash(path), socpaks.bytes(path)) else { return Vec::new() };
+    let Ok(zip) = SocZip::open(&bytes) else { return Vec::new() };
+    let socs: Vec<String> = zip.namelist().filter(|name| name.ends_with(".soc")).map(str::to_string).collect();
+    let [soc] = socs.as_slice() else {
+        eprintln!("transit: {path} has {} .soc files; its entities are left to the client", socs.len());
+        return Vec::new();
+    };
+    let Some(root) = zip.read(soc).ok().and_then(|soc| {
+        let start = soc.windows(7).position(|window| window == b"CryXmlB")?;
+        cryxml::parse(&soc[start..]).ok()
+    }) else {
+        return Vec::new();
+    };
+    let entities = xmlq::iter(&root, "Entity").into_iter().filter(|entity| entity.get("EntityClass").is_some());
+    entities
+        .enumerate()
+        .map(|(index, entity)| {
+            let class_crc = guid_crc(entity.get("EntityClassGUID").unwrap_or_default());
+            let geometry = xmlq::find(entity, "PropertiesDataCore/EntityGeometryResource/Geometry/Geometry/Geometry").and_then(|geometry| geometry.get("path")).unwrap_or_default();
+            let material = attribute(entity, "Material");
+            format!("{hash}\t{index}\t{class_crc}\t{}\t{geometry}\t{material}\t{}", attribute(entity, "Name"), frame(entity, "Pos", "Rotate").row())
+        })
+        .collect()
+}
+
 /// The tables for the home locations and their hangar classes.
 pub(crate) fn generate(socpaks: &Socpaks, records: &Records, locations: &[HomeHangars]) -> Tables {
     let mut sites: HashMap<String, Site> = HashMap::new();
     let mut hangars: HashMap<u32, Hangar> = HashMap::new();
     let mut managers: BTreeMap<(u32, String), String> = BTreeMap::new();
+    let mut cab_paths: BTreeSet<String> = BTreeSet::new();
     let mut gateways: BTreeMap<(u32, String, usize), String> = BTreeMap::new();
     let mut rows: Vec<((u32, usize), String)> = Vec::new();
     for HomeHangars { location_id: location, guid, classes } in locations {
@@ -642,6 +694,9 @@ pub(crate) fn generate(socpaks: &Socpaks, records: &Records, locations: &[HomeHa
                     let (manager, resolution) = serving(site, hangar);
                     let manager = manager.map(|manager| {
                         managers.insert((manager.hash, manager.guid.clone()), manager.row());
+                        if !manager.cab_path.is_empty() {
+                            cab_paths.insert(manager.cab_path.clone());
+                        }
                         for (index, gateway) in manager.gateways.iter().enumerate() {
                             gateways.insert((manager.hash, manager.guid.clone(), index), gateway.row(manager.hash, &manager.guid, index));
                         }
@@ -666,10 +721,17 @@ pub(crate) fn generate(socpaks: &Socpaks, records: &Records, locations: &[HomeHa
         }
     }
     rows.sort_by_key(|(key, _)| *key);
+    let mut prefabs: BTreeSet<&String> = hangars.values().flat_map(|hangar| &hangar.prefabs).collect();
+    // The cab interiors too: their doors open with the carriage's `tcOpenedDoors`, and their panels are bound by the DGS.
+    let cabs: Vec<String> = cab_paths.iter().map(|path| folded(path)).collect();
+    prefabs.extend(cabs.iter());
+    let prefab_entities: Vec<String> = prefabs.into_iter().flat_map(|path| prefab_entity_rows(socpaks, path)).collect();
     let text = |rows: Vec<String>| rows.join("\n") + "\n";
     Tables {
         managers: text(managers.into_values().collect()),
         gateways: text(gateways.into_values().collect()),
         hangars: text(rows.into_iter().map(|(_, row)| row).collect()),
+        prefab_entities: text(prefab_entities),
+        cab_paths: cab_paths.into_iter().collect(),
     }
 }

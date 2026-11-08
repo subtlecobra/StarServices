@@ -149,9 +149,53 @@ message AdminSearchEntityClassesResponse {
 
 // ---- Admin inventories (end) ----
 
+message LoadoutItem {
+  uint32 class_crc = 1;  // guidHashCrc of a seeded entity class
+  uint32 port_crc = 2;   // the port of the parent it goes in: CRC-32C of the lowercased name
+  int32 parent = 3;      // the index of its parent in the same list, before it, or -1 for the player
+}
+
+message GrantedItem {
+  string entity_class_guid = 1;  // a seeded entity class
+  uint32 stack_size = 2;         // 0 is 1
+}
+
+message GrantItemsRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;           // the player the items are for
+  string inventory_id = 3;       // where they are stowed: <holder>:<context>:<subject>
+  repeated GrantedItem items = 4;
+  string reason = 5;             // for the log, such as the entitlement or delivery
+}
+
+message GrantItemsResponse {
+  repeated uint64 geids = 1;  // one per item, in the order of the request
+  bool replayed = 2;
+}
+
+message EnsureLoadoutRequest {
+  string command_id = 1;
+  uint64 player_id = 2;
+  repeated LoadoutItem items = 3;
+}
+
+message EnsureLoadoutResponse {
+  repeated uint64 geids = 1;  // one per item, in the order of the request
+  bool replayed = 2;
+}
+
 // Answered by sc-entitygraph, which owns entities and the container tree. It shares that service's port, so no GRPCRoute
 // may list it.
 service EntityGraphInternal {
+  // New items of seeded classes, with GEIDs sc-entitygraph allocates, stowed in an inventory of a player that is not live
+  // on a shard (an entitlement claimed, a delivery, a rental). All or none, once per command id: a repeat returns the
+  // GEIDs of the first. A container class gets its inventory with it. NOT_FOUND for a class that is not seeded or an
+  // inventory that does not exist; FAILED_PRECONDITION when the inventory is live or over capacity.
+  rpc GrantItems(GrantItemsRequest) returns (GrantItemsResponse);
+  // The items a player wears, as entities of their own with the GEIDs sc-entitygraph allocates, each attached to the port
+  // of its parent (the player for a root). Applied once per command id: a repeat returns the GEIDs of the first, in the
+  // order of the request. Sent by a DGS when a player joins. NOT_FOUND names classes that are not seeded.
+  rpc EnsureLoadout(EnsureLoadoutRequest) returns (EnsureLoadoutResponse);
   // What a DGS governs: the roots and everything under them, down to the roots of other DGSs. NOT_FOUND names the roots
   // the tree lacks, before anything is sent. A container is sent once, parents before children, in chunks.
   rpc LoadArea(LoadAreaRequest) returns (stream LoadAreaResponse);

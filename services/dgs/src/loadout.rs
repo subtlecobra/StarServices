@@ -10,6 +10,8 @@
 
 use std::borrow::Cow;
 
+use sc_api::internal::LoadoutItem;
+
 use crate::entity::{Bind, Transform};
 
 /// One item of a loadout: its class, the port of its parent it goes in, and that parent, an index into the same table, or
@@ -128,23 +130,55 @@ pub fn item_id(player_index: u64, slot: usize) -> u64 {
     FIRST_ITEM_ID + player_index * ITEM_ID_STRIDE + slot as u64
 }
 
-/// The binds of `loadout` for the player `player_id`, in the table's order: each under its parent, in its port.
+/// The binds of `loadout` for the player `player_id`, in the table's order: each under its parent, in its port, with the
+/// ids the DGS makes up for it when sc-entitygraph has none.
 pub fn loadout_binds(player_id: u64, player_index: u64, loadout: &[Item]) -> Vec<Bind> {
     assert!(loadout.len() as u64 <= ITEM_ID_STRIDE, "a loadout takes more ids than a player has");
+    let ids: Vec<u64> = (0..loadout.len()).map(|slot| item_id(player_index, slot)).collect();
+    loadout_binds_with(player_id, loadout, &ids)
+}
+
+/// As `loadout_binds`, with `ids` for the items, one per item: the GEIDs sc-entitygraph made for them.
+pub fn loadout_binds_with(player_id: u64, loadout: &[Item], ids: &[u64]) -> Vec<Bind> {
+    assert_eq!(loadout.len(), ids.len(), "an id for each item");
     loadout
         .iter()
         .enumerate()
         .map(|(slot, item)| Bind {
-            entity_id: item_id(player_index, slot),
+            entity_id: ids[slot],
             class_crc: item.class_crc,
             flags: ITEM_FLAGS,
             transform: Transform::IDENTITY,
-            parent_id: item.parent.map_or(player_id, |parent| item_id(player_index, parent)),
+            parent_id: item.parent.map_or(player_id, |parent| ids[parent]),
             parent_attach_id: port_attach_id(&item.port),
             components: Vec::new(),
             snapshots: Vec::new(),
         })
         .collect()
+}
+
+/// The loadout as sc-entitygraph is asked to keep it.
+pub fn request_items(loadout: &[Item]) -> Vec<LoadoutItem> {
+    loadout
+        .iter()
+        .map(|item| LoadoutItem {
+            class_crc: item.class_crc,
+            port_crc: port_attach_id(&item.port),
+            parent: item.parent.map_or(-1, |parent| parent as i32),
+        })
+        .collect()
+}
+
+/// The command id of a player's loadout: the player and what it wears, so the same loadout is made once and a changed
+/// one (another head) is made anew.
+pub fn command_id(player_id: u64, loadout: &[Item]) -> String {
+    let hash = request_items(loadout).iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, item| {
+        [item.class_crc, item.port_crc, item.parent as u32]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .fold(hash, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3))
+    });
+    format!("loadout:{player_id}:{hash:016x}")
 }
 
 #[cfg(test)]
@@ -183,6 +217,25 @@ mod tests {
         assert_eq!(binds[1].parent_id, binds[0].entity_id);
         assert_eq!(binds[18].parent_id, binds[17].entity_id);
         assert_eq!(binds[0].parent_attach_id, port_attach_id("Body_ItemPort"));
+    }
+
+    #[test]
+    fn the_command_id_follows_what_the_player_wears() {
+        let plain = command_id(300_000_000_001, &DEFAULT_LOADOUT);
+        assert_eq!(plain, command_id(300_000_000_001, &DEFAULT_LOADOUT));
+        assert_ne!(plain, command_id(300_000_000_002, &DEFAULT_LOADOUT));
+        let mut other = DEFAULT_LOADOUT.to_vec();
+        other[3].class_crc += 1;
+        assert_ne!(plain, command_id(300_000_000_001, &other));
+        let items = request_items(&DEFAULT_LOADOUT);
+        assert_eq!((items[0].parent, items[1].parent, items[0].port_crc), (-1, 0, 0xab63_41ac));
+    }
+
+    #[test]
+    fn real_ids_replace_the_made_up_ones() {
+        let ids: Vec<u64> = (0..23).map(|slot| 400_000_000_000 + slot).collect();
+        let binds = loadout_binds_with(300_000_000_001, &DEFAULT_LOADOUT, &ids);
+        assert_eq!((binds[0].entity_id, binds[0].parent_id, binds[1].parent_id), (400_000_000_000, 300_000_000_001, 400_000_000_000));
     }
 
     #[test]

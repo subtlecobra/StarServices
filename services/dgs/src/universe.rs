@@ -19,12 +19,12 @@ const GAME_MODE_ENTITY_ID: u64 = 210_000_000_001;
 /// CRC-32 of `m_megamapname`.
 const MEGA_MAP_KEY: u32 = 0x2ff5_d193;
 /// `FUN_140618690`: the halves of FNV-1a 64 of `Stringchar`, xored.
-const STRING_TYPE: u32 = 0x54a0_b124;
+pub(crate) const STRING_TYPE: u32 = 0x54a0_b124;
 /// The `MegaMap` record of the PU. Only `SC_Frontend`'s value shows in real logs, so this one is unconfirmed.
 const MEGA_MAP: &str = "MegaMap.PU_All";
 
 /// A `String` variable's value: `[varint length][bytes]`, with no terminator.
-fn string_value(value: &str) -> Vec<u8> {
+pub(crate) fn string_value(value: &str) -> Vec<u8> {
     let mut out = Vec::new();
     let mut length = value.len();
     while length >= 0x80 {

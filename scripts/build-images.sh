@@ -15,14 +15,39 @@
 # for scripts/publish.sh's release manifest. Those not considered are listed at the digest the registry has for their
 # version, and left out (with a warning) when it has none.
 #
+# The registry checks and the images' builds and pushes run SC_JOBS at a time.
+#
 # Settings (environment):
 #   SC_IMAGES_OUT                         the list written     (target/images.tsv)
+#   SC_JOBS                               images at a time     (8)
 #   SC_REGISTRY, SC_REGISTRY_PLAIN_HTTP   see scripts/registry.sh
 set -euo pipefail
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
 source scripts/registry.sh
 [[ -d proto/sc ]] || { echo "proto/sc/ is missing: generate it from your game with scripts/game-files.sh" >&2; exit 1; }
 out=${SC_IMAGES_OUT:-target/images.tsv}
+jobs=${SC_JOBS:-8}
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || { echo "build-images: SC_JOBS must be a positive number" >&2; exit 1; }
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Runs `$1 <item>` for each further argument, `jobs` at a time, and fails when any of them failed.
+parallel() {
+  local task=$1 failed=0 running=0
+  shift
+  for item in "$@"; do
+    if ((running >= jobs)); then
+      wait -n || failed=1
+      running=$((running - 1))
+    fi
+    "$task" "$item" &
+    running=$((running + 1))
+  done
+  while ((running > 0)); do
+    wait -n || failed=1
+    running=$((running - 1))
+  done
+  return "$failed"
+}
 mkdir -p "$(dirname "$out")"
 tls=()
 [[ $registry_plain_http == true ]] && tls=(--tls-verify=false)
@@ -71,10 +96,12 @@ registry_state() {
 # 2. What each service needs, before anything is pushed.
 declare -A key digest
 to_push=() stale=()
+check() { registry_state "$1" "${version[$1]}" > "$work/$1.state"; }
+parallel check "${!version[@]}"
 for service in "${services[@]}"; do
   [[ -n ${binary_sha[$service]:-} ]] || { echo "build-images: the build made no binary named $service" >&2; exit 1; }
   key[$service]=$(printf '%s %s' "${binary_sha[$service]}" "$dockerfile_sha" | sha256sum | cut -d' ' -f1)
-  read -r remote_digest remote_key <<<"$(registry_state "$service" "${version[$service]}")"
+  read -r remote_digest remote_key < "$work/$service.state"
   if [[ -z $remote_digest ]]; then
     to_push+=("$service")
   elif [[ $remote_key == "${key[$service]}" ]]; then
@@ -105,21 +132,24 @@ if [[ -n $(git status --porcelain 2>/dev/null) ]]; then
   fi
 fi
 
-# 3. The new versions.
-for service in "${to_push[@]}"; do
-  image=$registry/scbackend/$service:${version[$service]}
+# 3. The new versions, each built and pushed on its own. A failed one does not stop the others; the run fails after.
+publish() {
+  local service=$1 image=$registry/scbackend/$1:${version[$1]}
   podman build -q --timestamp 0 --build-arg "SERVICE=$service" --build-arg "VERSION=${version[$service]}" \
-    --build-arg "PACKAGES=$packages" --label "io.scbackend.build-key=${key[$service]}" -t "$image" . >/dev/null
-  digest_file=$(mktemp)
-  podman push -q "${tls[@]}" --digestfile "$digest_file" "$image"
-  digest[$service]=$(<"$digest_file")
-  rm -f "$digest_file"
-  echo "pushed $image"
+    --build-arg "PACKAGES=$packages" --label "io.scbackend.build-key=${key[$service]}" -t "$image" . >/dev/null &&
+    podman push -q "${tls[@]}" --digestfile "$work/$service.digest" "$image" &&
+    echo "pushed $image" || { echo "build-images: $service failed" >&2; return 1; }
+}
+publish_failed=0
+((${#to_push[@]} == 0)) || parallel publish "${to_push[@]}" || publish_failed=1
+for service in "${to_push[@]}"; do
+  [[ -s $work/$service.digest ]] && digest[$service]=$(<"$work/$service.digest")
 done
+((publish_failed == 0)) || { echo "build-images: some images were not pushed, see above" >&2; exit 1; }
 
 for service in $(printf '%s\n' "${!version[@]}" | sort); do
   if [[ -z ${digest[$service]:-} ]]; then
-    read -r remote_digest _ <<<"$(registry_state "$service" "${version[$service]}")"
+    read -r remote_digest _ < "$work/$service.state"
     if [[ -z $remote_digest ]]; then
       echo "build-images: $registry has no $service ${version[$service]}: left out of $out" >&2
       continue

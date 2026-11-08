@@ -460,7 +460,7 @@ pub fn dgs_service(shard_name: &str, shard: &ShardSpec, dgs: &DgsAssignment) -> 
 
 /// Selecting the DGS pods makes them refuse all that is not listed, and the one thing listed is the replicant on the
 /// gRPC port. The node's own traffic, which is the kubelet's probes, is not subject to a policy. Ingress only: the DGSs
-/// still reach DNS, their region's sc-entitygraph and sc-character-customizer, and the replicant's pod has no policy, which keeps its
+/// still reach DNS, their region's sc-entitygraph, sc-character-customizer and sc-identity, and the replicant's pod has no policy, which keeps its
 /// clients and the operator's reads. A DGS has no database access: it is given no database address.
 pub fn dgs_policy(shard_name: &str, shard: &ShardSpec) -> Value {
     json!({
@@ -484,6 +484,8 @@ pub struct DgsSettings {
     /// `sc-character-customizer`, which DGSs ask for saved characters. A full service name: DGS pods are in namespaces of
     /// their own.
     pub customizer: String,
+    /// `sc-identity`, which DGSs ask for an account's in-game badges, for the player's bind. A full service name.
+    pub identity: String,
 }
 
 pub fn dgs_pod(shard_name: &str, shard: &ShardSpec, dgs: &DgsAssignment, settings: &DgsSettings, owner: Option<&OwnerReference>) -> Value {
@@ -497,6 +499,7 @@ pub fn dgs_pod(shard_name: &str, shard: &ShardSpec, dgs: &DgsAssignment, setting
         json!({ "name": "SCBACKEND_LISTEN", "value": format!("0.0.0.0:{DGS_PORT}") }),
         json!({ "name": "SCBACKEND_HEALTH", "value": format!("0.0.0.0:{HEALTH_PORT}") }),
         json!({ "name": "SCBACKEND_CUSTOMIZER", "value": settings.customizer }),
+        json!({ "name": "SCBACKEND_IDENTITY", "value": settings.identity }),
     ];
     // The region's sc-entitygraph, which walks each DGS's area from the container tree it owns, in front of the region's
     // entity database. A full service name: DGS pods are in namespaces of their own. See `resolved`.
@@ -567,6 +570,7 @@ mod tests {
         DgsSettings {
             image: "image".into(),
             customizer: "http://sc-character-customizer.scbackend.svc:50051".into(),
+            identity: "http://sc-identity.scbackend.svc:50051".into(),
         }
     }
 
@@ -971,6 +975,7 @@ mod tests {
         assert!(!env.iter().any(|var| var["name"] == "SCBACKEND_ARANGO"), "a DGS reads no database");
         let customizer = "http://sc-character-customizer.scbackend.svc:50051";
         assert!(env.contains(&json!({ "name": "SCBACKEND_CUSTOMIZER", "value": customizer })));
+        assert!(env.contains(&json!({ "name": "SCBACKEND_IDENTITY", "value": "http://sc-identity.scbackend.svc:50051" })));
         assert!(!env.iter().any(|var| var["name"] == "SCBACKEND_POSTGRES"), "a DGS gets no database of saved characters");
     }
 

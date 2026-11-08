@@ -1,4 +1,4 @@
-//! Hands a bundle's rows to their owners, through each one's seed RPC in `proto/scbackend/internal.proto`: the entity
+//! Hands a bundle's rows to their owners, through each one's seed RPC in `proto/internal/`: the entity
 //! classes and the container tree to the `sc-entitygraph` of every region, the other tables once to the global owner.
 //! Nothing here touches a database. Each owner replaces rows by key, so a repeat changes nothing and a new build
 //! updates what it finds; only the container tree loses rows, as its owner replaces it whole. Scenario statuses are

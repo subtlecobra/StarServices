@@ -18,7 +18,9 @@ use std::{collections::HashMap, sync::OnceLock};
 
 use crate::entity::Transform;
 
+pub mod elevators;
 pub mod sim;
+pub mod wire;
 
 /// The paths of the tables in a game build, as `tools/gamedata-build` writes them and `sc-gamedata` serves them.
 /// The Transit managers that serve a hangar, one per row.
@@ -27,6 +29,8 @@ pub const MANAGERS_PATH: &str = "tables/transit_managers.tsv";
 pub const GATEWAYS_PATH: &str = "tables/transit_gateways.tsv";
 /// Per home location and hangar class, the system and the manager that serve the hangar.
 pub const HANGARS_PATH: &str = "tables/transit_hangars.tsv";
+/// The entities of each prefab inside a hangar that holds a gateway: its call panel, door, gateway and limbo node.
+pub const PREFAB_ENTITIES_PATH: &str = "tables/transit_prefab_entities.tsv";
 
 /// A manager or the owner of a hangar's gateways: the socpak that holds it, by hash, and its entity's GUID, in lower
 /// case.
@@ -158,13 +162,31 @@ pub struct Hangar {
     pub baked: bool,
 }
 
-/// The three tables of the shard's game build, parsed and checked against each other.
+/// An entity of a gateway prefab's `.soc`. The client would make it from the prefab's `ocIdRange`, local and with
+/// authority over it, so a press on its call panel would never reach the server; the DGS binds these itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefabEntity {
+    /// Its place among the `.soc`'s entities, in document order: the client gives it the range's first id plus this.
+    pub index: u64,
+    /// CRC-32C of its `EntityClassGUID`, as every class CRC of the tables.
+    pub class_crc: u32,
+    pub name: String,
+    /// The instance's own geometry and material, empty where it takes its class's.
+    pub geometry: String,
+    pub material: String,
+    /// In the prefab's frame.
+    pub pose: Transform,
+}
+
+/// The four tables of the shard's game build, parsed and checked against each other.
 #[derive(Debug, Default)]
 pub struct Tables {
     managers: Vec<Manager>,
     hangars: Vec<Hangar>,
     /// The gateways of each hangar socpak's stop.
     stops: HashMap<Owner, Vec<Gateway>>,
+    /// By the prefab's socpak hash, in index order.
+    prefabs: HashMap<u32, Vec<PrefabEntity>>,
 }
 
 fn transform(numbers: &[&str]) -> Option<Transform> {
@@ -302,6 +324,20 @@ fn parse_hangar(row: &str) -> Option<Hangar> {
     })
 }
 
+fn parse_prefab_entity(row: &str) -> Option<(u32, PrefabEntity)> {
+    let fields: Vec<&str> = row.split('\t').collect();
+    let [socpak_hash, index, class_crc, name, geometry, material, numbers @ ..] = fields.as_slice() else { return None };
+    let entity = PrefabEntity {
+        index: index.parse().ok()?,
+        class_crc: class_crc.parse().ok()?,
+        name: name.to_string(),
+        geometry: geometry.to_string(),
+        material: material.to_string(),
+        pose: transform(numbers)?,
+    };
+    Some((socpak_hash.parse().ok()?, entity))
+}
+
 /// Every non-empty line of `text`, parsed; a line that does not parse fails the table, as it means a broken build.
 fn rows<T>(name: &str, text: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Vec<T>, String> {
     let lines = text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty());
@@ -310,8 +346,9 @@ fn rows<T>(name: &str, text: &str, parse: impl Fn(&str) -> Option<T>) -> Result<
 
 impl Tables {
     /// The tables from their text, as `tools/gamedata-build` writes them. Every gateway must have its owner, every
-    /// Transit hangar its manager, and every owner its gateways numbered from 0 without a gap.
-    pub fn parse(managers: &str, gateways: &str, hangars: &str) -> Result<Self, String> {
+    /// Transit hangar its manager, and every owner its gateways numbered from 0 without a gap, as every prefab its
+    /// entities.
+    pub fn parse(managers: &str, gateways: &str, hangars: &str, prefab_entities: &str) -> Result<Self, String> {
         let mut managers = rows(MANAGERS_PATH, managers, parse_manager)?;
         let hangars = rows(HANGARS_PATH, hangars, parse_hangar)?;
         if hangars.is_empty() {
@@ -344,7 +381,17 @@ impl Tables {
         if let Some(owner) = owned.keys().find(|owner| !hangars.iter().any(|hangar| &hangar.stop == *owner)) {
             return Err(format!("{GATEWAYS_PATH}: gateways of {owner:?}, which is no manager and no hangar"));
         }
-        Ok(Self { managers, hangars, stops: owned })
+        let mut prefabs: HashMap<u32, Vec<PrefabEntity>> = HashMap::new();
+        for (hash, entity) in rows(PREFAB_ENTITIES_PATH, prefab_entities, parse_prefab_entity)? {
+            prefabs.entry(hash).or_default().push(entity);
+        }
+        for (hash, entities) in &mut prefabs {
+            entities.sort_by_key(|entity| entity.index);
+            if entities.iter().enumerate().any(|(index, entity)| entity.index != index as u64) {
+                return Err(format!("{PREFAB_ENTITIES_PATH}: the entities of {hash} are not numbered from 0 without a gap"));
+            }
+        }
+        Ok(Self { managers, hangars, stops: owned, prefabs })
     }
 
     pub fn managers(&self) -> &[Manager] {
@@ -369,6 +416,11 @@ impl Tables {
         self.stops.get(&hangar.stop).map_or(&[], Vec::as_slice)
     }
 
+    /// The entities of a gateway prefab, by its socpak's hash, in index order; empty for any other socpak.
+    pub fn prefab_entities(&self, socpak_hash: u32) -> &[PrefabEntity] {
+        self.prefabs.get(&socpak_hash).map_or(&[], Vec::as_slice)
+    }
+
     /// The Transit manager that serves a hangar class of a home location: `None` for a Transport hangar.
     pub fn serving(&self, location_id: u32, class_crc: u32) -> Option<&Manager> {
         let hangar = self.hangar(location_id, class_crc).filter(|hangar| hangar.system == System::Transit)?;
@@ -379,7 +431,7 @@ impl Tables {
     #[cfg(any(test, feature = "fixtures"))]
     pub fn fixtures() -> Self {
         use crate::testdata::text;
-        Self::parse(text(MANAGERS_PATH), text(GATEWAYS_PATH), text(HANGARS_PATH)).expect("the fixture transit tables parse")
+        Self::parse(text(MANAGERS_PATH), text(GATEWAYS_PATH), text(HANGARS_PATH), text(PREFAB_ENTITIES_PATH)).expect("the fixture transit tables parse")
     }
 }
 
@@ -514,14 +566,28 @@ mod tests {
     #[test]
     fn broken_tables_are_refused() {
         use crate::testdata::text;
-        let (managers, gateways, hangars) = (text(MANAGERS_PATH), text(GATEWAYS_PATH), text(HANGARS_PATH));
-        assert!(Tables::parse(managers, gateways, hangars).is_ok());
-        assert!(Tables::parse(managers, gateways, "1\tbroken").unwrap_err().contains("line 1"));
-        assert!(Tables::parse(managers, gateways, "").unwrap_err().contains("no hangars"));
+        let (managers, gateways, hangars, prefabs) = (text(MANAGERS_PATH), text(GATEWAYS_PATH), text(HANGARS_PATH), text(PREFAB_ENTITIES_PATH));
+        assert!(Tables::parse(managers, gateways, hangars, prefabs).is_ok());
+        assert!(Tables::parse(managers, gateways, "1\tbroken", prefabs).unwrap_err().contains("line 1"));
+        assert!(Tables::parse(managers, gateways, "", prefabs).unwrap_err().contains("no hangars"));
         // Without the managers, the Transit hangars name nothing.
-        assert!(Tables::parse("", gateways, hangars).unwrap_err().contains("names a manager"));
+        assert!(Tables::parse("", gateways, hangars, prefabs).unwrap_err().contains("names a manager"));
         // A gateway missing in the middle of an owner's.
         let gap: Vec<&str> = gateways.lines().filter(|line| line.split('\t').nth(2).is_none_or(|index| index != "1")).collect();
-        assert!(Tables::parse(managers, &gap.join("\n"), hangars).unwrap_err().contains("without a gap"));
+        assert!(Tables::parse(managers, &gap.join("\n"), hangars, prefabs).unwrap_err().contains("without a gap"));
+        // A prefab entity missing in the middle of a prefab's.
+        let gap: Vec<&str> = prefabs.lines().filter(|line| line.split('\t').nth(1) != Some("1")).collect();
+        assert!(Tables::parse(managers, gateways, hangars, &gap.join("\n")).unwrap_err().contains(PREFAB_ENTITIES_PATH));
+    }
+
+    /// `playerhangar_elev_hangar_ht_gateway.socpak` (Orison, New Babbage): limbo node, gateway, door, then the call panel.
+    #[test]
+    fn a_gateway_prefab_lists_its_entities_in_soc_order() {
+        let entities = tables().prefab_entities(2_432_330_252);
+        let names: Vec<&str> = entities.iter().map(|entity| entity.name.as_str()).collect();
+        assert_eq!(names, ["TransitLimboNode_Orison_Elevator_Hangar-HT", "TransitGateway_HT_Elevator_Hangar", "Elevator_Door_HT_Hangar-001", "TransitInteractionUIPanel_Ext_HT_Elevator_Hangar"]);
+        assert_eq!(entities[3].class_crc, 3_016_690_202, "TransitInteractionUIPanel_Elevator_Ext");
+        assert!(close(entities[3].pose.position, [0.753_401, 0.324_909, 1.425_001]));
+        assert!(tables().prefab_entities(1).is_empty());
     }
 }

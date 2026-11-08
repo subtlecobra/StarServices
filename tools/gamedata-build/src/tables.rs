@@ -3,7 +3,8 @@
 //!
 //! - `home_locations.tsv`: one row per home location that is not `devOnly`, sorted.
 //! - `hangar_content.tsv`: the containers inside each hangar socpak of those rows, at any depth, in the order of its XML.
-//! - `entity_counts.tsv`: the entity counts of each of those socpaks and every container inside them, sorted.
+//! - `entity_counts.tsv`: the entity counts of each of those socpaks and every container inside them, and of the cab
+//!   interiors of the managers that serve them, sorted.
 //!
 //! A location id is the class CRC of the `StarMapObject` GUID. `InstancedInteriorLocationParams` names the
 //! hangar classes of a location, and each class holds its socpak and spawn transform.
@@ -381,7 +382,7 @@ pub struct Tables {
 
 impl Tables {
     /// Each table with its path in the build.
-    pub fn files(&self) -> [(&'static str, &str); 6] {
+    pub fn files(&self) -> [(&'static str, &str); 7] {
         [
             (HOME_LOCATIONS, &self.home_locations),
             (HANGAR_CONTENT, &self.hangar_content),
@@ -389,6 +390,7 @@ impl Tables {
             (transit::MANAGERS, &self.transit.managers),
             (transit::GATEWAYS, &self.transit.gateways),
             (transit::HANGARS, &self.transit.hangars),
+            (transit::PREFAB_ENTITIES, &self.transit.prefab_entities),
         ]
     }
 }
@@ -428,11 +430,14 @@ pub fn generate(archive: &P4k) -> Tables {
         let list: Vec<(&Element, &str)> = children(&root).into_iter().map(|child| (child, *path)).collect();
         content_paths(&socpaks, &list, &mut vec![folded(path)], &mut paths);
     }
+    let locations: Vec<_> = homes.iter().filter_map(|index| records.hangar_classes(*index)).collect();
+    let transit = transit::generate(&socpaks, &records, &locations);
+    // The cab interiors of the hangar elevators too: a carriage is the object container of its cab, and the DGS gives
+    // the cab's statics their ids as it does a hangar's.
+    paths.extend(transit.cab_paths.iter().cloned());
     let mut count_rows: Vec<String> = paths.iter().filter_map(|path| entity_counts(&socpaks, path)).collect();
     count_rows.sort();
     count_rows.dedup();
-    let locations: Vec<_> = homes.iter().filter_map(|index| records.hangar_classes(*index)).collect();
-    let transit = transit::generate(&socpaks, &records, &locations);
     Tables {
         home_locations: rows.join("\n") + "\n",
         hangar_content: content_rows.join("\n") + "\n",

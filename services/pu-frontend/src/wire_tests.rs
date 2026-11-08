@@ -330,7 +330,7 @@ async fn a_player_goes_to_the_dgs_that_governs_its_home_and_the_system_to_its_ow
         assert_eq!(fleet.dgs(name).players().await, players, "{name}");
     }
     let status = fleet.dgs("pyro-2").status().await;
-    assert_eq!(status.player_entities, 32, "a hangar, its 7 containers, a player and its 23 items");
+    assert_eq!(status.player_entities, 36, "a hangar, its 7 containers, its gateway's 4 entities, a player and its 23 items");
 }
 
 #[tokio::test]
@@ -359,12 +359,12 @@ async fn a_dropped_peer_frees_what_its_dgs_holds() {
     let mut peers = HashMap::new();
     let from = fleet.join(&mut peers, "hub-1000001", 1).await;
     fleet.join(&mut peers, "hub-1000002", 2).await;
-    // Each: the hangar, its 7 containers, the player and its 23 items.
-    assert_eq!(fleet.dgs("pyro-1").status().await.player_entities, 64);
+    // Each: the hangar, its 7 containers, its gateway's 4 entities, the player and its 23 items.
+    assert_eq!(fleet.dgs("pyro-1").status().await.player_entities, 72);
     peers.remove(&from);
     settle(&mut fleet, "pyro-1", 1).await;
     let status = fleet.dgs("pyro-1").status().await;
-    assert_eq!((status.player_entities, status.shard_entities), (32, 3));
+    assert_eq!((status.player_entities, status.shard_entities), (36, 3));
 }
 
 #[tokio::test]
@@ -712,4 +712,40 @@ async fn frames_of_a_player_holding_w_come_back_as_updates_that_move_it() {
     }
     let moved = peers[&from].movement_sent.unwrap().y - -85.14;
     assert!((moved - sc_dgs::movement::RUN_SPEED * 39.0 / 30.0).abs() < 1e-3, "{moved}");
+}
+
+/// A press of "Call elevator" on the hangar's call panel reaches the DGS, its `ClOnInteract` comes back to the client, and
+/// the carriage the call brings is bound to it in a batch of its own.
+#[tokio::test]
+async fn a_call_panel_press_comes_back_answered() {
+    let mut fleet = Fleet::running(AREAS, true).await;
+    let mut peers = HashMap::new();
+    let from = fleet.join(&mut peers, "hub-1000001", 1).await;
+    let peer = peers.get_mut(&from).unwrap();
+    peer.stage = Stage::InGame;
+    let joined = peer.joined().unwrap();
+    let player = joined.player.entity_id;
+    let panel = joined.hangar_content.iter().find(|bind| bind.class_crc == sc_dgs::location::CALL_PANEL_CLASS).unwrap().entity_id;
+    let mut args = 0x003f_bdc1_4d2c_a50d_u64.to_le_bytes().to_vec();
+    args.extend(1u64.to_le_bytes());
+    args.extend(0x42bf_347e_u32.to_le_bytes());
+    args.extend(sc_dgs::interaction::CALL_ELEVATOR.to_le_bytes());
+    args.extend(player.to_le_bytes());
+    args.extend([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    args.extend(panel.to_le_bytes());
+    let mut payload = panel.to_le_bytes().to_vec();
+    payload.extend([10, args.len() as u8]);
+    payload.extend(&args);
+    assert!(!peer.receive_input(&payload), "not an action frame");
+    peer.receive_method(&payload);
+    peer.forward_methods(&fleet.link, from);
+    let answer = crate::input::remote_method_message(panel, 11, &args);
+    assert_eq!(&answer[..3], [18, 8 + 2 + 51, 0], "message 18, its length, then the high bits of the length");
+    // The carriage's batch, `BindBatchBegin` (26) first, and the batch's key names it.
+    let carriage_batch = |peer: &Peer| {
+        let keys: Vec<&str> = peer.update_batches.iter().filter_map(|id| peer.batches.key(*id)).collect();
+        peer.pending.iter().any(|messages| messages[0] == 26) && keys.iter().any(|key| key.starts_with("carriage:"))
+    };
+    fleet.wait(&mut peers, |peers| peers[&from].pending.contains(&answer) && carriage_batch(&peers[&from])).await;
+
 }

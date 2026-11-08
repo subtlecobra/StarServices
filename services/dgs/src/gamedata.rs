@@ -116,14 +116,14 @@ impl GameData {
         Tables::parse(&texts[0], &texts[1], &texts[2])
     }
 
-    /// The three hangar elevator tables of the build. A table that is missing or does not parse is an error.
+    /// The four hangar elevator tables of the build. A table that is missing or does not parse is an error.
     pub async fn transit_tables(&self) -> Result<transit::Tables, String> {
         let mut texts = Vec::new();
-        for path in [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH] {
+        for path in [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH, transit::PREFAB_ENTITIES_PATH] {
             let bytes = self.file(path).await.map_err(|status| describe_status(path, &status))?;
             texts.push(String::from_utf8(bytes).map_err(|_| format!("{path} is not UTF-8"))?);
         }
-        transit::Tables::parse(&texts[0], &texts[1], &texts[2])
+        transit::Tables::parse(&texts[0], &texts[1], &texts[2], &texts[3])
     }
 
     /// A hangar's collision, built off the async runtime (a third of a second) and kept for `World::loaded`.
@@ -216,7 +216,7 @@ mod tests {
         address
     }
 
-    const TRANSIT: [&str; 3] = [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH];
+    const TRANSIT: [&str; 4] = [transit::MANAGERS_PATH, transit::GATEWAYS_PATH, transit::HANGARS_PATH, transit::PREFAB_ENTITIES_PATH];
 
     fn whole_build() -> Vec<(&'static str, &'static [u8])> {
         let tables = [HOME_LOCATIONS_PATH, HANGAR_CONTENT_PATH, ENTITY_COUNTS_PATH].into_iter().chain(TRANSIT);
@@ -257,8 +257,8 @@ mod tests {
         assert!(without.tables().await.unwrap_err().contains(HANGAR_CONTENT_PATH));
         // A build of before the transit tables, and one whose hangars name a manager it lacks.
         assert!(without.transit_tables().await.unwrap_err().contains(transit::MANAGERS_PATH));
-        let [_, gateways, hangars] = TRANSIT.map(testdata::bytes);
-        let files = [(transit::MANAGERS_PATH, &b"\n"[..]), (transit::GATEWAYS_PATH, gateways), (transit::HANGARS_PATH, hangars)];
+        let [_, gateways, hangars, prefabs] = TRANSIT.map(testdata::bytes);
+        let files = [(transit::MANAGERS_PATH, &b"\n"[..]), (transit::GATEWAYS_PATH, gateways), (transit::HANGARS_PATH, hangars), (transit::PREFAB_ENTITIES_PATH, prefabs)];
         let unmanaged = GameData::service(&serve(&files).await, BUILD).unwrap();
         assert!(unmanaged.transit_tables().await.unwrap_err().contains("names a manager"));
     }

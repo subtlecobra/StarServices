@@ -3,8 +3,8 @@
 `sc-portal` is the public website and JSON API where players register, log in, manage their account and get
 the files the game needs to log in. The admin pages are `sc-admin-web` (`services/admin`), under `/admin` on
 the same site. Neither keeps data. Accounts, passwords, roles, web sessions and the login audit belong to
-`sc-identity`, which they ask over `IdentityInternal` (see the "Portal and admin" block of
-`proto/scbackend/internal.proto`).
+`sc-identity`, which they ask over `IdentityInternal` (see the "Portal and admin" part of
+`proto/internal/scbackend/internal/identity/v1/identity.proto`).
 
 ```
 browser ── HTTPS ──> sc-edge (Envoy Gateway, the game's TLS listener)

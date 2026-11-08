@@ -28,34 +28,34 @@ use crate::{
 /// 0x2e90cf4b80, about 200,000,000,000), and below 2^53, so ArangoDB's doubles keep it whole.
 pub const FIRST_ITEM_GEID: u64 = 400_000_000_000;
 const DEFAULT_ITEMS: u32 = 500;
-const MAX_ITEMS: u32 = 2_000;
+pub(crate) const MAX_ITEMS: u32 = 2_000;
 const DEFAULT_CLASSES: u32 = 50;
 const MAX_CLASSES: u32 = 200;
-const MAX_STACK: u32 = 1_000_000;
+pub(crate) const MAX_STACK: u32 = 1_000_000;
 const MAX_DEPTH: u32 = 64;
 const MAX_TEXT: usize = 200;
 /// Tries at the GEID counter when two calls write it at once.
 const COUNTER_TRIES: usize = 5;
 
-fn invalid(text: &str) -> Status {
+pub(crate) fn invalid(text: &str) -> Status {
     Status::invalid_argument(text.to_string())
 }
 
-fn need_command(command_id: &str) -> Result<(), Status> {
+pub(crate) fn need_command(command_id: &str) -> Result<(), Status> {
     if command_id.is_empty() || command_id.len() > MAX_TEXT {
         return Err(invalid("a command id of 1 to 200 characters is needed"));
     }
     Ok(())
 }
 
-fn need_owner(owner: u64) -> Result<(), Status> {
+pub(crate) fn need_owner(owner: u64) -> Result<(), Status> {
     if owner == 0 {
         return Err(invalid("an owner is needed"));
     }
     Ok(())
 }
 
-fn need_inventory(id: &str, field: &str) -> Result<(), Status> {
+pub(crate) fn need_inventory(id: &str, field: &str) -> Result<(), Status> {
     if doc::parse_inventory_id(id).is_none() {
         return Err(Status::invalid_argument(format!("{field}: not an inventory id (<holder>:<context>:<subject>)")));
     }
@@ -67,7 +67,7 @@ fn record_key(command_id: &str) -> String {
     doc::key(&format!("admin-rpc:{command_id}"))
 }
 
-async fn recorded(db: &Arango, command_id: &str) -> Result<Option<Value>, Status> {
+pub(crate) async fn recorded(db: &Arango, command_id: &str) -> Result<Option<Value>, Status> {
     let query = "FOR c IN applied_commands FILTER c._key == @id RETURN c.result";
     let rows = db.aql(query, json!({ "id": record_key(command_id) })).await.map_err(internal)?;
     Ok(rows.into_iter().next().map(|result| if result.is_null() { json!({}) } else { result }))
@@ -75,7 +75,7 @@ async fn recorded(db: &Arango, command_id: &str) -> Result<Option<Value>, Status
 
 /// Runs the plan for `owner` with the record of `command_id` and its `result` in the same transaction. A twin request
 /// that committed first leaves its record, which is then answered.
-async fn apply_once(db: &Arango, command_id: &str, owner: u64, plan: Plan, result: Value) -> Result<(Value, bool), Status> {
+pub(crate) async fn apply_once(db: &Arango, command_id: &str, owner: u64, plan: Plan, result: Value) -> Result<(Value, bool), Status> {
     let mut statements = plan.statements(owner);
     statements.push((
         "INSERT { _key: @id, at: @at, result: @result } INTO applied_commands".to_string(),
@@ -93,13 +93,18 @@ async fn apply_once(db: &Arango, command_id: &str, owner: u64, plan: Plan, resul
 }
 
 /// The next item GEID. One that a failed transaction leaves unused is simply skipped.
-async fn allocate_geid(db: &Arango) -> Result<u64, Status> {
-    let query = "UPSERT { _key: 'item_geid' } INSERT { _key: 'item_geid', next: @first + 1 }
-                 UPDATE { next: OLD.next + 1 } IN entitygraph_meta
-                 RETURN NEW.next - 1";
+pub(crate) async fn allocate_geid(db: &Arango) -> Result<u64, Status> {
+    allocate_geids(db, 1).await
+}
+
+/// The first of `count` consecutive item GEIDs.
+pub(crate) async fn allocate_geids(db: &Arango, count: u64) -> Result<u64, Status> {
+    let query = "UPSERT { _key: 'item_geid' } INSERT { _key: 'item_geid', next: @first + @count }
+                 UPDATE { next: OLD.next + @count } IN entitygraph_meta
+                 RETURN NEW.next - @count";
     let mut last = String::new();
     for _ in 0..COUNTER_TRIES {
-        match db.aql(query, json!({ "first": FIRST_ITEM_GEID })).await {
+        match db.aql(query, json!({ "first": FIRST_ITEM_GEID, "count": count })).await {
             Ok(rows) => {
                 let geid = rows.first().and_then(Value::as_f64).map_or(0, |geid| geid as u64);
                 if geid < FIRST_ITEM_GEID {
@@ -119,12 +124,12 @@ async fn entity(db: &Arango, geid: u64) -> Result<Value, Status> {
     rows.into_iter().next().ok_or_else(|| Status::not_found(format!("no entity {geid}")))
 }
 
-fn command(params: Params) -> EntityGraphCommand {
+pub(crate) fn command(params: Params) -> EntityGraphCommand {
     EntityGraphCommand { params: Some(params) }
 }
 
 /// A `Create` of one entity stowed in `inventory_id`, which brings its container inventory when its class has one.
-fn create_into(properties: EntityNodeProperties, inventory_id: &str) -> EntityGraphCommand {
+pub(crate) fn create_into(properties: EntityNodeProperties, inventory_id: &str) -> EntityGraphCommand {
     let node = Node {
         properties: Some(NodeProperties { properties: Some(node_properties::Properties::EntityProperties(properties)) }),
         r#type: NodeType::Entity as i32,
@@ -137,7 +142,7 @@ fn create_into(properties: EntityNodeProperties, inventory_id: &str) -> EntityGr
 }
 
 /// Guards a new GEID: `Create` replaces a document with the same key.
-fn refuse_taken(plan: &mut Plan, geid: u64) {
+pub(crate) fn refuse_taken(plan: &mut Plan, geid: u64) {
     plan.check(
         "RETURN ASSERT(LENGTH(FOR e IN entities FILTER e._key == @key LIMIT 1 RETURN 1) == 0, 'precondition: GEID in use')",
         json!({ "key": geid.to_string() }),
@@ -145,7 +150,7 @@ fn refuse_taken(plan: &mut Plan, geid: u64) {
 }
 
 /// After `Create`: the target exists, which `Create` alone does not check.
-fn need_target(plan: &mut Plan, inventory_id: &str) {
+pub(crate) fn need_target(plan: &mut Plan, inventory_id: &str) {
     plan.check(
         "RETURN ASSERT(LENGTH(FOR i IN inventories FILTER i._key == @key LIMIT 1 RETURN 1) == 1,
                        'precondition: the target inventory does not exist')",

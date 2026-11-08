@@ -54,6 +54,14 @@ pub const SESSION_COOKIE: &str = "sc_session";
 pub const CSRF_COOKIE: &str = "sc_csrf";
 pub const CSRF_FIELD: &str = "x-csrf-token";
 pub const ADMIN_ROLE: &str = "admin";
+/// The game client's developer badges, ids 1, 14 and 126: any of them makes the account a developer one in game's
+/// console, which unlocks its restricted commands and cvars.
+const DEVELOPER_BADGES: [u32; 3] = [1, 14, 126];
+
+fn badge_names(account: &AccountSummary) -> String {
+    let names: Vec<&str> = account.game_badges.iter().map(|badge| badge.name.as_str()).collect();
+    if names.is_empty() { "none".into() } else { names.join(", ") }
+}
 const FORM_LIMIT: usize = 64 * 1024;
 const DAY_MS: i64 = 86_400_000;
 /// Far beyond any price, and well inside a BIGINT.
@@ -469,11 +477,12 @@ async fn overview(
     };
     let _ = write!(
         body,
-        "<dl><dt>Handle</dt><dd>{}</dd><dt>Email</dt><dd>{}</dd><dt>Roles</dt><dd>{}</dd><dt>Created</dt><dd>{}</dd>\
-         <dt>State</dt><dd>{}</dd><dt>Now</dt><dd>{status}</dd></dl>",
+        "<dl><dt>Handle</dt><dd>{}</dd><dt>Email</dt><dd>{}</dd><dt>Roles</dt><dd>{}</dd><dt>In-game badges</dt><dd>{}</dd>\
+         <dt>Created</dt><dd>{}</dd><dt>State</dt><dd>{}</dd><dt>Now</dt><dd>{status}</dd></dl>",
         escape(&account.handle),
         escape(&account.email),
         escape(&account.roles.join(", ")),
+        escape(&badge_names(account)),
         time(account.created_at),
         if account.disabled { "disabled" } else { "enabled" },
     );
@@ -493,6 +502,29 @@ async fn overview(
         ),
         "Set roles",
     ));
+    body.push_str("</fieldset><fieldset><legend>In-game badges</legend>");
+    match app.identity.game_badges().await {
+        Ok(badges) => {
+            let mut boxes = String::from(r#"<input type="hidden" name="op" value="badges">"#);
+            for badge in &badges {
+                let checked = if account.game_badges.iter().any(|held| held.id == badge.id) { " checked" } else { "" };
+                let developer = if DEVELOPER_BADGES.contains(&badge.id) { " (developer)" } else { "" };
+                let _ = write!(
+                    boxes,
+                    r#"<label><input type="checkbox" name="badge_{}" value="1"{checked}> {}{developer}</label> "#,
+                    badge.id,
+                    escape(&badge.name),
+                );
+            }
+            body.push_str(&frame.form(&format!("/accounts/{id}/state"), &boxes, "Set badges"));
+            body.push_str(
+                r#"<p class="muted">Sent to the game client at the account's next login. The developer ones each unlock the console's restricted commands and cvars.</p>"#,
+            );
+        }
+        Err(status) => {
+            let _ = write!(body, r#"<p class="muted">Badges unavailable: {}</p>"#, escape(status.message()));
+        }
+    }
     body.push_str("</fieldset><fieldset><legend>Password reset</legend>");
     body.push_str(&frame.form(
         &format!("/accounts/{id}/state"),
@@ -535,6 +567,17 @@ async fn account_state(
             request.roles = roles;
             request.set_roles = true;
         }
+        "badges" => {
+            let known = match app.identity.game_badges().await {
+                Ok(badges) => badges,
+                Err(status) => return back(&app, id, "", Err(format!("Badges unavailable: {}", status.message()))),
+            };
+            let badges: Vec<u32> = known.iter().filter(|badge| !form.get(&format!("badge_{}", badge.id)).is_empty()).map(|badge| badge.id).collect();
+            let names: Vec<&str> = known.iter().filter(|badge| badges.contains(&badge.id)).map(|badge| badge.name.as_str()).collect();
+            detail = json!({ "game_badges": names });
+            request.game_badges = badges;
+            request.set_game_badges = true;
+        }
         "password" => {
             let password = form.get("new_password");
             if password.is_empty() {
@@ -556,7 +599,7 @@ async fn account_state(
     };
     let result = act(&app, &admin, &form, entry, async {
         let after = app.identity.set_account_state(request).await?;
-        let summary = |account: &AccountSummary| json!({ "disabled": account.disabled, "roles": account.roles });
+        let summary = |account: &AccountSummary| json!({ "disabled": account.disabled, "roles": account.roles, "game_badges": badge_names(account) });
         Ok(("Account updated.".to_string(), (before.as_ref().map(summary), Some(summary(&after)))))
     })
     .await;

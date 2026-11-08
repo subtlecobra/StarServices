@@ -23,6 +23,9 @@ dgsImage:
 # operator runs, for the containers of their area.
 dgsCustomizer: http://sc-character-customizer.scbackend.svc:50051
 
+# sc-identity as DGS pods reach it, for an account's in-game badges, which the player's bind carries. A full service name.
+dgsIdentity: http://sc-identity.scbackend.svc:50051
+
 # The sc-entitygraph image each ShardRegion runs in front of its entity database. The registry follows shardImage unless
 # set; the tag is its own (version@digest).
 entitygraphImage:

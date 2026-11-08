@@ -287,6 +287,8 @@ spec:
               value: "{{ .Values.dgsImage.registry | default .Values.shardImage.registry }}/{{ .Values.dgsImage.name }}:{{ required "dgsImage.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.dgsImage.tag }}"
             - name: SCBACKEND_DGS_CUSTOMIZER
               value: {{ .Values.dgsCustomizer | quote }}
+            - name: SCBACKEND_DGS_IDENTITY
+              value: {{ .Values.dgsIdentity | quote }}
             - name: SCBACKEND_GAMEDATA_IMAGE
               value: "{{ .Values.gamedataImage.registry | default .Values.shardImage.registry }}/{{ .Values.gamedataImage.name }}:{{ required "gamedataImage.tag: <version>@sha256:<digest>, as the release manifest lists it" .Values.gamedataImage.tag }}"
             - name: SCBACKEND_GAMEDATA_REGISTRY

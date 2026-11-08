@@ -195,6 +195,28 @@ fn frame_actions(bytes: &[u8], count: usize) -> (Vec<(u8, &[u8])>, Option<u8>) {
     (actions, unknown)
 }
 
+/// A client's `EntityRemoteMethod`: the entity, the method's index and its arguments. `None` when the length does not
+/// match the payload.
+pub fn remote_method(payload: &[u8]) -> Option<(u64, u32, &[u8])> {
+    let entity = u64_at(payload, 0)?;
+    let mut offset = 8;
+    let method = u32::try_from(read_varint(payload, &mut offset)?).ok()?;
+    let length = read_varint(payload, &mut offset)?;
+    let args = payload.get(offset..)?;
+    (args.len() == length).then_some((entity, method, args))
+}
+
+/// An `EntityRemoteMethod` to a client, framed, as the client sends its own.
+pub fn remote_method_message(entity: u64, method: u32, args: &[u8]) -> Vec<u8> {
+    let mut payload = entity.to_le_bytes().to_vec();
+    varint(method as usize, &mut payload);
+    varint(args.len(), &mut payload);
+    payload.extend_from_slice(args);
+    let mut message = Vec::new();
+    crate::channel::message(MESSAGE_ENTITY_REMOTE_METHOD as u8, &payload, &mut message);
+    message
+}
+
 /// The frame layout, after the method's length:
 /// `[u64 time][u8 1][u64 entity][u64 time][8 bytes][u8 actions][u64 entity][actions][u64 time]`. Every frame seen has the
 /// same eight bytes, `14 16 05 00 00 00 00 00`, which are not read. An action is `[u8 type][data]`.
@@ -340,7 +362,12 @@ pub fn movement_update(movement: &PlayerMovement, sent: Option<&PlayerMovement>,
     if variables.is_empty() {
         return None;
     }
-    let mut payload = movement.entity_id.to_le_bytes().to_vec();
+    Some(variables_update(movement.entity_id, variables))
+}
+
+/// `EntitySnapshotUpdate` of `variables` of an entity, each by its index in the entity's layout, with its value.
+pub fn variables_update(entity_id: u64, mut variables: Vec<(usize, Vec<u8>)>) -> Vec<u8> {
+    let mut payload = entity_id.to_le_bytes().to_vec();
     payload.extend_from_slice(&SNAPSHOT_VARIABLES.to_le_bytes());
     // The reader (0x1415985d0) adds each number to the index before it, starting from -1: the first is the index + 1, every
     // later one the step from the previous index. So the variables go in rising order. Sending a later index + 1 instead
@@ -358,7 +385,7 @@ pub fn movement_update(movement: &PlayerMovement, sent: Option<&PlayerMovement>,
     // second part out, and the client dropped every update.
     let mut message = Vec::new();
     crate::channel::message(MESSAGE_ENTITY_SNAPSHOT_UPDATE, &payload, &mut message);
-    Some(message)
+    message
 }
 
 #[cfg(test)]

@@ -117,7 +117,7 @@ the entity. `MoveAll` checks the same for the source inventory, and refuses a so
 ## Admin calls
 
 sc-admin-web changes a player's inventories through the "Admin inventories" block of `EntityGraphInternal`
-(`proto/scbackend/internal.proto`), never through the database. sc-entitygraph acts for the player `owner_id`: each
+(`proto/internal/scbackend/internal/entitygraph/v1/entitygraph.proto`), never through the database. sc-entitygraph acts for the player `owner_id`: each
 mutation is a plan as the player's own command would be, so the checks above apply unchanged (entity and inventory of
 another owner, capacity, loops, inventories created on first need), and two more:
 

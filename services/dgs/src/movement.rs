@@ -193,6 +193,10 @@ pub struct Movement {
     /// The base rotation the client last reported, while it owns its movement.
     client_base: Option<[f64; 4]>,
     reports: Reports,
+    /// The zone the player was bound in, its hangar.
+    home: u64,
+    /// Zones besides `home` the player may move into, such as the carriages of its hangar's elevator.
+    vehicles: Vec<u64>,
 }
 
 /// The physics side: the hangar's collision once it is built, and the player's body in it.
@@ -260,6 +264,8 @@ impl Movement {
             body: Body { state: physics::State::standing_at(position, yaw_of(placement.transform.rotation)), ..Body::default() },
             client_base: None,
             reports: Reports::default(),
+            home: placement.parent_id,
+            vehicles: Vec::new(),
         }
     }
 
@@ -271,7 +277,23 @@ impl Movement {
     }
 
     /// The collision the player moves against, looked up until it is built. Never builds it.
+    /// The hangar's bounds, while the player is in the hangar's zone.
+    fn home_bounds(&self) -> Option<Bounds> {
+        self.bounds.filter(|_| self.zone_host == self.home)
+    }
+
+    /// The zones besides its hangar the player may move into.
+    pub fn set_vehicles(&mut self, vehicles: &[u64]) {
+        if self.vehicles != vehicles {
+            self.vehicles = vehicles.to_vec();
+        }
+    }
+
+    /// The hangar's collision, while the player is in the hangar's zone: a carriage's zone has positions of its own.
     fn world(&mut self) -> Option<Arc<World>> {
+        if self.zone_host != self.home {
+            return None;
+        }
         if self.body.world.is_none() {
             self.body.world = self.body.socpak.and_then(World::loaded).map(Collision);
         }
@@ -328,6 +350,20 @@ impl Movement {
     /// One report of a client in charge of its movement, at the client's time `now`: taken, or refused and the state kept.
     fn report(&mut self, client: &ClientPosition, now: u64, previous: Option<u64>, seconds: f64) {
         self.reports.last = Some(now);
+        // A step into a carriage of its elevator, or back into its hangar: the zone the client reports is the player's
+        // from here, at the place it reports in that zone. The zone's own frame is the client's, so nothing is judged.
+        let allowed = client.zone_host == self.home || self.vehicles.contains(&client.zone_host);
+        if client.zone_host != self.zone_host && allowed {
+            info!(from = self.zone_host, to = client.zone_host, at = ?client.position, "player changed zone");
+            self.zone_host = client.zone_host;
+            self.parent = client.zone_host;
+            self.reports.refused = None;
+            self.reports.support = None;
+            self.reports.taken = Some(now);
+            self.revision += 1;
+            self.follow(client, true, seconds);
+            return;
+        }
         let world = self.world();
         match self.judge(world.as_deref(), client, now, previous) {
             Ok(support) => self.take(client, now, support, seconds),
@@ -392,7 +428,7 @@ impl Movement {
     /// Takes the client's word for where its actor is: the client moves itself while it owns its movement, and the
     /// state follows it exactly. The body follows too, so the simulation goes on from there if the reports stop.
     fn follow(&mut self, client: &ClientPosition, grounded: bool, seconds: f64) {
-        let position = self.bounds.map_or(client.position, |bounds| bounds.clamp(client.position));
+        let position = self.home_bounds().map_or(client.position, |bounds| bounds.clamp(client.position));
         let body = &mut self.body.state;
         if seconds > 0.0 {
             body.velocity = std::array::from_fn(|axis| (position[axis] - body.position[axis]) / seconds);
@@ -444,7 +480,7 @@ impl Movement {
         }
         let distance = if self.sprint { SPRINT_SPEED } else { RUN_SPEED } * seconds;
         let moved = [self.position[0] + x * distance, self.position[1] + y * distance, self.position[2]];
-        let moved = self.bounds.map_or(moved, |bounds| bounds.clamp(moved));
+        let moved = self.home_bounds().map_or(moved, |bounds| bounds.clamp(moved));
         if moved != self.position {
             self.position = moved;
             self.revision += 1;
@@ -522,6 +558,18 @@ impl Movements {
 
     pub fn get_mut(&mut self, player: u64) -> Option<&mut Movement> {
         self.0.get_mut(&player)
+    }
+
+    /// Each player's zone host, as the DGS has it.
+    pub fn zones(&self) -> Vec<(u64, u64)> {
+        self.0.iter().map(|(player, movement)| (*player, movement.zone_host)).collect()
+    }
+
+    /// The zones besides their hangars that the players may move into.
+    pub fn set_vehicles(&mut self, vehicles: &[u64]) {
+        for movement in self.0.values_mut() {
+            movement.set_vehicles(vehicles);
+        }
     }
 
     /// Keeps the players for which `keep` holds.
@@ -674,6 +722,24 @@ mod tests {
         movement.input(&Input { time: 10_666_666, client_position: Some(elsewhere), ..Input::default() });
         assert_eq!(movement.position, SPAWN);
         assert_eq!(movement.base_rotation(), [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    /// A carriage of the hangar's elevator is a zone of its own: the player steps into it when the DGS allows that zone,
+    /// at the place the client reports in it, and back into the hangar.
+    #[test]
+    fn a_player_steps_into_an_allowed_carriage_and_back() {
+        const CARRIAGE: u64 = 230_000_000_000;
+        let mut movement = spawned();
+        movement.input(&Input { time: 10_000_000, ..Input::default() });
+        let inside = ClientPosition { zone_host: CARRIAGE, ..client_at([0.5, 0.2, 0.1]) };
+        movement.input(&Input { time: 10_333_333, client_position: Some(inside), ..Input::default() });
+        assert_eq!(movement.zone_host, HANGAR, "not a carriage of its elevator yet");
+        movement.set_vehicles(&[CARRIAGE]);
+        movement.input(&Input { time: 10_666_666, client_position: Some(inside), ..Input::default() });
+        assert_eq!((movement.zone_host, movement.parent, movement.position), (CARRIAGE, CARRIAGE, [0.5, 0.2, 0.1]));
+        let back = client_at([5.9, -85.1, 4.51]);
+        movement.input(&Input { time: 11_000_000, client_position: Some(back), ..Input::default() });
+        assert_eq!((movement.zone_host, movement.position), (HANGAR, back.position));
     }
 
     #[test]

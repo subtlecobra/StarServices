@@ -6,6 +6,8 @@ mod area;
 mod commands;
 mod doc;
 mod filter;
+mod grant;
+mod loadout;
 mod read;
 mod seed;
 
@@ -23,7 +25,7 @@ use commands::{Plan, WRITES};
 use futures_util::{stream, Stream, StreamExt};
 use prost::Message;
 use sc_db::{internal, Arango, DatabaseArgs};
-use sc_api::internal::{ entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
+use sc_api::internal::{ entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
 use sc_proto::{
     common::command::v1::{notify_destination, CommandResponseBody},
     services::entitygraph::v1::{
@@ -238,6 +240,14 @@ impl EntityGraphInternal for Graph {
 
     async fn admin_move_item(&self, request: Request<AdminMoveItemRequest>) -> Reply<AdminMoveItemResponse> {
         Ok(Response::new(admin::move_item(&self.db, request.into_inner()).await?))
+    }
+
+    async fn grant_items(&self, request: Request<GrantItemsRequest>) -> Reply<GrantItemsResponse> {
+        Ok(Response::new(grant::grant(&self.db, request.into_inner()).await?))
+    }
+
+    async fn ensure_loadout(&self, request: Request<EnsureLoadoutRequest>) -> Reply<EnsureLoadoutResponse> {
+        Ok(Response::new(loadout::ensure(&self.db, request.into_inner()).await?))
     }
 
     async fn admin_add_item(&self, request: Request<AdminAddItemRequest>) -> Reply<AdminAddItemResponse> {
