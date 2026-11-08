@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use sc_api::internal::{AdminRemoveItemRequest, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse};
+use sc_api::internal::{AdminRemoveItemRequest, GrantItemsRequest, GrantedItem, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse};
 use sc_db::{internal, Arango};
 use sc_proto::services::entitygraph::v1::EntityNodeProperties;
 use serde_json::{json, Value};
@@ -22,10 +22,8 @@ use crate::{
 };
 
 /// The granted items of a request, as the entities to create: `classes` by lowercase GUID.
-fn properties(request: &GrantItemsRequest, first: u64, classes: &HashMap<String, Value>) -> Vec<EntityNodeProperties> {
-    request
-        .items
-        .iter()
+fn properties(request: &GrantItemsRequest, kept: &[&GrantedItem], first: u64, classes: &HashMap<String, Value>) -> Vec<EntityNodeProperties> {
+    kept.iter()
         .enumerate()
         .map(|(index, item)| {
             let class = &classes[&item.entity_class_guid.trim().to_lowercase()];
@@ -79,11 +77,18 @@ pub async fn grant(db: &Arango, request: GrantItemsRequest) -> Result<GrantItems
         let names: Vec<&str> = missing.iter().map(|guid| guid.as_str()).collect();
         return Err(Status::not_found(format!("no entity class {}: run sc-admin seed", names.join(", "))));
     }
-    let first = allocate_geids(db, request.items.len() as u64).await?;
+    // Ships and vehicles take no room in an inventory, so they are no items.
+    let takes_room = |item: &GrantedItem| !request.items_only || classes[&item.entity_class_guid.trim().to_lowercase()]["occupancyMicroScu"].as_i64().is_some_and(|room| room > 0);
+    let kept: Vec<&GrantedItem> = request.items.iter().filter(|item| takes_room(item)).collect();
+    if kept.is_empty() {
+        info!(owner = request.owner_id, reason = %request.reason, skipped = request.items.len(), "nothing to grant");
+        return Ok(GrantItemsResponse { geids: vec![0; request.items.len()], replayed: false });
+    }
+    let first = allocate_geids(db, kept.len() as u64).await?;
     let (owner, to) = (request.owner_id, request.inventory_id.as_str());
     let mut plan = Plan::new(None, now_ms());
     plan.refuse_live_inventory(to, owner);
-    let made = properties(&request, first, &classes);
+    let made = properties(&request, &kept, first, &classes);
     for item in &made {
         refuse_taken(&mut plan, item.geid);
     }
@@ -91,10 +96,22 @@ pub async fn grant(db: &Arango, request: GrantItemsRequest) -> Result<GrantItems
         plan.command(&create_into(item, to))?;
     }
     need_target(&mut plan, to);
-    let geids: Vec<u64> = (first..first + request.items.len() as u64).collect();
+    // One GEID per requested item, 0 for those skipped.
+    let mut next = first;
+    let geids: Vec<u64> = request
+        .items
+        .iter()
+        .map(|item| {
+            if !takes_room(item) {
+                return 0;
+            }
+            next += 1;
+            next - 1
+        })
+        .collect();
     let result = json!({ "geids": geids.iter().map(u64::to_string).collect::<Vec<_>>() });
     let (result, replayed) = apply_once(db, &request.command_id, owner, plan, result).await?;
-    info!(owner, reason = %request.reason, inventory = to, items = geids.len(), replayed, "items granted");
+    info!(owner, reason = %request.reason, inventory = to, items = kept.len(), skipped = geids.len() - kept.len(), replayed, "items granted");
     Ok(GrantItemsResponse { geids: geids_of(&result), replayed })
 }
 
@@ -144,7 +161,8 @@ mod tests {
             ],
             ..Default::default()
         };
-        let made = properties(&request, 400_000_000_010, &classes);
+        let kept: Vec<&GrantedItem> = request.items.iter().collect();
+        let made = properties(&request, &kept, 400_000_000_010, &classes);
         assert_eq!(made.iter().map(|item| (item.geid, item.stack_size, item.class_guid_crc)).collect::<Vec<_>>(), [(400_000_000_010, 1, 7), (400_000_000_011, 5, 7)]);
         assert!(made.iter().all(|item| item.owner_id == 300_000_000_001));
     }

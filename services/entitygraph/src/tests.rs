@@ -477,6 +477,7 @@ mod live {
             inventory_id: location.clone(),
             items: items.iter().map(|(guid, stack)| GrantedItem { entity_class_guid: guid.to_uppercase(), stack_size: *stack }).collect(),
             reason: "test".into(),
+            items_only: false,
         };
         let command = format!("grant:{base}");
         let first = EntityGraphInternal::grant_items(&**graph, Request::new(request(&command, &[(&guid, 0), (&guid, 3)]))).await.unwrap().into_inner();
@@ -487,6 +488,14 @@ mod live {
         assert_eq!((held.owner_id, held.inventory_id.as_deref()), (me, Some(location.as_str())));
         let unknown = EntityGraphInternal::grant_items(&**graph, Request::new(request(&format!("{command}-x"), &[("nothing", 1)]))).await;
         assert_eq!(unknown.unwrap_err().code(), tonic::Code::NotFound);
+        // A class that takes no room is skipped when only items are wanted.
+        let ship = format!("ship{base}");
+        let classes = json!([{ "_key": ship, "guid": ship, "guidHashCrc": ((base + 32) % 0xffff_fff0) as u32 + 1, "className": "Ship" }]);
+        graph.db.aql("FOR c IN @classes INSERT c INTO entity_classes", json!({ "classes": classes })).await.unwrap();
+        let mut mixed = request(&format!("{command}-m"), &[(&ship, 1), (&guid, 1)]);
+        mixed.items_only = true;
+        let made = EntityGraphInternal::grant_items(&**graph, Request::new(mixed)).await.unwrap().into_inner();
+        assert_eq!((made.geids[0], made.geids[1] > 0), (0, true), "the ship is skipped, the item stowed");
         // Revoked once, and a missing item is not an error.
         let revoke = |command: &str, geids: Vec<u64>| sc_api::internal::RevokeItemsRequest { command_id: command.into(), owner_id: me, geids, reason: "test".into() };
         let gone = EntityGraphInternal::revoke_items(&**graph, Request::new(revoke(&format!("{command}-r"), first.geids.clone()))).await.unwrap().into_inner();

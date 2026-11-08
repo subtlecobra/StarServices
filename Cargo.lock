@@ -2992,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "sc-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "sc-entitygraph"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "futures-util",
@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "sc-hub"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "prost",
@@ -3667,7 +3667,7 @@ dependencies = [
 
 [[package]]
 name = "sc-rental"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "prost-types",

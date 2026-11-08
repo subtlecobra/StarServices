@@ -178,10 +178,13 @@ message GrantItemsRequest {
   string inventory_id = 3;       // where they are stowed: <holder>:<context>:<subject>
   repeated GrantedItem items = 4;
   string reason = 5;             // for the log, such as the entitlement or delivery
+  // Skip the classes that take no room in an inventory (ships, vehicles) instead of stowing them. Their GEID in the answer
+  // is 0.
+  bool items_only = 6;
 }
 
 message GrantItemsResponse {
-  repeated uint64 geids = 1;  // one per item, in the order of the request
+  repeated uint64 geids = 1;  // one per item, in the order of the request; 0 for one skipped
   bool replayed = 2;
 }
 

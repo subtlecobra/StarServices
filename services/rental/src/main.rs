@@ -276,6 +276,7 @@ impl Rentals {
             inventory_id: inventory.to_string(),
             items: vec![GrantedItem { entity_class_guid: class_guid.to_string(), stack_size: 1 }],
             reason: format!("rental {rental}"),
+            items_only: false,
         };
         match graph.grant_items(request).await {
             Ok(reply) => {

@@ -6,6 +6,8 @@
 //! The Hub owns `player_shards`, the shard each connected player was sent to. Other services ask for it over
 //! `HubInternal`, on a gRPC port of its own, as the Hub's port speaks only its TLS protocol.
 
+mod claim;
+
 use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -115,6 +117,13 @@ struct Args {
     /// sc-entity-document, which holds each player's chosen home location (`player_home_location`).
     #[arg(long, env = "SCBACKEND_ENTITY_DOCUMENT", default_value = "http://sc-entity-document:50051")]
     entity_document: String,
+    /// sc-entitlement and sc-entitygraph, for `entitlement.inventory.location`: the entitlements that are items become items
+    /// in the player's bank at the joined location. Both are needed; without them the call is only acknowledged.
+    #[arg(long, env = "SCBACKEND_ENTITLEMENT")]
+    entitlement: Option<String>,
+    /// See `entitlement`. The sc-entitygraph of the players' region.
+    #[arg(long, env = "SCBACKEND_ENTITYGRAPH")]
+    entitygraph: Option<String>,
 }
 
 /// How long a login waits for the home location before going on without it.
@@ -313,6 +322,9 @@ async fn persistent_items(db: &Postgres, method: &str, body: &str) -> Result<Str
     Ok(json!({ "data_list": data }).to_string())
 }
 
+/// The call a join makes to have the player's entitlements at its location.
+const CLAIM_METHOD: &str = "entitlement.inventory.location";
+
 /// Calls without a store behind them succeed with an empty result. `entitlement.inventory.location`
 /// needs that: the join only continues after a success code, and it times out without a response.
 fn rpc_response(request: &RpcRequest) -> RpcResponse {
@@ -365,6 +377,7 @@ struct Session {
     account: Option<Account>,
     default_handle: String,
     documents: EntityDocumentInternalClient<Channel>,
+    claims: Option<claim::Claims>,
     /// The session this connection issued, which ends with it.
     session: Option<String>,
 }
@@ -401,6 +414,15 @@ impl Session {
         let Some(account) = &self.account else { return };
         if let Err(error) = self.db.execute("DELETE FROM player_shards WHERE geid = $1", &[&(account.geid as i64)]).await {
             warn!(%error, "could not clear the player's shard");
+        }
+    }
+
+    /// The claim of the player's entitled items at the location of the call. Only logged when it cannot be done.
+    async fn claim_entitlements(&self, body: &str) {
+        let (Some(claims), Some(account)) = (&self.claims, &self.account) else { return };
+        match claim::location_of(body) {
+            Some(location) => claims.claim(account.account_id, account.geid, location).await,
+            None => warn!(body, "a claim with no location"),
         }
     }
 
@@ -441,6 +463,9 @@ impl Session {
                     return Vec::new();
                 };
                 let mut response = rpc_response(&request);
+                if request.method() == CLAIM_METHOD {
+                    self.claim_entitlements(request.body()).await;
+                }
                 match request.method().strip_prefix(PERSISTENT_PREFIX) {
                     Some(method) => match persistent_items(&self.db, method, request.body()).await {
                         Ok(body) => response.body = body,
@@ -590,6 +615,13 @@ where
     }
 }
 
+/// The services a connection asks.
+#[derive(Clone)]
+struct Backends {
+    documents: EntityDocumentInternalClient<Channel>,
+    claims: Option<claim::Claims>,
+}
+
 async fn accept_loop(
     addr: SocketAddr,
     tls: Arc<ServerConfig>,
@@ -597,7 +629,7 @@ async fn accept_loop(
     db: Postgres,
     shard: ShardInfo,
     default_handle: String,
-    documents: EntityDocumentInternalClient<Channel>,
+    backends: Backends,
 ) -> Result<(), String> {
     let listener = TcpListener::bind(addr).await.map_err(|e| format!("hub bind {addr}: {e}"))?;
     let acceptor = TlsAcceptor::from(tls);
@@ -619,7 +651,8 @@ async fn accept_loop(
             shard: shard.clone(),
             account: None,
             default_handle: default_handle.clone(),
-            documents: documents.clone(),
+            documents: backends.documents.clone(),
+            claims: backends.claims.clone(),
             session: None,
         };
         tokio::spawn(async move {
@@ -669,8 +702,26 @@ async fn serve(args: Args) -> Result<(), String> {
     let endpoint =
         Endpoint::from_shared(args.entity_document.clone()).map_err(|e| format!("--entity-document: {e}"))?;
     let documents = EntityDocumentInternalClient::new(endpoint.connect_lazy());
+    let claims = match (&args.entitlement, &args.entitygraph) {
+        (Some(entitlement), Some(entitygraph)) => {
+            let channel = |address: &String, flag: &str| {
+                Endpoint::from_shared(address.clone())
+                    .map(|endpoint| endpoint.connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(10)).connect_lazy())
+                    .map_err(|e| format!("--{flag}: {e}"))
+            };
+            info!(%entitlement, %entitygraph, "entitlements are claimed as items at the joined location");
+            Some(claim::Claims {
+                entitlements: sc_api::internal::entitlement_internal_client::EntitlementInternalClient::new(channel(entitlement, "entitlement")?),
+                graph: sc_api::internal::entity_graph_internal_client::EntityGraphInternalClient::new(channel(entitygraph, "entitygraph")?),
+            })
+        }
+        _ => {
+            warn!("no --entitlement and --entitygraph, joins claim no items");
+            None
+        }
+    };
     tokio::select! {
-        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle, documents) => result,
+        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle, Backends { documents, claims }) => result,
         result = serve_internal(args.internal_listen, db) => result,
     }
 }
