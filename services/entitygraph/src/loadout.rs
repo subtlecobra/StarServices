@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 use sc_api::internal::{EnsureLoadoutRequest, EnsureLoadoutResponse, LoadoutItem};
 use sc_db::{internal, Arango};
 use sc_proto::services::entitygraph::v1::{
-    create_command, entity_edge_vertex::Id, entity_graph_command::Params, node_properties, AttachmentType, CreateCommand,
+    create_command, entity_edge_vertex::Id, entity_graph_command::Params, erase_command, node_properties, AttachmentType, CreateCommand, EraseCommand,
     EntityEdge, EntityEdgeProperties, EntityEdgeType, EntityEdgeVertex, EntityGraph, EntityNodeProperties, Node,
     NodeProperties, NodeType,
 };
 use serde_json::{json, Value};
 use tonic::Status;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     admin::{allocate_geids, apply_once, command, invalid, need_command, need_owner, recorded, refuse_taken},
@@ -106,7 +106,46 @@ pub async fn ensure(db: &Arango, request: EnsureLoadoutRequest) -> Result<Ensure
     let result = json!({ "geids": geids.iter().map(u64::to_string).collect::<Vec<_>>() });
     let (result, replayed) = apply_once(db, &request.command_id, request.player_id, plan, result).await?;
     info!(player = request.player_id, items = geids.len(), replayed, "loadout ensured");
+    if !replayed {
+        retire_old(db, request.player_id, &geids, &request.command_id).await;
+    }
     Ok(EnsureLoadoutResponse { geids: geids_of(&result).unwrap_or_default(), replayed })
+}
+
+/// Erases the loadouts the player wore before this one: the items `EnsureLoadout` made for them that are still attached to
+/// the player, with what hangs from them. An item the player took off and stowed somewhere is theirs and stays. A failure
+/// is logged and leaves the old items for the next change.
+async fn retire_old(db: &Arango, player: u64, current: &[u64], command_id: &str) {
+    let query = "FOR e IN entities
+                     FILTER TO_STRING(e.ownerId) == TO_STRING(@player) AND e.debug.createdBy == 'loadout'
+                         AND e.stowed != true AND e._key NOT IN @current
+                     FOR x IN entity_edges FILTER x.startId == e._key AND x.type == @attached AND x.endId == TO_STRING(@player)
+                     RETURN e._key";
+    let bind = json!({
+        "player": player,
+        "current": current.iter().map(u64::to_string).collect::<Vec<_>>(),
+        "attached": EntityEdgeType::AttachedTo as i32,
+    });
+    let old: Vec<u64> = match db.aql(query, bind).await {
+        Ok(rows) => rows.iter().filter_map(|row| row.as_str()?.parse().ok()).collect(),
+        Err(error) => {
+            warn!(player, %error, "the old loadout was not looked up");
+            return;
+        }
+    };
+    if old.is_empty() {
+        return;
+    }
+    let mut plan = Plan::new(None, now_ms());
+    let erasures = old.iter().map(|geid| erase_command::Body { entity_id: *geid, preconditions: Vec::new() }).collect();
+    if let Err(status) = plan.command(&command(Params::Erase(EraseCommand { erasures, inventory_id: String::new() }))) {
+        warn!(player, %status, "the old loadout was not erased");
+        return;
+    }
+    match apply_once(db, &format!("{command_id}:retire"), player, plan, json!({ "retired": old.len() })).await {
+        Ok(_) => info!(player, roots = old.len(), "old loadout erased"),
+        Err(status) => warn!(player, %status, "the old loadout was not erased"),
+    }
 }
 
 #[cfg(test)]

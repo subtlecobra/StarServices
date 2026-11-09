@@ -591,6 +591,20 @@ mod live {
         assert_eq!(head_edge, [json!({ "to": first.geids[0].to_string(), "port": 0x1234_5678 })]);
         let body_edge = graph.db.aql(query, json!({ "geid": first.geids[0].to_string() })).await.unwrap();
         assert_eq!(body_edge[0]["to"], json!(me.to_string()), "a root is attached to the player");
+        // Another loadout (another head) takes the place of this one: the old items go, the new ones stay.
+        let other = vec![items[0], LoadoutItem { class_crc: body, port_crc: 0x2222_2222, parent: 0 }];
+        let second = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request(&format!("{command}-b"), other))).await.unwrap().into_inner();
+        let alive = |geids: Vec<u64>| {
+            let graph = graph.clone();
+            async move {
+                graph.db.aql("FOR e IN entities FILTER e._key IN @keys RETURN e._key", json!({ "keys": geids.iter().map(u64::to_string).collect::<Vec<_>>() })).await.unwrap().len()
+            }
+        };
+        assert_eq!(alive(first.geids.clone()).await, 0, "the old loadout is erased");
+        assert_eq!(alive(second.geids.clone()).await, 2, "the new one stays");
+        let keys = json!({ "keys": second.geids.iter().map(u64::to_string).collect::<Vec<_>>() });
+        graph.db.aql("FOR e IN entities FILTER e._key IN @keys REMOVE e IN entities", keys.clone()).await.unwrap();
+        graph.db.aql("FOR x IN entity_edges FILTER x.startId IN @keys REMOVE x IN entity_edges", keys).await.unwrap();
         let unknown = vec![LoadoutItem { class_crc: crc(99), port_crc: 1, parent: -1 }];
         let refused = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request(&format!("{command}-x"), unknown))).await;
         assert_eq!(refused.unwrap_err().code(), tonic::Code::NotFound);
