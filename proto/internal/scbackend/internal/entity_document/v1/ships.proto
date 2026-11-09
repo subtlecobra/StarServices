@@ -1,0 +1,45 @@
+// The durable ship records, answered by sc-entity-document, which owns them. See docs/SHIPS.md.
+syntax = "proto3";
+
+package scbackend.internal.entity_document.v1;
+
+import "scbackend/internal/common/v1/ships.proto";
+
+message RecordShipRequest {
+  common.v1.ShipRecord record = 1;  // ship_uid, owner_id, command_id and entity_class_guid are needed
+}
+
+message RecordShipResponse {
+  common.v1.ShipRecord record = 1;
+  bool created = 2;                  // false when the command id (or ship uid) was recorded already
+}
+
+message GetShipsRequest {
+  uint64 owner_id = 1;
+  repeated string ship_uids = 2;     // empty for all of the owner's
+  bool unsynced_only = 3;            // those the graph does not hold yet (to repair)
+}
+
+message GetShipsResponse {
+  repeated common.v1.ShipRecord ships = 1;
+}
+
+message ReplaceShipRequest {
+  common.v1.ShipRecord record = 1;
+  // The revision the writer saw; a different one is ABORTED and nothing is written.
+  uint64 expected_revision = 2;
+}
+
+message ReplaceShipResponse {
+  common.v1.ShipRecord record = 1;
+}
+
+service ShipRecordsInternal {
+  // Writes the record of an acquired ship, once per command id: a repeat (or another command for the same ship uid)
+  // answers the record there with created false. The ship's revision is 1 and it is not graph_synced.
+  rpc RecordShip(RecordShipRequest) returns (RecordShipResponse);
+  rpc GetShips(GetShipsRequest) returns (GetShipsResponse);
+  // Replaces a record at the revision the caller saw, which is how every state change is made. NOT_FOUND for a ship
+  // that was never recorded; ABORTED when the revision moved.
+  rpc ReplaceShip(ReplaceShipRequest) returns (ReplaceShipResponse);
+}

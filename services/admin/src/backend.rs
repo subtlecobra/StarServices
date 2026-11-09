@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures_util::TryStreamExt;
 use sc_economy::command::Push;
-use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_document_internal_client::EntityDocumentInternalClient, hub_internal_client::HubInternalClient, entity_graph_internal_client::EntityGraphInternalClient, identity_internal_client::IdentityInternalClient, ledger_internal_client::LedgerInternalClient, presence_internal_client::PresenceInternalClient, rental_internal_client::RentalInternalClient, AccountSummary, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, EntitlementHistoryRequest, ExtendRentalRequest, ExtendRentalResponse, GameBadge, GameBadgesRequest, GetAccountRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPresencesRequest, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerBalancesRequest, LedgerOperation, LedgerOperationsRequest, ListRentalsRequest, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, QueryEntitlementsRequest, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionRequest, VerifyWebSessionResponse, };
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_document_internal_client::EntityDocumentInternalClient, hub_internal_client::HubInternalClient, entity_graph_internal_client::EntityGraphInternalClient, identity_internal_client::IdentityInternalClient, ledger_internal_client::LedgerInternalClient, presence_internal_client::PresenceInternalClient, rental_internal_client::RentalInternalClient, AccountSummary, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminInventory, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, EntitlementHistoryRequest, ExtendRentalRequest, ExtendRentalResponse, GameBadge, GameBadgesRequest, GetAccountRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPresencesRequest, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerBalancesRequest, LedgerOperation, LedgerOperationsRequest, ListRentalsRequest, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, QueryEntitlementsRequest, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionRequest, VerifyWebSessionResponse, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter},
@@ -21,6 +21,25 @@ use tonic::{
 
 /// A slow owner makes the page fail rather than hang.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A search of the entity classes: a text, and the item types and sub types the classes may have (none: any).
+#[derive(Clone, Debug, Default)]
+pub struct ClassSearch {
+    pub query: String,
+    /// (item type, sub types) pairs a class must match one of, a type with no sub types taking any.
+    pub any_of: Vec<(String, Vec<String>)>,
+    /// Pairs a class must match none of.
+    pub none_of: Vec<(String, Vec<String>)>,
+    /// Sub types a class must have, whatever its type.
+    pub item_sub_types: Vec<String>,
+    pub named_only: bool,
+    pub limit: u32,
+}
+
+fn filters(pairs: Vec<(String, Vec<String>)>) -> Vec<sc_api::internal::ItemTypeFilter> {
+    pairs.into_iter().map(|(item_type, item_sub_types)| sc_api::internal::ItemTypeFilter { item_type, item_sub_types }).collect()
+}
+
 const VARIED_FUNDS: &str = "sc.external.services.ledger.v1.VariedFunds";
 /// The most items listed per inventory on the inventory page.
 pub const ITEMS_PER_INVENTORY: u32 = 500;
@@ -66,7 +85,11 @@ pub trait Owners: Send + Sync {
     async fn move_item(&self, request: AdminMoveItemRequest) -> Result<AdminMoveItemResponse, Status>;
     async fn add_item(&self, request: AdminAddItemRequest) -> Result<AdminAddItemResponse, Status>;
     async fn remove_item(&self, request: AdminRemoveItemRequest) -> Result<AdminRemoveItemResponse, Status>;
-    async fn search_classes(&self, query: &str) -> Result<Vec<AdminEntityClass>, Status>;
+    /// What the player wears and the ports items can go to, each with the stowed items that fit.
+    async fn equipment(&self, geid: u64) -> Result<AdminEquipmentResponse, Status>;
+    async fn equip_item(&self, request: AdminEquipItemRequest) -> Result<AdminEquipItemResponse, Status>;
+    async fn unequip_item(&self, request: AdminUnequipItemRequest) -> Result<AdminUnequipItemResponse, Status>;
+    async fn search_classes(&self, search: ClassSearch) -> Result<Vec<AdminEntityClass>, Status>;
     /// Tells a playing client its balance changed, through sc-push. Best effort.
     async fn funds_changed(&self, account_id: u32, geid: u64, ledger_name: &str, delta: i64, version: u64);
 }
@@ -248,8 +271,27 @@ impl Owners for Grpc {
         Ok(self.graph.clone().admin_remove_item(request).await?.into_inner())
     }
 
-    async fn search_classes(&self, query: &str) -> Result<Vec<AdminEntityClass>, Status> {
-        let request = AdminSearchEntityClassesRequest { query: query.to_string(), limit: 50 };
+    async fn equipment(&self, geid: u64) -> Result<AdminEquipmentResponse, Status> {
+        Ok(self.graph.clone().admin_equipment(AdminEquipmentRequest { owner_id: geid }).await?.into_inner())
+    }
+
+    async fn equip_item(&self, request: AdminEquipItemRequest) -> Result<AdminEquipItemResponse, Status> {
+        Ok(self.graph.clone().admin_equip_item(request).await?.into_inner())
+    }
+
+    async fn unequip_item(&self, request: AdminUnequipItemRequest) -> Result<AdminUnequipItemResponse, Status> {
+        Ok(self.graph.clone().admin_unequip_item(request).await?.into_inner())
+    }
+
+    async fn search_classes(&self, search: ClassSearch) -> Result<Vec<AdminEntityClass>, Status> {
+        let request = AdminSearchEntityClassesRequest {
+            query: search.query,
+            limit: search.limit,
+            any_of: filters(search.any_of),
+            none_of: filters(search.none_of),
+            item_sub_types: search.item_sub_types,
+            named_only: search.named_only,
+        };
         Ok(self.graph.clone().admin_search_entity_classes(request).await?.into_inner().classes)
     }
 

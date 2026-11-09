@@ -3,6 +3,8 @@ syntax = "proto3";
 
 package scbackend.internal.hub.v1;
 
+import "scbackend/internal/common/v1/disconnect.proto";
+
 message GetPlayerShardRequest {
   uint64 geid = 1;
 }
@@ -46,4 +48,15 @@ message ResolveSessionResponse {
 service HubInternal {
   rpc GetPlayerShard(GetPlayerShardRequest) returns (GetPlayerShardResponse);
   rpc ResolveSession(ResolveSessionRequest) returns (ResolveSessionResponse);
+  // A player's connection to a shard ended (see docs/DISCONNECT.md). The Hub records the event once per `event_id`,
+  // frees the player's shard slot unless they joined again since, and tells sc-entitygraph to clear the player's live
+  // markers, retrying until it is heard. Answers at once; never waits for the services behind it.
+  rpc ReportDisconnect(common.v1.PlayerDisconnect) returns (ReportDisconnectResponse);
+}
+
+message ReportDisconnectResponse {
+  // False for an event already recorded.
+  bool recorded = 1;
+  // Whether the player's shard slot was freed by this report.
+  bool slot_freed = 2;
 }

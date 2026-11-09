@@ -18,7 +18,7 @@ use sc_api::internal::{
     solar_system_shop_internal_server::{SolarSystemShopInternal, SolarSystemShopInternalServer},
     AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse,
     AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse,
-    AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, BlueprintDefault, ContainerSeed,
+    AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, BlueprintDefault, ContainerSeed,
     EntitlementHistoryRequest, EntitlementHistoryResponse, EntityClassSeed, GetOwnersRequest, GetOwnersResponse,
     GrantPurchaseRequest, GrantPurchaseResponse, LoadAreaRequest, LoadAreaResponse, MissionContractSeed,
     QueryEntitlementsRequest, QueryEntitlementsResponse, RentalPrice, RevokeEntitlementRequest,
@@ -181,6 +181,9 @@ impl EntityGraphInternal for Owned {
     async fn get_owners(&self, _: Request<GetOwnersRequest>) -> Result<Response<GetOwnersResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }
+    async fn release_player(&self, _: Request<sc_api::internal::ReleasePlayerRequest>) -> Result<Response<sc_api::internal::ReleasePlayerResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
     async fn ensure_loadout(&self, _: Request<sc_api::internal::EnsureLoadoutRequest>) -> Result<Response<sc_api::internal::EnsureLoadoutResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }
@@ -206,6 +209,15 @@ impl EntityGraphInternal for Owned {
         &self,
         _: Request<AdminSearchEntityClassesRequest>,
     ) -> Result<Response<AdminSearchEntityClassesResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
+    async fn admin_equipment(&self, _: Request<AdminEquipmentRequest>) -> Result<Response<AdminEquipmentResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
+    async fn admin_equip_item(&self, _: Request<AdminEquipItemRequest>) -> Result<Response<AdminEquipItemResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
+    async fn admin_unequip_item(&self, _: Request<AdminUnequipItemRequest>) -> Result<Response<AdminUnequipItemResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }
 }

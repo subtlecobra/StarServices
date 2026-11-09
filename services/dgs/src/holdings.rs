@@ -29,12 +29,18 @@ impl Holdings {
     /// Frees what `session` holds and says how much. A session that has been taken over, or that this DGS has lost, holds
     /// nothing, so its late leave costs the player who took over nothing.
     pub fn leave(&mut self, replicant: u64, session: u64) -> u32 {
+        self.leave_account(replicant, session).map_or(0, |(_, entities)| entities)
+    }
+
+    /// As `leave`, and says whose the session was: the account and how many entities were freed. `None` for a session
+    /// this DGS does not hold, which has nothing to report.
+    pub fn leave_account(&mut self, replicant: u64, session: u64) -> Option<(u64, u32)> {
         if replicant != self.replicant {
-            return 0;
+            return None;
         }
-        let account = self.players.iter().find(|(_, held)| held.session == session).map(|(account, _)| *account);
-        let held = account.and_then(|account| self.players.remove(&account));
-        held.map_or(0, |held| held.entities.len() as u32)
+        let account = self.players.iter().find(|(_, held)| held.session == session).map(|(account, _)| *account)?;
+        let held = self.players.remove(&account)?;
+        Some((account, held.entities.len() as u32))
     }
 
     pub fn players(&self) -> u32 {
@@ -70,6 +76,15 @@ mod tests {
         assert_eq!(holdings.leave(1, 10), 2);
         assert_eq!((holdings.players(), holdings.entities()), (1, 1));
         assert_eq!(holdings.of(1_000_001), None);
+    }
+
+    #[test]
+    fn a_leave_says_whose_session_it_freed() {
+        let mut holdings = Holdings::default();
+        holdings.join(1, 10, 1_000_001, vec![5, 6]);
+        assert_eq!(holdings.leave_account(2, 10), None, "another replicant's session is no one's");
+        assert_eq!(holdings.leave_account(1, 10), Some((1_000_001, 2)));
+        assert_eq!(holdings.leave_account(1, 10), None, "a repeat reports nothing");
     }
 
     #[test]

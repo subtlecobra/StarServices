@@ -21,7 +21,7 @@ use std::{
 };
 
 use blake2::{digest::consts::U16, Blake2s, Digest};
-use sc_api::internal::{session_update::Update, DgsFrames, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, InputFrame, PlayerMovement, Rotation};
+use sc_api::internal::{session_update::Update, DgsFrames, DisconnectReason, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, InputFrame, PlayerMovement, Rotation};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
@@ -559,12 +559,13 @@ impl Peer {
         true
     }
 
-    /// Keeps a client's call of a method of another entity than its player for its DGS, which may hold that entity, such
-    /// as a press of its hangar's elevator call panel. Only once in game.
+    /// Keeps a client's call of a method for its DGS, which may hold the entity: a press of its hangar's elevator call
+    /// panel, or an inventory request of its player. Only once in game.
     fn receive_method(&mut self, payload: &[u8]) {
         let Some(player) = self.joined().map(|joined| joined.player.entity_id) else { return };
         let Some((entity_id, method, args)) = remote_method(payload) else { return };
-        if self.stage != Stage::InGame || entity_id == player {
+        // The player's own methods are its input, taken before, and its inventory requests, which its DGS completes.
+        if self.stage != Stage::InGame || (entity_id == player && method as usize == crate::input::ACTION_FRAME_METHOD) {
             return;
         }
         self.methods.push(EntityMethodRequest { replicant: 0, session: 0, player_id: player, entity_id, method, args: args.to_vec() });
@@ -727,7 +728,10 @@ impl Peer {
 
     /// Ends the connection at the client's word, as a timeout would: dropping the session tells its DGS, which frees what it
     /// holds for the player. The peer stays a while, closed, to answer the copies of the notice.
-    fn close(&mut self) {
+    fn close(&mut self, client_code: u32) {
+        if let Some(session) = &self.session {
+            session.end(DisconnectReason::Clean, client_code);
+        }
         self.session = None;
         self.closed = Some(Instant::now());
         self.pending.clear();
@@ -1033,6 +1037,11 @@ fn handle_packet_from(data: &[u8], from: SocketAddr, peers: &mut HashMap<SocketA
         let identity = sessions.identity(&request.session_guid)?;
         let (ack, keys) = accept_connect(&request)?;
         info!(%from, account = identity.account, "shard handshake complete");
+        // A connection from this address that is still open is taken over: the player has not left, and its end is no
+        // one's report.
+        if let Some(old) = peers.get(&from).and_then(|peer| peer.session.as_ref()) {
+            old.end(DisconnectReason::Replaced, 0);
+        }
         peers.insert(from, Peer::new(&request, ack.clone(), &keys, identity));
         return Some(ack);
     }
@@ -1051,7 +1060,7 @@ fn handle_packet_from(data: &[u8], from: SocketAddr, peers: &mut HashMap<SocketA
                     return None;
                 };
                 info!(%from, session = peer.session_id, reason = ?notice.reason, text = %notice.text, "client disconnected");
-                peer.close();
+                peer.close(notice.reason.unwrap_or_default());
                 return Some(disconnect_ack());
             }
             peer.last_seen = Instant::now();
@@ -1102,7 +1111,7 @@ pub async fn serve(
     let directory = Directory::parse(&shard_id, &dgs_areas, &dgs_address)?;
     info!(dgs = directory.dgs_count(), address = %dgs_address, "DGS areas read");
     let (events, mut answers) = unbounded_channel();
-    let link = Arc::new(Link::new(directory, events));
+    let link = Arc::new(Link::new(directory, events).reporting_to(&hub, &shard_id)?);
     let socket = Arc::new(UdpSocket::bind(addr).await.map_err(|e| format!("shard bind {addr}: {e}"))?);
     info!(%addr, shard = %shard_id, "shard listening (UDP)");
     let players = Arc::new(AtomicU32::new(0));

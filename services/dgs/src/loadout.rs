@@ -138,19 +138,43 @@ pub fn loadout_binds(player_id: u64, player_index: u64, loadout: &[Item]) -> Vec
     loadout_binds_with(player_id, loadout, &ids)
 }
 
-/// As `loadout_binds`, with `ids` for the items, one per item: the GEIDs sc-entitygraph made for them.
+/// As `loadout_binds`, with `ids` for the items, one per item: the GEIDs sc-entitygraph made for them. An id of 0 is an item
+/// the player took off: it is left out, and so is everything on it.
 pub fn loadout_binds_with(player_id: u64, loadout: &[Item], ids: &[u64]) -> Vec<Bind> {
     assert_eq!(loadout.len(), ids.len(), "an id for each item");
-    loadout
-        .iter()
-        .enumerate()
-        .map(|(slot, item)| Bind {
+    let mut worn = vec![false; loadout.len()];
+    let mut binds = Vec::with_capacity(loadout.len());
+    for (slot, item) in loadout.iter().enumerate() {
+        // Parents come before their items.
+        worn[slot] = ids[slot] != 0 && item.parent.is_none_or(|parent| worn[parent]);
+        if !worn[slot] {
+            continue;
+        }
+        binds.push(Bind {
             entity_id: ids[slot],
             class_crc: item.class_crc,
             flags: ITEM_FLAGS,
             transform: Transform::IDENTITY,
             parent_id: item.parent.map_or(player_id, |parent| ids[parent]),
             parent_attach_id: port_attach_id(&item.port),
+            components: Vec::new(),
+            snapshots: Vec::new(),
+        });
+    }
+    binds
+}
+
+/// The binds of what the player equipped on the loadout's items, as sc-entitygraph lists them (parents before children).
+pub fn equipped_binds(equipped: &[sc_api::internal::EquippedItem]) -> Vec<Bind> {
+    equipped
+        .iter()
+        .map(|item| Bind {
+            entity_id: item.geid,
+            class_crc: item.class_crc,
+            flags: ITEM_FLAGS,
+            transform: Transform::IDENTITY,
+            parent_id: item.parent_geid,
+            parent_attach_id: item.port_crc,
             components: Vec::new(),
             snapshots: Vec::new(),
         })
@@ -237,6 +261,24 @@ mod tests {
         let ids: Vec<u64> = (0..23).map(|slot| 400_000_000_000 + slot).collect();
         let binds = loadout_binds_with(300_000_000_001, &DEFAULT_LOADOUT, &ids);
         assert_eq!((binds[0].entity_id, binds[0].parent_id, binds[1].parent_id), (400_000_000_000, 300_000_000_001, 400_000_000_000));
+    }
+
+    #[test]
+    fn an_item_taken_off_leaves_with_what_hangs_from_it() {
+        let mut ids: Vec<u64> = (0..23).map(|slot| 400_000_000_000 + slot).collect();
+        ids[17] = 0; // the pistol, whose magazine is item 18
+        let binds = loadout_binds_with(300_000_000_001, &DEFAULT_LOADOUT, &ids);
+        assert_eq!(binds.len(), 21);
+        assert!(binds.iter().all(|bind| bind.entity_id != 400_000_000_017 && bind.entity_id != 400_000_000_018));
+        assert!(binds.iter().any(|bind| bind.entity_id == 400_000_000_019), "the spare magazine is on the undersuit");
+    }
+
+    #[test]
+    fn equipped_items_hang_from_the_port_the_graph_names() {
+        let equipped = [sc_api::internal::EquippedItem { geid: 400_000_000_100, class_crc: 7, port_crc: 9, parent_geid: 400_000_000_011 }];
+        let binds = equipped_binds(&equipped);
+        assert_eq!((binds[0].entity_id, binds[0].class_crc, binds[0].parent_id, binds[0].parent_attach_id), (400_000_000_100, 7, 400_000_000_011, 9));
+        assert_eq!(binds[0].flags, ITEM_FLAGS);
     }
 
     #[test]

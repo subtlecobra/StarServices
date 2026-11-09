@@ -66,9 +66,30 @@ The Inventory tab asks sc-entitygraph (`EntityGraphInternal`, the "Admin invento
   containers of what the player owns (ship holds, crates, backpacks) nested under the inventory they are in, with
   capacity and occupancy in SCU and each item's class, English name, GUID, stack, owner and the inventories it holds.
   An inventory held by something live on a shard, and an item on a shard, are shown without actions.
+- Adding items is a catalog with a cart: type to filter the item classes as you go, or pick one of the categories
+  (Weapons, Armor, Clothing, Utility, Ammo, Vehicle parts, Sustenance, Containers, Other), each a chip with an icon.
+  The categories and what each one matches (item type and sub type pairs) follow the game's own inventory filters
+  (DataCore, `PersonalThoughtInventoryCategoryFilter`); the labels are the portal's, and Other is every class no
+  category matches. The chosen category shows its own sub-filters and no other's: an armor's part and weight (light,
+  medium, heavy; the weight is the portal's addition), a weapon's kind, a clothing's part, and so on. Choices in a
+  group are OR, groups are AND. Only classes with an English name are listed.
+- Each card has a `+` button, next to an amount for items that stack (consumables, food and drink up to 99, currency
+  up to 999; the portal's rule, as the game defines no per-class limit) and without one for items that do not. An
+  item joins the cart only when `+` is clicked. The cart is given in one batch to the chosen inventory under one
+  reason (`/inventory/add-batch`, one audit entry). The script is `inventory.js`, served by the portal (never inline,
+  built from text nodes); without it the plain search form still works. The categories are in
+  `services/admin/src/catalog.rs`.
 - Move an item to another inventory of the tree, or part of its stack (a split makes a new item); add an item by
   entity class, found with the class search (class name, English name or GUID), into any inventory of the tree; remove
   an item and everything it holds. Each needs a reason.
+- Where to put an item (the add form, each item's Move, and Take off) is picked in a tree shown on the page
+  (`tree.js`, served by the portal, never inline, built from text nodes): a container sits under the place or item that
+  holds it, branches expand and collapse (Expand all, Collapse all), the arrow keys walk it and Enter chooses; the choice
+  is shown as a path (`Orison › Item bank › Pembroke Core`). Without the script the same select is a plain indented list.
+  Each item says `In: <path>` and each inventory heading is its path.
+- Worn: the items the player wears, under what they hang from. An item that fits a free port of something worn
+  has an "Equip on" chooser listing only those ports; a worn item (not the body or head) has "Take off" into any
+  inventory. See "Equipping" in [INVENTORY.md](INVENTORY.md). Offline only, like the rest.
 - Refused, as locations are, while sc-hub has the player on a shard or does not answer: the DGS holds a playing
   player's items. sc-entitygraph checks the rest as for the player's own command: capacity, loops, ownership.
 

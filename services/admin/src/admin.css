@@ -40,3 +40,68 @@ section.depth-6 { margin-left: 9em; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: .2em 1em; }
 dt { font-weight: 600; }
 dd { margin: 0; }
+
+/* The inventory catalog: filter chips, cards and the armor weights. */
+#catalog { margin: .2em 0 .8em; }
+.cat-search { display: block; width: 100%; box-sizing: border-box; font-size: 1.05em; padding: .5em .7em; margin-bottom: .6em; border: 1px solid var(--line); border-radius: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: .4em; margin: .3em 0; }
+.chip { display: inline-flex; align-items: center; gap: .4em; padding: .3em .75em; border: 1px solid var(--line); border-radius: 999px; background: none; color: inherit; cursor: pointer; }
+.chip:hover { border-color: var(--accent); }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip svg { width: 1.2em; height: 1.2em; }
+.groups { margin: .2em 0 .4em 1.2em; padding-left: .8em; border-left: 3px solid var(--accent); }
+.chips.group { align-items: center; }
+.group-label { min-width: 4.5em; }
+.chip.light[aria-pressed="true"] { background: var(--ok); border-color: var(--ok); }
+.chip.medium[aria-pressed="true"] { background: #c98a0a; border-color: #c98a0a; }
+.chip.heavy[aria-pressed="true"] { background: var(--bad); border-color: var(--bad); }
+.cat-status { margin: .4em 0; opacity: .7; min-height: 1.4em; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .6em; margin: .4em 0 .8em; }
+.card { display: grid; grid-template-columns: 2.6em 1fr; gap: .2em .6em; align-items: center; padding: .55em .6em; border: 1px solid var(--line); border-radius: 8px; }
+.card .icon, .cart-row .icon { grid-row: span 3; width: 2.6em; height: 2.6em; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: #8881; }
+.card .icon svg { width: 1.7em; height: 1.7em; }
+.card .name { font-weight: 600; overflow-wrap: anywhere; }
+.card .meta { font-size: .85em; opacity: .7; overflow-wrap: anywhere; }
+.buy { grid-column: 1 / -1; display: flex; justify-content: flex-end; align-items: center; gap: .4em; }
+.buy .incart { margin-right: auto; font-size: .85em; }
+.amount { width: 4.5em; }
+.add { width: 2em; height: 2em; padding: 0; border-radius: 50%; border: 1px solid var(--accent); background: var(--accent); color: #fff; font-size: 1.2em; line-height: 1; }
+.add:hover, .add:focus-visible { filter: brightness(1.15); }
+.tag { display: inline-block; font-size: .78em; padding: 0 .5em; border-radius: 999px; border: 1px solid var(--line); margin-right: .3em; }
+.tag.light { border-color: var(--ok); color: var(--ok); }
+.tag.medium { border-color: #c98a0a; color: #c98a0a; }
+.tag.heavy { border-color: var(--bad); color: var(--bad); }
+.cart { margin: .4em 0; padding: .5em .7em; border-left: 4px solid var(--accent); background: #2f6fdf12; }
+.cart-head { display: flex; justify-content: space-between; align-items: center; gap: 1em; margin-bottom: .3em; }
+.cart-row { display: flex; align-items: center; gap: .6em; padding: .25em 0; border-top: 1px solid var(--line); }
+.cart-row .icon { grid-row: auto; width: 2em; height: 2em; flex: none; }
+.cart-row .icon svg { width: 1.3em; height: 1.3em; }
+.cart-name { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
+button.link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0 .3em; }
+
+/* The inventory picker: the tree on the page, with guide lines for the levels (tree.js). */
+.treepick { display: block; flex: 1 1 100%; min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: .4em .6em; }
+.treepick-bar { display: flex; flex-wrap: wrap; gap: .3em .8em; align-items: baseline; padding-bottom: .3em; border-bottom: 1px solid var(--line); margin-bottom: .3em; font-size: .9em; }
+.treepick-current { flex: 1 1 auto; overflow-wrap: anywhere; }
+.treepick-bar .link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
+.treepick-list { list-style: none; margin: 0; padding: 0; }
+.treepick > .treepick-list { max-height: 18em; overflow: auto; }
+.treepick-list .treepick-list { margin-left: .8em; padding-left: .6em; border-left: 1px solid #8887; }
+.treepick-row { display: flex; align-items: center; gap: .2em; border-radius: 4px; }
+.treepick-row.chosen { background: #2f6fdf22; }
+.treepick-row.chosen .treepick-label { font-weight: 600; }
+.treepick-toggle { width: 1.6em; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; flex: none; }
+.treepick-toggle.blank { cursor: default; opacity: .35; text-align: center; }
+.treepick-label { background: none; border: 0; padding: .15em .35em; cursor: pointer; text-align: left; color: inherit; border-radius: 4px; }
+.treepick-label:hover { background: #2f6fdf22; }
+.treepick-count { opacity: .55; font-size: .85em; }
+
+/* The inventory forms: the picker on a line of its own above the other fields. */
+form.stacked { display: flex; flex-wrap: wrap; gap: .4em; align-items: center; margin: .3em 0; max-width: 46em; }
+form.stacked .wide { flex: 1 1 100%; }
+form.stacked .cart, form.stacked input[name="items"], form.stacked input[name="reason"] { flex: 1 1 14em; }
+form.stacked .cart { flex-basis: 100%; }
+form.give { padding: .4em 0; }
+.where { font-size: .85em; }
+section.inventory h3 { overflow-wrap: anywhere; }
+.treepick-label:focus-visible { outline: 2px solid var(--accent); }

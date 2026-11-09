@@ -610,6 +610,141 @@ mod live {
         assert_eq!(refused.unwrap_err().code(), tonic::Code::NotFound);
     }
 
+    /// Equipping: an item of the player's goes from an inventory to a port of a worn item and back, once per command id,
+    /// only where its type and size fit, and the loadout answers with what is worn.
+    #[tokio::test]
+    #[ignore]
+    async fn equipping_moves_items_between_inventories_and_ports() {
+        use sc_api::internal::{
+            AdminAddItemRequest, AdminEquipItemRequest, AdminEquipmentRequest, AdminUnequipItemRequest, EnsureLoadoutRequest, LoadoutItem,
+        };
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let base = fresh();
+        let crc = |n: u64| ((base + n) % 0xffff_fff0) as u32 + 1;
+        let (body, suit, pistol, rifle) = (crc(31), crc(32), crc(33), crc(34));
+        let guid = |name: &str| format!("{name}{base}");
+        let port = |name: &str, min: i64, max: i64, kind: &str, subs: serde_json::Value| {
+            json!({ "name": name, "minSize": min, "maxSize": max, "types": [{ "itemType": kind, "itemSubTypes": subs }],
+                    "requiredPortTags": "", "portTags": "", "flags": "" })
+        };
+        let classes = json!([
+            { "_key": guid("body"), "guid": guid("body"), "guidHashCrc": body, "className": "Body", "itemType": "Char_Body",
+              "ports": [port("Armor_Undersuit", 1, 1, "Char_Armor_Undersuit", json!([])), port("Head_ItemPort", 1, 1, "Char_Head", json!([]))] },
+            { "_key": guid("suit"), "guid": guid("suit"), "guidHashCrc": suit, "className": "Suit", "itemType": "Char_Armor_Undersuit",
+              "ports": [port("wep_sidearm", 1, 1, "WeaponPersonal", json!(["Small"]))] },
+            { "_key": guid("pistol"), "guid": guid("pistol"), "guidHashCrc": pistol, "className": "Pistol", "itemType": "WeaponPersonal",
+              "itemSubType": "Small", "attachSize": 1 },
+            { "_key": guid("rifle"), "guid": guid("rifle"), "guidHashCrc": rifle, "className": "Rifle", "itemType": "WeaponPersonal",
+              "itemSubType": "Medium", "attachSize": 2 },
+        ]);
+        graph.db.aql("FOR c IN @classes INSERT c INTO entity_classes", json!({ "classes": classes })).await.unwrap();
+        // The player's items of earlier runs would be candidates too.
+        let old = json!({ "me": me.to_string() });
+        graph.db.aql("FOR x IN entity_edges FILTER x.startId IN (FOR e IN entities FILTER e.ownerId == @me AND e._key != @me RETURN e._key) REMOVE x IN entity_edges", old.clone()).await.unwrap();
+        graph.db.aql("FOR e IN entities FILTER e.ownerId == @me AND e._key != @me REMOVE e IN entities", old.clone()).await.unwrap();
+        graph.db.aql("UPSERT { _key: @me } INSERT { _key: @me, geid: @me, ownerId: @me } UPDATE {} IN entities", old).await.unwrap();
+        let loadout = vec![
+            LoadoutItem { class_crc: body, port_crc: 0xab63_41ac, parent: -1 },
+            LoadoutItem { class_crc: suit, port_crc: crate::equip::port_crc("Armor_Undersuit"), parent: 0 },
+        ];
+        let command = format!("loadout:{me}:{base}");
+        let request = EnsureLoadoutRequest { command_id: command.clone(), player_id: me, items: loadout };
+        let made = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request.clone())).await.unwrap().into_inner();
+        let (body_geid, suit_geid) = (made.geids[0], made.geids[1]);
+        assert!(made.equipped.is_empty());
+        let personal = format!("{me}:PlayerInventory:0");
+        let add = |n: u32, class: &str| AdminAddItemRequest {
+            command_id: format!("admin:equip-{base}-{n}"),
+            owner_id: me,
+            inventory_id: personal.clone(),
+            entity_class_guid: class.into(),
+            stack_size: 0,
+            actor: "admin:1:root".into(),
+            reason: "test".into(),
+        };
+        let gun = EntityGraphInternal::admin_add_item(&**graph, Request::new(add(1, &guid("pistol")))).await.unwrap().into_inner().geid;
+        let spare = EntityGraphInternal::admin_add_item(&**graph, Request::new(add(2, &guid("pistol")))).await.unwrap().into_inner().geid;
+        let long = EntityGraphInternal::admin_add_item(&**graph, Request::new(add(3, &guid("rifle")))).await.unwrap().into_inner().geid;
+
+        // The worn items and the ports that take something: the undersuit's sidearm port fits the pistols, not the rifle;
+        // the head is not equipment.
+        let seen = EntityGraphInternal::admin_equipment(&**graph, Request::new(AdminEquipmentRequest { owner_id: me })).await.unwrap().into_inner();
+        assert_eq!(seen.worn.iter().map(|item| (item.geid, item.port.as_str())).collect::<Vec<_>>(), [(body_geid, "0xab6341ac"), (suit_geid, "Armor_Undersuit")]);
+        let sidearm = seen.ports.iter().find(|port| port.port == "wep_sidearm").expect("the sidearm port");
+        assert_eq!((sidearm.parent_geid, sidearm.occupant_geid), (suit_geid, 0));
+        let mut fit = sidearm.candidates.clone();
+        fit.sort_unstable();
+        assert_eq!(fit, [gun, spare]);
+        assert!(seen.ports.iter().all(|port| port.port != "Head_ItemPort"));
+
+        let equip = |n: u32, geid: u64, parent: u64, port: &str| AdminEquipItemRequest {
+            command_id: format!("admin:equip-{base}-e{n}"),
+            owner_id: me,
+            geid,
+            parent_geid: parent,
+            port: port.into(),
+            actor: "admin:1:root".into(),
+            reason: "test".into(),
+        };
+        fn refused<T>(result: Result<tonic::Response<T>, tonic::Status>) -> tonic::Code {
+            result.map(|_| ()).unwrap_err().code()
+        }
+        assert_eq!(refused(EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(1, long, suit_geid, "wep_sidearm"))).await), tonic::Code::FailedPrecondition, "a rifle is not a sidearm");
+        assert_eq!(refused(EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(2, gun, suit_geid, "nowhere"))).await), tonic::Code::FailedPrecondition);
+        assert_eq!(refused(EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(3, gun, gun, "wep_sidearm"))).await), tonic::Code::FailedPrecondition, "the parent must be worn");
+        let done = EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(4, gun, suit_geid, "WEP_SIDEARM"))).await.unwrap().into_inner();
+        assert!(!done.replayed);
+        let again = EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(4, gun, suit_geid, "WEP_SIDEARM"))).await.unwrap().into_inner();
+        assert!(again.replayed, "a repeated command equips nothing twice");
+        assert_eq!(refused(EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(5, spare, suit_geid, "wep_sidearm"))).await), tonic::Code::FailedPrecondition, "the port is taken");
+        let row = graph.db.aql("FOR e IN entities FILTER e._key == @k RETURN e", json!({ "k": gun.to_string() })).await.unwrap().remove(0);
+        assert_eq!((row["stowed"].as_bool(), row["inventoryId"].is_null()), (Some(false), true));
+        let edges = graph.db.aql("FOR x IN entity_edges FILTER x.startId == @k RETURN { type: x.type, to: x.endId, port: x.attachmentPortCrc }", json!({ "k": gun.to_string() })).await.unwrap();
+        assert_eq!(edges, [json!({ "type": 1, "to": suit_geid.to_string(), "port": crate::equip::port_crc("wep_sidearm") })], "attached, no longer stowed");
+        assert_eq!(inventory_doc(&fixture, &personal).await.unwrap()["configuration"], serde_json::Value::Null);
+
+        // The loadout answers with it, and with what was taken off.
+        let on_join = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request.clone())).await.unwrap().into_inner();
+        assert_eq!((on_join.replayed, on_join.geids.clone()), (true, made.geids.clone()));
+        assert_eq!(on_join.equipped.iter().map(|item| (item.geid, item.class_crc, item.parent_geid, item.port_crc)).collect::<Vec<_>>(),
+                   [(gun, pistol, suit_geid, crate::equip::port_crc("wep_sidearm"))]);
+        let seen = EntityGraphInternal::admin_equipment(&**graph, Request::new(AdminEquipmentRequest { owner_id: me })).await.unwrap().into_inner();
+        let sidearm = seen.ports.iter().find(|port| port.port == "wep_sidearm").unwrap();
+        assert_eq!((sidearm.occupant_geid, sidearm.occupant_name.as_str()), (gun, "Pistol"));
+
+        let off = |n: u32, geid: u64, to: &str| AdminUnequipItemRequest {
+            command_id: format!("admin:equip-{base}-u{n}"),
+            owner_id: me,
+            geid,
+            to_inventory_id: to.into(),
+            actor: "admin:1:root".into(),
+            reason: "test".into(),
+        };
+        let elsewhere = format!("{me}:Location:{base}");
+        assert_eq!(refused(EntityGraphInternal::admin_unequip_item(&**graph, Request::new(off(1, body_geid, &personal))).await), tonic::Code::FailedPrecondition, "the body is the character");
+        assert_eq!(refused(EntityGraphInternal::admin_unequip_item(&**graph, Request::new(off(2, spare, &personal))).await), tonic::Code::FailedPrecondition, "not worn");
+        let taken = EntityGraphInternal::admin_unequip_item(&**graph, Request::new(off(3, gun, &elsewhere))).await.unwrap().into_inner();
+        assert!(!taken.replayed);
+        assert!(EntityGraphInternal::admin_unequip_item(&**graph, Request::new(off(3, gun, &elsewhere))).await.unwrap().into_inner().replayed);
+        let row = graph.db.aql("FOR e IN entities FILTER e._key == @k RETURN e", json!({ "k": gun.to_string() })).await.unwrap().remove(0);
+        assert_eq!((row["stowed"].as_bool(), row["inventoryId"].as_str()), (Some(true), Some(elsewhere.as_str())), "stowed in the bank, made on first need");
+        let on_join = EntityGraphInternal::ensure_loadout(&**graph, Request::new(request.clone())).await.unwrap().into_inner();
+        assert!(on_join.equipped.is_empty());
+
+        // Equipped on the loadout's items, it survives a changed loadout: it is stowed in the personal inventory.
+        EntityGraphInternal::admin_equip_item(&**graph, Request::new(equip(6, gun, suit_geid, "wep_sidearm"))).await.unwrap();
+        let other = EnsureLoadoutRequest {
+            command_id: format!("{command}-b"),
+            player_id: me,
+            items: vec![LoadoutItem { class_crc: body, port_crc: 0xab63_41ac, parent: -1 }],
+        };
+        let second = EntityGraphInternal::ensure_loadout(&**graph, Request::new(other)).await.unwrap().into_inner();
+        assert_eq!(second.geids.len(), 1);
+        let row = graph.db.aql("FOR e IN entities FILTER e._key IN @k RETURN { stowed: e.stowed, inv: e.inventoryId }", json!({ "k": [gun.to_string(), suit_geid.to_string()] })).await.unwrap();
+        assert_eq!(row, [json!({ "stowed": true, "inv": personal })], "the old undersuit is gone, the pistol is in the personal inventory");
+    }
+
     /// Location, ship and container inventories: created when first needed, sized by class, nested, guarded
     /// against loops, over-filling and other players.
     #[tokio::test]
@@ -756,7 +891,7 @@ mod live {
     async fn admin_inventory_rpcs() {
         use sc_api::internal::{
             AdminAddItemRequest, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminRemoveItemRequest,
-            AdminSearchEntityClassesRequest,
+            AdminSearchEntityClassesRequest, ItemTypeFilter,
         };
         let fixture = fixture().await;
         let (graph, me) = (&fixture.graph, fixture.geid);
@@ -770,7 +905,7 @@ mod live {
             { "_key": ship_guid, "guid": ship_guid, "guidHashCrc": ship_class, "className": format!("SHIP_{base}"),
               "inventory": { "capacityMicroScu": 1_000_000, "closed": true } },
             { "_key": crate_guid, "guid": crate_guid, "guidHashCrc": crate_class, "className": format!("Crate_{base}"),
-              "name": { "en": "Test crate" }, "occupancyMicroScu": 500_000,
+              "name": { "en": "Test crate" }, "itemType": "Container", "itemSubType": "Cargo", "occupancyMicroScu": 500_000,
               "inventory": { "capacityMicroScu": 900_000, "closed": true } },
             { "_key": item_guid, "guid": item_guid, "guidHashCrc": item_class, "className": format!("Item_{base}"),
               "occupancyMicroScu": 300_000 },
@@ -892,14 +1027,38 @@ mod live {
         assert_eq!((crate_node.items.len(), crate_node.item_count), (1, 2));
 
         // Classes by part of a name, by English name, or by GUID.
-        let search = |query: &str| AdminSearchEntityClassesRequest { query: query.into(), limit: 0 };
+        let search = |query: &str| AdminSearchEntityClassesRequest { query: query.into(), ..Default::default() };
         for query in [format!("rate_{base}"), "test CRATE".to_string(), crate_guid.to_uppercase()] {
             let found = EntityGraphInternal::admin_search_entity_classes(&**graph, Request::new(search(&query))).await.unwrap().into_inner().classes;
             assert!(found.iter().any(|class| class.guid == crate_guid && class.container && class.capacity_micro_scu == 900_000), "{query}");
         }
         let literal = EntityGraphInternal::admin_search_entity_classes(&**graph, Request::new(search(&format!("crate%{base}")))).await.unwrap();
         assert!(literal.into_inner().classes.is_empty(), "a % is taken literally");
-
+        // By item type and sub type, and only classes with an English name.
+        let typed = |any_of: Vec<ItemTypeFilter>, none_of: Vec<ItemTypeFilter>, subs: &[&str], named_only: bool| AdminSearchEntityClassesRequest {
+            query: format!("rate_{base}"),
+            any_of,
+            none_of,
+            item_sub_types: subs.iter().map(|name| name.to_string()).collect(),
+            named_only,
+            ..Default::default()
+        };
+        let filter = |item_type: &str, subs: &[&str]| ItemTypeFilter { item_type: item_type.into(), item_sub_types: subs.iter().map(|name| name.to_string()).collect() };
+        let find = |request: AdminSearchEntityClassesRequest| async {
+            EntityGraphInternal::admin_search_entity_classes(&**graph, Request::new(request)).await.unwrap().into_inner().classes
+        };
+        let found = find(typed(vec![], vec![], &[], true)).await;
+        let found_class = found.iter().find(|class| class.guid == crate_guid).expect("it has an English name");
+        let (item_type, sub_type) = (found_class.item_type.clone(), found_class.item_sub_type.clone());
+        assert!(find(typed(vec![filter("NoSuchItemType", &[])], vec![], &[], false)).await.is_empty(), "another item type");
+        assert!(find(typed(vec![], vec![], &["NoSuchSubType"], false)).await.is_empty(), "another sub type");
+        assert!(find(typed(vec![filter(&item_type, &["NoSuchSubType"])], vec![], &[], false)).await.is_empty(), "its type, another sub type");
+        // The fixture class may carry no sub type, which no sub type filter matches.
+        let own_subs: Vec<&str> = if sub_type.is_empty() { vec![] } else { vec![sub_type.as_str()] };
+        assert!(!find(typed(vec![filter(&item_type, &own_subs)], vec![], &[], false)).await.is_empty(), "its type and sub type");
+        assert!(!find(typed(vec![filter(&item_type, &[])], vec![], &[], false)).await.is_empty(), "its type, any sub type");
+        assert!(find(typed(vec![], vec![filter(&item_type, &[])], &[], false)).await.is_empty(), "not its type");
+        assert!(!find(typed(vec![], vec![filter(&item_type, &["NoSuchSubType"])], &[], false)).await.is_empty(), "not another sub type of it");
         // Removing the crate erases it and its two items, once.
         let removed = EntityGraphInternal::admin_remove_item(&**graph, Request::new(remove(15, crate_box))).await.unwrap().into_inner();
         assert_eq!((removed.removed, removed.erased, removed.replayed), (true, 3, false));

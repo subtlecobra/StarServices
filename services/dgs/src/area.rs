@@ -88,6 +88,13 @@ mod tests {
             Err(Status::unimplemented("get_owners"))
         }
 
+        async fn release_player(
+            &self,
+            _: Request<sc_api::internal::ReleasePlayerRequest>,
+        ) -> Result<Response<sc_api::internal::ReleasePlayerResponse>, Status> {
+            Err(Status::unimplemented("release_player"))
+        }
+
         async fn revoke_items(
             &self,
             _: Request<sc_api::internal::RevokeItemsRequest>,
@@ -143,6 +150,15 @@ mod tests {
             _: Request<sc_api::internal::AdminSearchEntityClassesRequest>,
         ) -> Result<Response<sc_api::internal::AdminSearchEntityClassesResponse>, Status> {
             Err(Status::unimplemented("admin_search_entity_classes"))
+        }
+        async fn admin_equipment(&self, _: Request<sc_api::internal::AdminEquipmentRequest>) -> Result<Response<sc_api::internal::AdminEquipmentResponse>, Status> {
+            Err(Status::unimplemented("admin_equipment"))
+        }
+        async fn admin_equip_item(&self, _: Request<sc_api::internal::AdminEquipItemRequest>) -> Result<Response<sc_api::internal::AdminEquipItemResponse>, Status> {
+            Err(Status::unimplemented("admin_equip_item"))
+        }
+        async fn admin_unequip_item(&self, _: Request<sc_api::internal::AdminUnequipItemRequest>) -> Result<Response<sc_api::internal::AdminUnequipItemResponse>, Status> {
+            Err(Status::unimplemented("admin_unequip_item"))
         }
         async fn seed_entity_classes(
             &self,

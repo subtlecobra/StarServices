@@ -8,17 +8,20 @@
 pub mod appearance;
 pub mod area;
 pub mod control;
+pub mod departure;
 pub mod entity;
 pub mod frames;
 pub mod gamedata;
 pub mod holdings;
 pub mod interaction;
+pub mod inventory;
 pub mod loadout;
 pub mod location;
 pub mod movement;
 pub mod outbox;
 pub mod physics;
 pub mod player;
+pub mod ships;
 pub mod solar_system;
 #[cfg(any(test, feature = "fixtures"))]
 pub mod testdata;

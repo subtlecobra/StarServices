@@ -7,6 +7,7 @@
 
 mod audit;
 mod backend;
+mod catalog;
 mod html;
 mod places;
 mod web;

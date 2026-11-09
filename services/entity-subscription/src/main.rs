@@ -178,6 +178,10 @@ mod tests {
             Ok(Response::new(GetOwnersResponse { owners }))
         }
 
+        async fn release_player(&self, _: Request<sc_api::internal::ReleasePlayerRequest>) -> Result<Response<sc_api::internal::ReleasePlayerResponse>, Status> {
+            Err(Status::unimplemented("release_player"))
+        }
+
         // ---- Admin inventories: not used by this test ----
         async fn admin_inventory_tree(
             &self,

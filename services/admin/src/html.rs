@@ -1,4 +1,5 @@
-//! Server-rendered pages: no script, a little CSS, and every value escaped.
+//! Server-rendered pages: a little CSS, every value escaped, and one script of our own, the inventory catalog's
+//! (`inventory.js`, served from the portal, never inline); the other pages need none.
 
 use std::fmt::Write;
 
@@ -78,10 +79,16 @@ impl Frame<'_> {
 
     /// A form posting to `action` under the prefix.
     pub fn form(&self, action: &str, fields: &str, button: &str) -> String {
+        self.form_class("inline", action, fields, button)
+    }
+
+    /// The same with a CSS class of its own, for a form that lays its fields out itself.
+    pub fn form_class(&self, class: &str, action: &str, fields: &str, button: &str) -> String {
         format!(
-            r#"<form method="post" action="{}{}" class="inline">{}{}<button type="submit">{}</button></form>"#,
+            r#"<form method="post" action="{}{}" class="{}">{}{}<button type="submit">{}</button></form>"#,
             self.prefix,
             escape(action),
+            escape(class),
             self.hidden(),
             fields,
             escape(button)

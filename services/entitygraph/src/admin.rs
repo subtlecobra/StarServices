@@ -31,6 +31,8 @@ const DEFAULT_ITEMS: u32 = 500;
 pub(crate) const MAX_ITEMS: u32 = 2_000;
 const DEFAULT_CLASSES: u32 = 50;
 const MAX_CLASSES: u32 = 200;
+/// The most item type and sub type names one search may filter by.
+const MAX_FILTERS: usize = 64;
 pub(crate) const MAX_STACK: u32 = 1_000_000;
 const MAX_DEPTH: u32 = 64;
 const MAX_TEXT: usize = 200;
@@ -238,8 +240,13 @@ pub async fn add_item(db: &Arango, request: AdminAddItemRequest) -> Result<Admin
     if let Some(found) = recorded(db, &request.command_id).await? {
         return Ok(AdminAddItemResponse { geid: doc::big(&found, "geid"), replayed: true });
     }
-    let query = "FOR c IN entity_classes FILTER c._key == @guid OR c.guid == @guid LIMIT 1 RETURN c";
-    let class = db.aql(query, json!({ "guid": guid })).await.map_err(internal)?.into_iter().next();
+    // The key is the GUID, so this is a lookup by key; only a class whose key differs falls back to a scan.
+    let by_key = "RETURN DOCUMENT('entity_classes', @guid)";
+    let mut class = db.aql(by_key, json!({ "guid": guid })).await.map_err(internal)?.into_iter().next().filter(|row| !row.is_null());
+    if class.is_none() {
+        let scan = "FOR c IN entity_classes FILTER c.guid == @guid LIMIT 1 RETURN c";
+        class = db.aql(scan, json!({ "guid": guid })).await.map_err(internal)?.into_iter().next();
+    }
     let class = class.ok_or_else(|| Status::not_found(format!("no entity class {guid}: run sc-admin seed")))?;
     let geid = allocate_geid(db).await?;
     let (owner, to) = (request.owner_id, request.inventory_id.as_str());
@@ -344,6 +351,7 @@ fn admin_class(row: &Value) -> AdminEntityClass {
         occupancy_micro_scu: row["occupancyMicroScu"].as_f64().unwrap_or(0.0) as u64,
         capacity_micro_scu: row["inventory"]["capacityMicroScu"].as_f64().unwrap_or(0.0) as u64,
         container: row["inventory"].is_object(),
+        stackable: row["stackable"].as_bool().unwrap_or(false),
     }
 }
 
@@ -359,13 +367,46 @@ pub async fn search_classes(
         0 => DEFAULT_CLASSES,
         limit => limit.min(MAX_CLASSES),
     };
+    if request.any_of.len() > MAX_FILTERS || request.none_of.len() > MAX_FILTERS || request.item_sub_types.len() > MAX_FILTERS {
+        return Err(invalid("too many type filters"));
+    }
+    let pairs = |list: &[sc_api::internal::ItemTypeFilter]| -> Vec<Value> {
+        list.iter().map(|filter| json!({ "type": filter.item_type, "subs": filter.item_sub_types })).collect()
+    };
+    // A pair matches a class of its type, and of one of its sub types when it lists some.
+    // A class asked for by its GUID alone is a lookup by key, not a scan of every class.
+    if request.any_of.is_empty() && request.none_of.is_empty() && request.item_sub_types.is_empty() && !request.named_only {
+        let guid = wanted.to_lowercase();
+        let looks_like_guid = guid.len() == 36 && guid.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-');
+        if looks_like_guid {
+            let rows = db.aql("RETURN DOCUMENT('entity_classes', @guid)", json!({ "guid": guid })).await.map_err(internal)?;
+            let found: Vec<_> = rows.iter().filter(|row| !row.is_null()).map(admin_class).collect();
+            if !found.is_empty() {
+                return Ok(AdminSearchEntityClassesResponse { classes: found });
+            }
+        }
+    }
     let query = "FOR c IN entity_classes
                      FILTER @guid == '' OR c._key == @guid OR LIKE(c.className, @pattern, true)
                          OR LIKE(NOT_NULL(c.name.en, ''), @pattern, true)
+                     FILTER LENGTH(@any) == 0 OR LENGTH(FOR f IN @any FILTER f.type == c.itemType
+                         AND (LENGTH(f.subs) == 0 OR c.itemSubType IN f.subs) LIMIT 1 RETURN 1) > 0
+                     FILTER LENGTH(@none) == 0 OR LENGTH(FOR f IN @none FILTER f.type == c.itemType
+                         AND (LENGTH(f.subs) == 0 OR c.itemSubType IN f.subs) LIMIT 1 RETURN 1) == 0
+                     FILTER LENGTH(@subs) == 0 OR c.itemSubType IN @subs
+                     FILTER NOT @named OR NOT_NULL(c.name.en, '') != ''
                      SORT c.className
                      LIMIT @limit
                      RETURN c";
-    let bind = json!({ "guid": wanted.to_lowercase(), "pattern": like_pattern(wanted), "limit": limit });
+    let bind = json!({
+        "guid": wanted.to_lowercase(),
+        "pattern": like_pattern(wanted),
+        "any": pairs(&request.any_of),
+        "none": pairs(&request.none_of),
+        "subs": request.item_sub_types,
+        "named": request.named_only,
+        "limit": limit,
+    });
     let rows = db.aql(query, bind).await.map_err(internal)?;
     Ok(AdminSearchEntityClassesResponse { classes: rows.iter().map(admin_class).collect() })
 }

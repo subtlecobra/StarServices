@@ -38,7 +38,37 @@ pub fn class_doc(class: &EntityClassSeed) -> Value {
             })
         });
     let (inventory, item_bank) = if class.guid == ITEM_BANK_CLASS { (None, inventory) } else { (inventory, None) };
+    let filters = |list: &[sc_api::internal::ItemTypeFilter]| -> Vec<Value> {
+        list.iter().map(|filter| json!({ "itemType": filter.item_type, "itemSubTypes": filter.item_sub_types })).collect()
+    };
+    let ports: Vec<Value> = class
+        .ports
+        .iter()
+        .map(|port| {
+            json!({
+                "name": port.name, "minSize": port.min_size, "maxSize": port.max_size, "types": filters(&port.types),
+                "requiredPortTags": port.required_port_tags, "portTags": port.port_tags, "flags": port.flags,
+            })
+        })
+        .collect();
+    // The ship's size and insurance, as sc-entitygraph's ships read them: `vehicle.maxBoundingBox` and `vehicle.insurance`.
+    let vehicle = class.vehicle.as_ref().map(|vehicle| {
+        let insurance = vehicle.insurance.as_ref().map(|insurance| {
+            json!({
+                "baseWaitTimeMinutes": insurance.base_wait_time_minutes,
+                "mandatoryWaitTimeMinutes": insurance.mandatory_wait_time_minutes,
+                "baseExpeditingFee": insurance.base_expediting_fee,
+            })
+        });
+        let size = (vehicle.max_bounding_box.len() == 3).then(|| vehicle.max_bounding_box.clone());
+        json!({ "maxBoundingBox": size, "insurance": insurance })
+    });
     json!({
+        "vehicle": vehicle,
+        "attachSize": class.attach_size,
+        "attachTags": class.attach_tags,
+        "requiredTags": class.required_tags,
+        "ports": ports,
         "occupancyMicroScu": class.occupancy_micro_scu,
         "inventory": inventory,
         "itemBank": item_bank,
@@ -50,6 +80,7 @@ pub fn class_doc(class: &EntityClassSeed) -> Value {
         "itemSubType": class.item_sub_type,
         "itemTypeEnum": class.item_type_enum,
         "itemSubTypeEnum": class.item_sub_type_enum,
+        "stackable": class.stackable,
         "name": text(class.name.as_ref()),
         "description": text(class.description.as_ref()),
     })
@@ -188,6 +219,7 @@ mod tests {
             class_name: "Crate".into(),
             item_type_enum: 27,
             item_sub_type_enum: 154,
+            stackable: true,
             occupancy_micro_scu: None,
             inventory: Some(sc_api::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true, ..Default::default() }),
             ..Default::default()
@@ -196,6 +228,7 @@ mod tests {
         assert_eq!(doc["_key"], "g");
         assert_eq!(doc["occupancyMicroScu"], Value::Null);
         assert_eq!((doc["itemTypeEnum"].as_i64(), doc["itemSubTypeEnum"].as_i64()), (Some(27), Some(154)));
+        assert_eq!(doc["stackable"].as_bool(), Some(true));
         assert_eq!(doc["inventory"], json!({ "capacityMicroScu": 5, "closed": true, "excluded": [], "only": [] }));
         assert_eq!(doc["name"], json!({ "token": "", "en": "" }));
         let without = class_doc(&EntityClassSeed { guid: "h".into(), occupancy_micro_scu: Some(3), ..Default::default() });
@@ -208,5 +241,46 @@ mod tests {
             edge_doc(&child, 100),
             json!({ "_key": "200", "_from": "containers/200", "_to": "containers/100", "type": 1, "startId": "200", "endId": "100" })
         );
+    }
+
+    #[test]
+    fn a_gear_class_keeps_its_attach_definition_and_ports() {
+        use sc_api::internal::{ItemPortSeed, ItemTypeFilter};
+        let class = EntityClassSeed {
+            guid: "g".into(),
+            attach_size: Some(2),
+            attach_tags: "rifle stocked".into(),
+            ports: vec![ItemPortSeed {
+                name: "wep_stocked_2".into(),
+                min_size: 2,
+                max_size: 4,
+                types: vec![ItemTypeFilter { item_type: "WeaponPersonal".into(), item_sub_types: vec!["Medium".into()] }],
+                flags: "body_attach".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let doc = class_doc(&class);
+        assert_eq!((doc["attachSize"].clone(), doc["attachTags"].clone()), (json!(2), json!("rifle stocked")));
+        assert_eq!(doc["ports"][0]["name"], "wep_stocked_2");
+        assert_eq!(doc["ports"][0]["types"][0]["itemSubTypes"], json!(["Medium"]));
+        assert_eq!(class_doc(&EntityClassSeed::default())["attachSize"], Value::Null);
+    }
+
+    #[test]
+    fn a_vehicle_class_keeps_its_size_and_insurance_where_ships_read_them() {
+        let class = EntityClassSeed {
+            guid: "g".into(),
+            vehicle: Some(sc_api::internal::VehicleSeed {
+                max_bounding_box: vec![15.0, 20.0, 6.5],
+                insurance: Some(sc_api::internal::ShipInsuranceSeed { base_wait_time_minutes: 4.05, mandatory_wait_time_minutes: 1.35, base_expediting_fee: 2343 }),
+            }),
+            ..Default::default()
+        };
+        let doc = class_doc(&class);
+        assert_eq!(doc["vehicle"]["maxBoundingBox"], json!([15.0, 20.0, 6.5]));
+        assert_eq!(doc["vehicle"]["insurance"]["baseExpeditingFee"], json!(2343));
+        assert_eq!(doc["vehicle"]["insurance"]["baseWaitTimeMinutes"], json!(4.05));
+        assert!(class_doc(&EntityClassSeed::default())["vehicle"].is_null(), "any other class has none");
     }
 }

@@ -5,11 +5,14 @@ mod admin;
 mod area;
 mod commands;
 mod doc;
+mod equip;
 mod filter;
 mod grant;
 mod loadout;
 mod read;
+mod release;
 mod seed;
+mod ships;
 
 use std::{
     collections::HashSet,
@@ -25,7 +28,7 @@ use commands::{Plan, WRITES};
 use futures_util::{stream, Stream, StreamExt};
 use prost::Message;
 use sc_db::{internal, Arango, DatabaseArgs};
-use sc_api::internal::{ entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
+use sc_api::internal::{ AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
 use sc_proto::{
     common::command::v1::{notify_destination, CommandResponseBody},
     services::entitygraph::v1::{
@@ -65,6 +68,7 @@ const COLLECTIONS: &[&str] = &[
     "lt_records",
     "entitygraph_meta",
     "applied_commands",
+    "ships",
     "edge:entity_edges",
     "edge:container_edges",
 ];
@@ -86,6 +90,9 @@ struct Args {
     /// The internal publisher of sc-push.
     #[arg(long, env = "SCBACKEND_PUSH", default_value = "http://sc-push:50051")]
     push: String,
+    /// sc-entity-document, which keeps the durable record of each ship (docs/SHIPS.md).
+    #[arg(long, env = "SCBACKEND_ENTITY_DOCUMENT", default_value = "http://sc-entity-document:50051")]
+    entity_document: String,
 }
 
 struct Graph {
@@ -250,6 +257,10 @@ impl EntityGraphInternal for Graph {
         Ok(Response::new(grant::grant(&self.db, request.into_inner()).await?))
     }
 
+    async fn release_player(&self, request: Request<sc_api::internal::ReleasePlayerRequest>) -> Reply<sc_api::internal::ReleasePlayerResponse> {
+        Ok(Response::new(release::release(&self.db, request.into_inner()).await?))
+    }
+
     async fn ensure_loadout(&self, request: Request<EnsureLoadoutRequest>) -> Reply<EnsureLoadoutResponse> {
         Ok(Response::new(loadout::ensure(&self.db, request.into_inner()).await?))
     }
@@ -267,6 +278,18 @@ impl EntityGraphInternal for Graph {
         request: Request<AdminSearchEntityClassesRequest>,
     ) -> Reply<AdminSearchEntityClassesResponse> {
         Ok(Response::new(admin::search_classes(&self.db, request.into_inner()).await?))
+    }
+
+    async fn admin_equipment(&self, request: Request<AdminEquipmentRequest>) -> Reply<AdminEquipmentResponse> {
+        Ok(Response::new(equip::equipment(&self.db, request.into_inner()).await?))
+    }
+
+    async fn admin_equip_item(&self, request: Request<AdminEquipItemRequest>) -> Reply<AdminEquipItemResponse> {
+        Ok(Response::new(equip::equip_item(&self.db, request.into_inner()).await?))
+    }
+
+    async fn admin_unequip_item(&self, request: Request<AdminUnequipItemRequest>) -> Reply<AdminUnequipItemResponse> {
+        Ok(Response::new(equip::unequip_item(&self.db, request.into_inner()).await?))
     }
 
     async fn seed_entity_classes(&self, request: Request<tonic::Streaming<SeedEntityClassesRequest>>) -> Reply<SeedResponse> {
@@ -468,9 +491,15 @@ async fn serve(args: Args) -> Result<(), String> {
     let server = EntityGraphServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)
         .max_decoding_message_size(MAX_MESSAGE_BYTES);
+    let documents = Endpoint::from_shared(args.entity_document.clone()).map_err(|e| format!("--entity-document: {e}"))?;
+    let ships = ships::Ships {
+        db: service.db.clone(),
+        records: Arc::new(sc_api::internal::ship_records_internal_client::ShipRecordsInternalClient::new(documents.connect_lazy())),
+    };
+    let ships = sc_api::internal::ships_internal_server::ShipsInternalServer::new(ships).max_decoding_message_size(MAX_MESSAGE_BYTES);
     let internal = EntityGraphInternalServer::from_arc(service).max_decoding_message_size(MAX_MESSAGE_BYTES);
     info!(listen = %args.listen, "entity graph listening");
-    Server::builder().add_service(server).add_service(internal).serve(args.listen).await.map_err(|e| e.to_string())
+    Server::builder().add_service(server).add_service(internal).add_service(ships).serve(args.listen).await.map_err(|e| e.to_string())
 }
 
 fn main() -> ExitCode {

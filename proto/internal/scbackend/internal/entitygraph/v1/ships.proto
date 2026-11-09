@@ -1,0 +1,103 @@
+// The ships of a player as sc-entitygraph keeps them: the ship entity in the hangar bank of its location, and the
+// ASOP kiosk's calls. See docs/SHIPS.md.
+syntax = "proto3";
+
+package scbackend.internal.entitygraph.v1;
+
+import "scbackend/internal/common/v1/ships.proto";
+
+message ShipView {
+  common.v1.ShipRecord ship = 1;   // as the graph holds it, with the state at `now` applied (a finished claim is STORED)
+  bool fits = 2;                   // fits the hangar asked for
+  // The kiosk's rows: what a claim would take, when the ship is claimable.
+  common.v1.ShipClaim default_claim_quote = 3;
+  common.v1.ShipClaim insured_claim_quote = 4;
+  bool insured_claim_available = 5;
+  bool retrievable = 6;
+}
+
+message AcquireShipRequest {
+  string command_id = 1;           // once per command id, in both stores
+  uint64 owner_id = 2;
+  string entity_class_guid = 3;
+  string entitlement_urn = 4;
+  string name = 5;
+  uint32 location_id = 6;          // where the ship starts: the hangar bank of this location
+  common.v1.ShipInsurance insurance = 7;  // wait times and fee from the class when left out
+  common.v1.PadSize pad_size = 8;  // from the seeded class when left out
+  uint64 price_auec = 9;
+}
+
+message AcquireShipResponse {
+  ShipView ship = 1;
+  bool replayed = 2;
+  bool graph_synced = 3;           // false: the record is safe, the entity follows at the next reconcile
+}
+
+message ListShipsRequest {
+  uint64 owner_id = 1;
+  uint32 location_id = 2;          // 0 for every location
+  common.v1.HangarSize hangar_size = 3;  // UNSPECIFIED for no filter
+  bool exact_size = 4;             // only ships whose pad class is the hangar's, not smaller ones too
+  int64 now_ms = 5;                // 0 for the clock of the service
+}
+
+message ListShipsResponse {
+  repeated ShipView ships = 1;
+  uint32 repaired = 2;             // ships the graph lacked or held stale, made right from the records
+  uint32 orphans = 3;              // ships in the graph with no record: not listed
+}
+
+message ClaimShipRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  common.v1.ShipClaimKind kind = 4;
+  int64 now_ms = 5;
+}
+
+message ClaimShipResponse {
+  ShipView ship = 1;
+  bool replayed = 2;
+}
+
+message RetrieveShipRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  common.v1.HangarSize hangar_size = 4;  // the hangar the DGS spawns it in; REFUSED when the ship does not fit
+  bool exact_size = 5;
+  int64 now_ms = 6;
+  string shard_id = 7;
+}
+
+message RetrieveShipResponse {
+  ShipView ship = 1;               // DEPLOYED
+  bool replayed = 2;
+}
+
+message ReportShipRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  common.v1.ShipState state = 4;   // STORED (put away) or DESTROYED, from DEPLOYED
+  uint32 location_id = 5;          // where it was stored
+  int64 now_ms = 6;
+}
+
+message ReportShipResponse {
+  ShipView ship = 1;
+  bool replayed = 2;
+}
+
+// Answered by sc-entitygraph. In-game queries (the ASOP kiosk's list) read the graph; every write goes to the record
+// in sc-entity-document first.
+service ShipsInternal {
+  rpc AcquireShip(AcquireShipRequest) returns (AcquireShipResponse);
+  rpc ListShips(ListShipsRequest) returns (ListShipsResponse);
+  // FAILED_PRECONDITION: not DESTROYED, a default claim of a ship... or an insured claim without a live policy.
+  rpc ClaimShip(ClaimShipRequest) returns (ClaimShipResponse);
+  // FAILED_PRECONDITION: not STORED (a claim still running), or it does not fit the hangar.
+  rpc RetrieveShip(RetrieveShipRequest) returns (RetrieveShipResponse);
+  rpc ReportShip(ReportShipRequest) returns (ReportShipResponse);
+}

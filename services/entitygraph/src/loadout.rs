@@ -81,7 +81,9 @@ pub async fn ensure(db: &Arango, request: EnsureLoadoutRequest) -> Result<Ensure
     check(&request.items)?;
     let geids_of = |found: &Value| found["geids"].as_array().map(|list| list.iter().filter_map(|geid| geid.as_str()?.parse().ok()).collect::<Vec<u64>>());
     if let Some(found) = recorded(db, &request.command_id).await? {
-        return Ok(EnsureLoadoutResponse { geids: geids_of(&found).unwrap_or_default(), replayed: true });
+        let made = geids_of(&found).unwrap_or_default();
+        let (geids, equipped) = worn_now(db, request.player_id, made).await?;
+        return Ok(EnsureLoadoutResponse { geids, replayed: true, equipped });
     }
     let wanted: Vec<u32> = request.items.iter().map(|item| item.class_crc).collect::<HashSet<_>>().into_iter().collect();
     let rows = db
@@ -109,7 +111,13 @@ pub async fn ensure(db: &Arango, request: EnsureLoadoutRequest) -> Result<Ensure
     if !replayed {
         retire_old(db, request.player_id, &geids, &request.command_id).await;
     }
-    Ok(EnsureLoadoutResponse { geids: geids_of(&result).unwrap_or_default(), replayed })
+    let (geids, equipped) = worn_now(db, request.player_id, geids_of(&result).unwrap_or_default()).await?;
+    Ok(EnsureLoadoutResponse { geids, replayed, equipped })
+}
+
+/// The loadout's items as they are worn now (0 for one taken off), and what else is worn on them.
+async fn worn_now(db: &Arango, player: u64, made: Vec<u64>) -> Result<(Vec<u64>, Vec<sc_api::internal::EquippedItem>), Status> {
+    crate::equip::loadout_state(db, player, &made).await
 }
 
 /// Erases the loadouts the player wore before this one: the items `EnsureLoadout` made for them that are still attached to
@@ -137,6 +145,11 @@ async fn retire_old(db: &Arango, player: u64, current: &[u64], command_id: &str)
         return;
     }
     let mut plan = Plan::new(None, now_ms());
+    // What the player equipped on the old items is theirs: it goes to their personal inventory, not with the old loadout.
+    let personal = format!("{player}:PlayerInventory:0");
+    for geid in equipped_on(db, &old).await {
+        plan.unequip(geid, &personal);
+    }
     let erasures = old.iter().map(|geid| erase_command::Body { entity_id: *geid, preconditions: Vec::new() }).collect();
     if let Err(status) = plan.command(&command(Params::Erase(EraseCommand { erasures, inventory_id: String::new() }))) {
         warn!(player, %status, "the old loadout was not erased");
@@ -146,6 +159,32 @@ async fn retire_old(db: &Arango, player: u64, current: &[u64], command_id: &str)
         Ok(_) => info!(player, roots = old.len(), "old loadout erased"),
         Err(status) => warn!(player, %status, "the old loadout was not erased"),
     }
+}
+
+/// The items attached below `roots` that no loadout made (equipped by the player or an admin) and that hang directly from
+/// an item a loadout made, which are the ones to rescue: what hangs from them goes with them.
+async fn equipped_on(db: &Arango, roots: &[u64]) -> Vec<u64> {
+    let query = "WITH entities, inventories
+                 FOR r IN @roots
+                     FOR v, x IN 1..8 INBOUND CONCAT('entities/', r) entity_edges
+                         PRUNE IS_SAME_COLLECTION('inventories', v)
+                         OPTIONS { order: 'bfs', uniqueVertices: 'global' }
+                         FILTER x.type == @attached AND IS_SAME_COLLECTION('entities', v) AND v.debug.createdBy != 'loadout'
+                         LET parent = DOCUMENT('entities', x.endId)
+                         FILTER parent.debug.createdBy == 'loadout'
+                         RETURN v._key";
+    let bind = json!({ "roots": old_keys(roots), "attached": EntityEdgeType::AttachedTo as i32 });
+    match db.aql(query, bind).await {
+        Ok(rows) => rows.iter().filter_map(|row| row.as_str()?.parse().ok()).collect(),
+        Err(error) => {
+            warn!(%error, "what was equipped on the old loadout was not looked up");
+            Vec::new()
+        }
+    }
+}
+
+fn old_keys(roots: &[u64]) -> Vec<String> {
+    roots.iter().map(u64::to_string).collect()
 }
 
 #[cfg(test)]

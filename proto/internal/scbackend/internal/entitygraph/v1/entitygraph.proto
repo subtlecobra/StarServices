@@ -5,6 +5,7 @@ package scbackend.internal.entitygraph.v1;
 
 import "sc/external/services/entitygraph/v1/types.proto";
 import "scbackend/internal/common/v1/common.proto";
+import "scbackend/internal/common/v1/disconnect.proto";
 
 message LoadAreaRequest {
   // As `system` in `containers`.
@@ -129,6 +130,15 @@ message AdminSearchEntityClassesRequest {
   // Part of a class name or of an English name, case ignored, or a GUID.
   string query = 1;
   uint32 limit = 2;  // 50 when 0, at most 200
+  // Only classes of one of these item types, and, when it lists sub types, one of those (the DataCore names, as
+  // `AdminEntityClass` has them); none: any.
+  repeated ItemTypeFilter any_of = 3;
+  // Only classes with one of these sub types, whatever their type.
+  repeated string item_sub_types = 4;
+  // Leave out the classes with no English name, which are no items a person would look for.
+  bool named_only = 5;
+  // Not the classes of any of these item types (and sub types, when it lists some).
+  repeated ItemTypeFilter none_of = 6;
 }
 
 message AdminEntityClass {
@@ -141,11 +151,74 @@ message AdminEntityClass {
   uint64 occupancy_micro_scu = 7;
   uint64 capacity_micro_scu = 8;  // of its inventory container, 0 with none or no limit
   bool container = 9;             // it gets an inventory of its own
+  bool stackable = 10;            // the game lets it stack: it carries the tag Item.Inventory.Stackable
 }
 
 message AdminSearchEntityClassesResponse {
   repeated AdminEntityClass classes = 1;  // by class name
 }
+
+// ---- Admin equipment (begin), see docs/INVENTORY.md "Equipping" ----
+message AdminEquipmentRequest {
+  uint64 owner_id = 1;
+}
+
+// An item the player wears: attached to a port of a worn item, or the body to the player.
+message AdminWornItem {
+  uint64 geid = 1;
+  string class_name = 2;
+  string display_name = 3;
+  string item_type = 4;
+  string item_sub_type = 5;
+  uint64 parent_geid = 6;  // the player for the body
+  string port = 7;         // the port's name on the parent; its CRC in hex when the parent's class does not list it
+  uint32 depth = 8;        // 1 for the body
+  bool removable = 9;      // it sits in a port equipping reaches: not the body or the head, which are the character
+}
+
+// A port of a worn item that items can be equipped to.
+message AdminEquipPort {
+  uint64 parent_geid = 1;
+  string parent_name = 2;
+  string port = 3;
+  uint64 occupant_geid = 4;  // 0 when free
+  string occupant_name = 5;
+  // The player's stowed items that fit it (by type, size and tags), up to the first 2000 stowed.
+  repeated uint64 candidates = 6;
+}
+
+message AdminEquipmentResponse {
+  repeated AdminWornItem worn = 1;  // parents before children
+  repeated AdminEquipPort ports = 2;
+}
+
+message AdminEquipItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;         // a stowed item of the player
+  uint64 parent_geid = 4;  // a worn item (the body, the undersuit, armor ...)
+  string port = 5;         // a port of the parent's class
+  string actor = 6;
+  string reason = 7;
+}
+
+message AdminEquipItemResponse {
+  bool replayed = 1;
+}
+
+message AdminUnequipItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;               // a worn item
+  string to_inventory_id = 4;    // where it is stowed, with what hangs from it
+  string actor = 5;
+  string reason = 6;
+}
+
+message AdminUnequipItemResponse {
+  bool replayed = 1;
+}
+// ---- Admin equipment (end) ----
 
 // ---- Admin inventories (end) ----
 
@@ -195,8 +268,19 @@ message EnsureLoadoutRequest {
 }
 
 message EnsureLoadoutResponse {
-  repeated uint64 geids = 1;  // one per item, in the order of the request
+  // One per item, in the order of the request; 0 for an item of the loadout that is no longer worn (it was unequipped).
+  repeated uint64 geids = 1;
   bool replayed = 2;
+  // What else the player wears: items equipped on the loadout's, parents before children (see "Equipping" in
+  // docs/INVENTORY.md). The DGS binds them as it binds the loadout's.
+  repeated EquippedItem equipped = 3;
+}
+
+message EquippedItem {
+  uint64 geid = 1;
+  uint32 class_crc = 2;
+  uint32 port_crc = 3;      // the port of the parent it is attached to
+  uint64 parent_geid = 4;
 }
 
 // Answered by sc-entitygraph, which owns entities and the container tree. It shares that service's port, so no GRPCRoute
@@ -231,7 +315,17 @@ service EntityGraphInternal {
   rpc AdminRemoveItem(AdminRemoveItemRequest) returns (AdminRemoveItemResponse);
   // The seeded entity classes, for picking what to add.
   rpc AdminSearchEntityClasses(AdminSearchEntityClassesRequest) returns (AdminSearchEntityClassesResponse);
+  // What the player wears and the ports items can be equipped to, each with the stowed items that fit.
+  rpc AdminEquipment(AdminEquipmentRequest) returns (AdminEquipmentResponse);
+  // Attaches a stowed item of the player to a port of a worn item, if its type, size and tags fit and the port is free.
+  rpc AdminEquipItem(AdminEquipItemRequest) returns (AdminEquipItemResponse);
+  // Takes a worn item off, with what hangs from it, into an inventory.
+  rpc AdminUnequipItem(AdminUnequipItemRequest) returns (AdminUnequipItemResponse);
   // ---- Admin inventories (end) ----
+  // A player left a shard (see docs/DISCONNECT.md): clears the live markers (unstowed with a shard id) of the entities the
+  // player owns that were on `shard_id`, so changes to them are no longer refused. A DGS sends it for the entities it held
+  // and the Hub as a backstop. Repeating it, or sending it for a player with no markers, changes nothing.
+  rpc ReleasePlayer(ReleasePlayerRequest) returns (ReleasePlayerResponse);
   // ---- Game data seed (begin). Sent by sc-seeder and sc-admin seed, once per region. ----
   // The entity classes of a game build, replaced by GUID. Classes the build no longer has are kept, as items may still
   // be of them. Messages of at most 4 MiB; the answer counts the classes written.
@@ -277,6 +371,41 @@ message EntityClassSeed {
   // entity against; 0 when the seed carries none.
   int32 item_type_enum = 10;
   int32 item_sub_type_enum = 11;
+  // Whether the class carries the game's tag Item.Inventory.Stackable, which lets its items stack.
+  bool stackable = 12;
+  // The AttachDef of the item: its Size (a port takes sizes from its MinSize to its MaxSize), and its Tags and RequiredTags
+  // as the game writes them, separated by spaces. Absent / empty when the class has no AttachDef.
+  optional int32 attach_size = 13;
+  string attach_tags = 14;
+  string required_tags = 15;
+  // The item ports of a personal-gear class (a body, armor, clothing, a personal weapon, see docs/INVENTORY.md "Equipping"):
+  // where other items go on it. Empty for any other class.
+  repeated ItemPortSeed ports = 16;
+  // A vehicle class's size and insurance, which ship acquisition and the ASOP kiosk read; absent for any other class.
+  optional VehicleSeed vehicle = 17;
+}
+
+// What a ship class says about its size and its insurance (VehicleComponentParams, ShipInsuranceParams).
+message VehicleSeed {
+  repeated double max_bounding_box = 1;  // maxBoundingBoxSize in metres: x width, y length, z height; empty when unknown
+  optional ShipInsuranceSeed insurance = 2;
+}
+
+message ShipInsuranceSeed {
+  double base_wait_time_minutes = 1;
+  double mandatory_wait_time_minutes = 2;
+  uint32 base_expediting_fee = 3;
+}
+
+// An SItemPortDef of an item's SItemPortContainerComponentParams.
+message ItemPortSeed {
+  string name = 1;
+  int32 min_size = 2;
+  int32 max_size = 3;
+  repeated ItemTypeFilter types = 4;  // what the port takes: an item type, or some of its sub types
+  string required_port_tags = 5;      // tags the item must carry (RequiredPortTags)
+  string port_tags = 6;               // tags the port offers to items that require some (PortTags)
+  string flags = 7;                   // the game's Flags, space separated
 }
 
 message SeedEntityClassesRequest {
@@ -301,4 +430,13 @@ message ContainerSeed {
 
 message SeedContainersRequest {
   repeated ContainerSeed containers = 1;
+}
+
+message ReleasePlayerRequest {
+  common.v1.PlayerDisconnect event = 1;
+}
+
+message ReleasePlayerResponse {
+  // Entities whose live marker this call cleared. 0 for a repeat.
+  uint32 released = 1;
 }

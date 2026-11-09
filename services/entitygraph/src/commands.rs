@@ -11,7 +11,7 @@
 use prost::Message;
 use sc_proto::services::entitygraph::v1::{
     entity_graph_command::Params, node_properties, transfer_command, AttachCommand,
-    AttachmentOwnershipBehavior, ChangeInventoryConfigurationCommand, CreateCommand, CreateInventoryArguments,
+    AttachmentOwnershipBehavior, AttachmentType, ChangeInventoryConfigurationCommand, CreateCommand, CreateInventoryArguments,
     CreateInventoryCommand, EntityEdge, EntityEdgeProperties, EntityEdgeType, EntityEdgeVertex, EntityGraphCommand,
     EntitySnapshot, EraseCommand, InventoryNodeProperties, InventoryType, MoveAllCommand, MoveCommand,
     MutationArguments, NodeType, ScopeType, SyncCommand,
@@ -705,6 +705,51 @@ impl Plan {
         // Stowing into an inventory needs the same right as taking from one.
         self.touches_inventory(inventory_id);
         self.mark(inventory_id);
+    }
+
+    /// A stowed item is taken out of its inventory and attached to `parent`'s port `port_crc`. What hangs from the item
+    /// goes with it. The item's inventory is checked against the caller, as for a move.
+    pub fn equip(&mut self, geid: u64, parent: u64, port_crc: u32) {
+        self.touches(geid);
+        self.touches(parent);
+        self.sources.push(geid.to_string());
+        self.release(geid);
+        self.push("REMOVE @edge IN entity_edges OPTIONS { ignoreErrors: true }", json!({ "edge": stowed_edge_key(geid) }));
+        self.edge(&EntityEdge {
+            r#type: EntityEdgeType::AttachedTo as i32,
+            start: Some(entity_vertex(geid)),
+            end: Some(entity_vertex(parent)),
+            properties: Some(EntityEdgeProperties {
+                attachment_type: AttachmentType::ItemPort as i32,
+                attachment_port_crc: port_crc,
+                ..Default::default()
+            }),
+        });
+        self.patch(
+            geid,
+            "{ stowed: false, inventoryId: null, shardId: null, unstowedFromInventoryId: NOT_NULL(e.inventoryId, '') }",
+            json!({}),
+        );
+    }
+
+    /// A worn item is detached from its parent and stowed in `inventory_id`, created on first need as for a move. Refused
+    /// when it is not attached to anything, or the inventory is inside the item.
+    pub fn unequip(&mut self, geid: u64, inventory_id: &str) {
+        self.touches(geid);
+        self.ensure_inventory(inventory_id);
+        self.refuse_cycle(&entity_id(geid), inventory_id);
+        self.push(
+            "RETURN ASSERT(LENGTH(FOR x IN entity_edges FILTER x._key == @edge LIMIT 1 RETURN 1) == 1
+                           AND LENGTH(FOR i IN inventories FILTER i._key == @to LIMIT 1 RETURN 1) == 1,
+                           'precondition: the item is not worn, or the target inventory does not exist')",
+            json!({ "edge": attached_edge_key(geid), "to": key(inventory_id) }),
+        );
+        self.push("REMOVE @edge IN entity_edges OPTIONS { ignoreErrors: true }", json!({ "edge": attached_edge_key(geid) }));
+        if let Some(doc) = stowed_edge(geid, inventory_id) {
+            self.push(format!("INSERT @doc INTO entity_edges {OVERWRITE}"), json!({ "doc": doc }));
+        }
+        self.claim(geid, inventory_id);
+        self.patch(geid, "{ stowed: true, inventoryId: @to, shardId: null, moving: false }", json!({ "to": inventory_id }));
     }
 
     pub fn moves(&mut self, command: &MoveCommand) {

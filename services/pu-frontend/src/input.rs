@@ -8,7 +8,7 @@ pub const MESSAGE_ENTITY_REMOTE_METHOD: usize = 18;
 /// `EntitySnapshotUpdate`, read by 0x1415ad7c0.
 const MESSAGE_ENTITY_SNAPSHOT_UPDATE: u8 = 16;
 /// The remote method of the player that carries `CSCActorActionHandler`'s action frames.
-const ACTION_FRAME_METHOD: usize = 7;
+pub const ACTION_FRAME_METHOD: usize = 7;
 
 // Action types are the byte each `CSCActorActionHandler::Request<SCActorActionHandlerActions::...>` stores at `+0x18` of
 // the action (`mov byte [reg+0x18], type`), read from all 226 of those functions. The wire gives no length per action.

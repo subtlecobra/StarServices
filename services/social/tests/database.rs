@@ -56,6 +56,13 @@ async fn fake_hub(shard_of: u64) -> String {
         ) -> Result<tonic::Response<sc_api::internal::ResolveSessionResponse>, Status> {
             Ok(tonic::Response::new(sc_api::internal::ResolveSessionResponse::default()))
         }
+
+        async fn report_disconnect(
+            &self,
+            _: tonic::Request<sc_api::internal::PlayerDisconnect>,
+        ) -> Result<tonic::Response<sc_api::internal::ReportDisconnectResponse>, Status> {
+            Err(Status::unimplemented("report_disconnect"))
+        }
     }
 
     let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();

@@ -3,6 +3,8 @@ syntax = "proto3";
 
 package scbackend.internal.dgs.v1;
 
+import "scbackend/internal/common/v1/disconnect.proto";
+
 message DgsStatusRequest {}
 
 // Frame times of the DGS's tick over its last full window, in 100 ns ticks, as the overlay's `DebugServerInfo` wants them.
@@ -115,6 +117,11 @@ message JoinPlayerResponse {
 message LeavePlayerRequest {
   uint64 replicant = 1;
   uint64 session = 2;
+  // Why the connection ended, and the client's own cause code (30016 for a quit). A REPLACED leave changes nothing of the
+  // player's persistent state. See docs/DISCONNECT.md.
+  common.v1.DisconnectReason reason = 3;
+  uint32 client_code = 4;
+  uint64 at_ms = 5;
 }
 
 message LeavePlayerResponse {

@@ -2935,7 +2935,7 @@ dependencies = [
 
 [[package]]
 name = "sc-admin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "p4k",
@@ -2954,7 +2954,7 @@ dependencies = [
 
 [[package]]
 name = "sc-admin-web"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -2992,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "sc-api"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -3147,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "sc-dgs"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "flate2",
@@ -3272,7 +3272,7 @@ dependencies = [
 
 [[package]]
 name = "sc-entity-document"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "prost",
@@ -3304,7 +3304,7 @@ dependencies = [
 
 [[package]]
 name = "sc-entitygraph"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "futures-util",
@@ -3364,7 +3364,7 @@ dependencies = [
 
 [[package]]
 name = "sc-hub"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "prost",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "sc-pu-frontend"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "blake2",
@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "sc-seed"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures-util",
  "prost",

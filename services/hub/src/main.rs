@@ -7,6 +7,7 @@
 //! `HubInternal`, on a gRPC port of its own, as the Hub's port speaks only its TLS protocol.
 
 mod claim;
+mod disconnect;
 
 use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc, time::Duration};
 
@@ -31,7 +32,8 @@ use sc_api::internal::{
     entity_document_internal_client::EntityDocumentInternalClient,
     hub_internal_server::{HubInternal, HubInternalServer},
     shard_directory_client::ShardDirectoryClient,
-    AllocateShardRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPlayerShardResponse, PlayerShard,
+    entity_graph_internal_client::EntityGraphInternalClient, AllocateShardRequest, DisconnectReason, GetEntityDocumentsRequest,
+    GetPlayerShardRequest, GetPlayerShardResponse, PlayerDisconnect, PlayerShard, ReportDisconnectResponse,
     ResolveSessionRequest, ResolveSessionResponse,
 };
 use sc_proto::services::entity_document::v1::entity_document_body::Class;
@@ -378,6 +380,7 @@ struct Session {
     default_handle: String,
     documents: EntityDocumentInternalClient<Channel>,
     claims: Option<claim::Claims>,
+    graph: Option<EntityGraphInternalClient<Channel>>,
     /// The session this connection issued, which ends with it.
     session: Option<String>,
 }
@@ -404,7 +407,9 @@ impl Session {
         vec![frame("smsg_do_join_instance", update, envelope.id)]
     }
 
-    /// The Hub connection lasts as long as the game session, so its end means the player left.
+    /// The Hub connection lasts as long as the game session, so its end means the player left: the session ends, the shard slot
+    /// is freed, and sc-entitygraph is told as for any disconnect (`disconnect`). A replicant that reports the same player
+    /// afterwards finds the slot already gone and the event recorded.
     async fn leave(&self) {
         if let Some(session) = &self.session {
             if let Err(error) = self.db.execute("DELETE FROM sessions WHERE session = $1", &[session]).await {
@@ -412,8 +417,33 @@ impl Session {
             }
         }
         let Some(account) = &self.account else { return };
-        if let Err(error) = self.db.execute("DELETE FROM player_shards WHERE geid = $1", &[&(account.geid as i64)]).await {
+        let geid = account.geid as i64;
+        let shard = match self.db.query_opt("SELECT shard_id FROM player_shards WHERE geid = $1", &[&geid]).await {
+            Ok(row) => row.map(|row| row.get::<_, String>(0)),
+            Err(error) => {
+                warn!(%error, "could not read the player's shard");
+                None
+            }
+        };
+        if let Err(error) = self.db.execute("DELETE FROM player_shards WHERE geid = $1", &[&geid]).await {
             warn!(%error, "could not clear the player's shard");
+        }
+        let Some(session) = &self.session else { return };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        // Without a shard row the player was in the menu, with nothing live: the event still reaches sc-entitygraph, for the
+        // markers a lost report may have left on any shard.
+        let event = PlayerDisconnect {
+            event_id: format!("hub:{session}"),
+            reason: DisconnectReason::ConnectionLost as i32,
+            account_id: account.account_id,
+            geid: account.geid,
+            shard_id: shard.unwrap_or_default(),
+            client_code: 0,
+            connected_at_ms: 0,
+            at_ms: now,
+        };
+        if let Err(error) = disconnect::handle(&self.db, self.graph.clone(), event).await {
+            warn!(%error, "could not record the disconnect");
         }
     }
 
@@ -541,6 +571,8 @@ async fn player_shard(db: &Postgres, geid: u64) -> Result<Option<PlayerShard>, S
 
 struct Internal {
     db: Postgres,
+    /// sc-entitygraph, told when a player's connection ends.
+    graph: Option<EntityGraphInternalClient<Channel>>,
 }
 
 #[tonic::async_trait]
@@ -551,6 +583,17 @@ impl HubInternal for Internal {
     ) -> Result<Response<GetPlayerShardResponse>, Status> {
         let shard = player_shard(&self.db, request.into_inner().geid).await.map_err(internal)?;
         Ok(Response::new(GetPlayerShardResponse { shard }))
+    }
+
+    async fn report_disconnect(
+        &self,
+        request: Request<PlayerDisconnect>,
+    ) -> Result<Response<ReportDisconnectResponse>, Status> {
+        let event = request.into_inner();
+        let (recorded, slot_freed) = disconnect::handle(&self.db, self.graph.clone(), event).await.map_err(|error| {
+            if error.contains("needed") { Status::invalid_argument(error) } else { internal(error) }
+        })?;
+        Ok(Response::new(ReportDisconnectResponse { recorded, slot_freed }))
     }
 
     async fn resolve_session(
@@ -580,10 +623,10 @@ impl HubInternal for Internal {
     }
 }
 
-async fn serve_internal(addr: SocketAddr, db: Postgres) -> Result<(), String> {
+async fn serve_internal(addr: SocketAddr, db: Postgres, graph: Option<EntityGraphInternalClient<Channel>>) -> Result<(), String> {
     info!(%addr, "hub internal gRPC listening");
     Server::builder()
-        .add_service(HubInternalServer::new(Internal { db }))
+        .add_service(HubInternalServer::new(Internal { db, graph }))
         .serve(addr)
         .await
         .map_err(|e| format!("hub internal {addr}: {e}"))
@@ -620,6 +663,7 @@ where
 struct Backends {
     documents: EntityDocumentInternalClient<Channel>,
     claims: Option<claim::Claims>,
+    graph: Option<EntityGraphInternalClient<Channel>>,
 }
 
 async fn accept_loop(
@@ -653,6 +697,7 @@ async fn accept_loop(
             default_handle: default_handle.clone(),
             documents: backends.documents.clone(),
             claims: backends.claims.clone(),
+            graph: backends.graph.clone(),
             session: None,
         };
         tokio::spawn(async move {
@@ -697,7 +742,7 @@ async fn serve(args: Args) -> Result<(), String> {
         destinations: destinations::load(&args.common.data)?,
         max_players: 100,
     };
-    let db = Postgres::connect(&args.database.postgres, SCHEMA).await?;
+    let db = Postgres::connect(&args.database.postgres, &schema()).await?;
     let config = tls::plain(&args.common.data)?;
     let endpoint =
         Endpoint::from_shared(args.entity_document.clone()).map_err(|e| format!("--entity-document: {e}"))?;
@@ -720,10 +765,27 @@ async fn serve(args: Args) -> Result<(), String> {
             None
         }
     };
+    // sc-entitygraph is told when a player's connection ends, whether or not entitlements are claimed.
+    let graph = match &args.entitygraph {
+        Some(address) => {
+            let endpoint = Endpoint::from_shared(address.clone()).map_err(|e| format!("--entitygraph: {e}"))?;
+            Some(EntityGraphInternalClient::new(endpoint.connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(10)).connect_lazy()))
+        }
+        None => {
+            warn!("no --entitygraph, a player's live markers are not cleared when they leave");
+            None
+        }
+    };
+    tokio::spawn(disconnect::retry_loop(db.clone(), graph.clone()));
     tokio::select! {
-        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle, Backends { documents, claims }) => result,
-        result = serve_internal(args.internal_listen, db) => result,
+        result = accept_loop(args.listen, config, state, db.clone(), shard, args.handle, Backends { documents, claims, graph: graph.clone() }) => result,
+        result = serve_internal(args.internal_listen, db, graph) => result,
     }
+}
+
+/// The Hub's tables: its own and those of the disconnects it records.
+fn schema() -> String {
+    format!("{SCHEMA}{}", disconnect::SCHEMA)
 }
 
 fn main() -> ExitCode {
@@ -826,7 +888,7 @@ mod tests {
         let schema = format!("hub_test_{}", std::process::id());
         let admin = Postgres::connect(&base, &format!("CREATE SCHEMA {schema}")).await.unwrap();
         let separator = if base.contains('?') { '&' } else { '?' };
-        let db = Postgres::connect(&format!("{base}{separator}options=-c%20search_path%3D{schema}"), SCHEMA).await.unwrap();
+        let db = Postgres::connect(&format!("{base}{separator}options=-c%20search_path%3D{schema}"), &super::schema()).await.unwrap();
         let insert = "INSERT INTO player_shards (geid, shard_id, public_address, public_port, location_id)
                       VALUES ($1, $2, '10.0.0.1', 7000, $3)";
         db.execute(insert, &[&1_i64, &"shard-a", &5_i64]).await.unwrap();
@@ -834,7 +896,7 @@ mod tests {
         db.execute(insert, &[&3_i64, &"shard-b", &5_i64]).await.unwrap();
 
         let address: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        tokio::spawn(serve_internal(address, db.clone()));
+        tokio::spawn(serve_internal(address, db.clone(), None));
         while tokio::net::TcpStream::connect(address).await.is_err() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
@@ -862,7 +924,7 @@ mod tests {
                       CREATE INDEX player_shards_shard ON player_shards (shard_id);";
         let db = Postgres::connect(&url, legacy).await.unwrap();
         db.execute("INSERT INTO player_shards (geid) VALUES (9)", &[]).await.unwrap();
-        let db = Postgres::connect(&url, SCHEMA).await.unwrap();
+        let db = Postgres::connect(&url, &super::schema()).await.unwrap();
         let shard = player_shard(&db, 9).await.unwrap().unwrap();
         assert_eq!((shard.shard_id.as_str(), shard.public_address.as_str(), shard.public_port, shard.location_id), ("", "", 0, 0));
         assert_eq!((shard.players_at_location, shard.players_on_shard), (0, 0));

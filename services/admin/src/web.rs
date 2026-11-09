@@ -25,7 +25,7 @@ use axum::{
 };
 use ring::rand::{SecureRandom, SystemRandom};
 use sc_economy::ledger::{AUEC_LEDGER, REC_LEDGER};
-use sc_api::internal::{ AccountSummary, AdminAddItemRequest, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminRemoveItemRequest, CreateRentalRequest, EndRentalRequest, ExtendRentalRequest, GrantPurchaseRequest, LedgerAdjustRequest, PutEntityDocumentRequest, RevokeEntitlementRequest, SearchAccountsRequest, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, };
+use sc_api::internal::{ AccountSummary, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminRemoveItemRequest, CreateRentalRequest, EndRentalRequest, ExtendRentalRequest, GrantPurchaseRequest, LedgerAdjustRequest, PutEntityDocumentRequest, RevokeEntitlementRequest, SearchAccountsRequest, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter, EntitlementLogAction, EntitlementSourceType, EntitlementStatus},
@@ -45,7 +45,7 @@ use tracing::warn;
 
 use crate::{
     audit::{AuditLog, Entry, OK},
-    backend::{Identity, Owners},
+    backend::{ClassSearch, Identity, Owners},
     html::{account_tabs, amount, escape, notice, query_value, table, time, Frame, CSS},
     places::places,
 };
@@ -215,6 +215,15 @@ async fn stylesheet() -> Response {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], CSS).into_response()
 }
 
+/// The inventory page's scripts (the catalog and the inventory picker): served from here and never inline.
+async fn inventory_script() -> Response {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("inventory.js")).into_response()
+}
+
+async fn tree_script() -> Response {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("tree.js")).into_response()
+}
+
 pub fn router(app: Shared) -> Router {
     let p = app.prefix.clone();
     let guarded = Router::new()
@@ -234,13 +243,19 @@ pub fn router(app: Shared) -> Router {
         .route(&format!("{p}/accounts/{{id}}/location/home"), axum::routing::post(set_home))
         .route(&format!("{p}/accounts/{{id}}/location/spawn"), axum::routing::post(set_spawn))
         .route(&format!("{p}/accounts/{{id}}/inventory"), get(inventory))
+        .route(&format!("{p}/accounts/{{id}}/inventory/classes"), get(inventory_classes))
         .route(&format!("{p}/accounts/{{id}}/inventory/move"), axum::routing::post(item_move))
         .route(&format!("{p}/accounts/{{id}}/inventory/add"), axum::routing::post(item_add))
+        .route(&format!("{p}/accounts/{{id}}/inventory/add-batch"), axum::routing::post(item_add_batch))
         .route(&format!("{p}/accounts/{{id}}/inventory/remove"), axum::routing::post(item_remove))
+        .route(&format!("{p}/accounts/{{id}}/inventory/equip"), axum::routing::post(item_equip))
+        .route(&format!("{p}/accounts/{{id}}/inventory/unequip"), axum::routing::post(item_unequip))
         .route(&format!("{p}/accounts/{{id}}/audit"), get(audit_account))
         .layer(middleware::from_fn_with_state(app.clone(), guard));
     Router::new()
         .route(&format!("{p}/static/admin.css"), get(stylesheet))
+        .route(&format!("{p}/static/inventory.js"), get(inventory_script))
+        .route(&format!("{p}/static/tree.js"), get(tree_script))
         .merge(guarded)
         .with_state(app)
 }
@@ -1391,21 +1406,61 @@ fn inventory_id(inventory: &AdminInventory) -> &str {
     inventory.inventory.as_ref().map_or("", |properties| properties.id.as_str())
 }
 
-/// What an inventory is, in words: the player's own, a location bank, or the container of an entity.
-fn inventory_label(inventory: &AdminInventory) -> String {
-    let Some(properties) = inventory.inventory.as_ref() else { return "?".into() };
-    let holder = || {
+/// What holds an inventory, in words: the English name of the item it is the container of when the tree has it, else its
+/// class name, else the GEID.
+fn holder_name(tree: &[AdminInventory], inventory: &AdminInventory) -> String {
+    let named = tree
+        .iter()
+        .flat_map(|other| &other.items)
+        .find(|item| item.geid == inventory.holder_id)
+        .map(|item| if item.display_name.is_empty() { item.class_name.clone() } else { item.display_name.clone() })
+        .filter(|name| !name.is_empty());
+    named.unwrap_or_else(|| {
         let class = if inventory.holder_class_name.is_empty() { "entity" } else { inventory.holder_class_name.as_str() };
         format!("{class} {}", inventory.holder_id)
-    };
+    })
+}
+
+/// What an inventory is, in words: the player's own, a location bank, or the container of an item.
+fn inventory_label(tree: &[AdminInventory], inventory: &AdminInventory) -> String {
+    let Some(properties) = inventory.inventory.as_ref() else { return "?".into() };
     match properties.context.as_str() {
         "PlayerInventory" => "Personal inventory".into(),
         "Location" => format!("Item bank at {}", place_name(properties.subject_id as u32)),
-        "Container" => format!("Container of {}", holder()),
-        "PersonalEntityInventory" => format!("Own space in {}", holder()),
+        "Container" => holder_name(tree, inventory),
+        "PersonalEntityInventory" => format!("{} (own space)", holder_name(tree, inventory)),
         "" => properties.id.clone(),
         context => format!("{context} ({})", properties.subject_id),
     }
+}
+
+/// Where an inventory is, as the names from the top down: `Orison`, `Item bank`, `Pembroke Core`. Built from the tree's
+/// parent chain; a parent the tree does not have ends the path there.
+fn inventory_segments(tree: &[AdminInventory], inventory: &AdminInventory) -> Vec<String> {
+    let mut chain = vec![inventory];
+    while chain.len() < 16 {
+        let parent = chain.last().map_or("", |last| last.parent_inventory_id.as_str());
+        match tree.iter().find(|other| !parent.is_empty() && inventory_id(other) == parent) {
+            Some(other) if !chain.iter().any(|seen| inventory_id(seen) == inventory_id(other)) => chain.push(other),
+            _ => break,
+        }
+    }
+    chain
+        .iter()
+        .rev()
+        .flat_map(|link| match link.inventory.as_ref().map(|properties| properties.context.as_str()) {
+            Some("Location") => {
+                let place = place_name(link.inventory.as_ref().map_or(0, |properties| properties.subject_id as u32));
+                vec![place, "Item bank".to_string()]
+            }
+            _ => vec![inventory_label(tree, link)],
+        })
+        .collect()
+}
+
+/// The path of an inventory in one line, `Orison › Item bank › Pembroke Core`.
+fn inventory_path(tree: &[AdminInventory], inventory: &AdminInventory) -> String {
+    inventory_segments(tree, inventory).join(" › ")
 }
 
 /// A volume in micro-SCU as SCU.
@@ -1450,28 +1505,55 @@ fn new_bank_options(tree: &[AdminInventory], player: Option<u64>) -> String {
     places().iter().fold(String::new(), |mut out, place| {
         let id = format!("{player}:Location:{}", place.id);
         if !tree.iter().any(|inventory| inventory_id(inventory) == id) {
-            let _ = write!(out, r#"<option value="{}">Item bank at {} (new)</option>"#, escape(&id), escape(&place_name(place.id)));
+            let label = format!("Item bank at {} (new)", place_name(place.id));
+            let path = format!("{} › Item bank (new)", place_name(place.id));
+            let _ = write!(
+                out,
+                r#"<option value="{id}" data-parent="" data-label="{label}" data-path="{path}">{label}</option>"#,
+                id = escape(&id),
+                label = escape(&label),
+                path = escape(&path)
+            );
         }
         out
     })
 }
 
+/// The options of an inventory picker: the inventories `keep` takes, each with its parent in the picker (`data-parent`,
+/// empty at the top) so the script can show them as a tree to expand and collapse; without it the select lists them
+/// indented. The item banks not made yet are at the top. `selected` is the value shown first.
+fn inventory_options(tree: &[AdminInventory], keep: &dyn Fn(&AdminInventory) -> bool, selected: Option<&str>, new_banks: bool) -> String {
+    let kept: Vec<&AdminInventory> = tree.iter().filter(|inventory| keep(inventory)).collect();
+    let mut out = String::new();
+    for inventory in &kept {
+        let id = inventory_id(inventory);
+        // A kept inventory under one that is not kept is shown at the top.
+        let parent = kept.iter().map(|other| inventory_id(other)).find(|other| *other == inventory.parent_inventory_id).unwrap_or("");
+        let depth = if parent.is_empty() { 0 } else { inventory.depth as usize };
+        let label = inventory_label(tree, inventory);
+        let _ = write!(
+            out,
+            r#"<option value="{id}" data-parent="{parent}" data-label="{label}" data-path="{path}"{sel}>{indent}{label}</option>"#,
+            id = escape(id),
+            path = escape(&inventory_path(tree, inventory)),
+            parent = escape(parent),
+            label = escape(&label),
+            sel = if selected == Some(id) { " selected" } else { "" },
+            indent = "· ".repeat(depth),
+        );
+    }
+    if new_banks {
+        out.push_str(&new_bank_options(tree, tree_player(tree)));
+    }
+    out
+}
+
 /// The inventories an item may go to: those not live, but its own and those it holds, and the item banks not made yet.
 fn target_options(tree: &[AdminInventory], item: &AdminInventoryItem) -> String {
-    let existing = tree.iter()
-        .filter(|inventory| !inventory.live)
-        .filter(|inventory| inventory_id(inventory) != item.inventory_id && !item.held_inventory_ids.iter().any(|held| held == inventory_id(inventory)))
-        .fold(String::new(), |mut out, inventory| {
-            let _ = write!(
-                out,
-                r#"<option value="{}">{}{}</option>"#,
-                escape(inventory_id(inventory)),
-                "· ".repeat(inventory.depth as usize),
-                escape(&inventory_label(inventory))
-            );
-            out
-        });
-    existing + &new_bank_options(tree, tree_player(tree))
+    let keep = |inventory: &AdminInventory| {
+        !inventory.live && inventory_id(inventory) != item.inventory_id && !item.held_inventory_ids.iter().any(|held| held == inventory_id(inventory))
+    };
+    inventory_options(tree, &keep, None, true)
 }
 
 fn item_name(item: &AdminInventoryItem) -> String {
@@ -1482,13 +1564,15 @@ fn item_name(item: &AdminInventoryItem) -> String {
     }
 }
 
-fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminInventory, editable: bool) -> Vec<Vec<String>> {
+fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminInventory, editable: bool, equipment: Option<&AdminEquipmentResponse>) -> Vec<Vec<String>> {
+    let here = inventory_path(tree, inventory);
     inventory
         .items
         .iter()
         .map(|item| {
             let holds = item.held_inventory_ids.iter().fold(String::new(), |mut out, held| {
-                let _ = write!(out, r##"<a href="#inv-{0}"><code>{0}</code></a> "##, escape(held));
+                let name = tree.iter().find(|other| inventory_id(other) == held).map_or_else(|| held.clone(), |other| inventory_label(tree, other));
+                let _ = write!(out, r##"<a href="#inv-{0}" title="{0}">{1}</a> "##, escape(held), escape(&name));
                 out
             });
             let actions = if item.on_shard {
@@ -1503,16 +1587,18 @@ fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminI
                 let mover = if options.is_empty() {
                     String::new()
                 } else {
-                    frame.form(
+                    frame.form_class(
+                        "stacked",
                         &format!("/accounts/{id}/inventory/move"),
                         &format!(
-                            r#"{hidden}<select name="to">{options}</select><input name="quantity" type="number" min="0" max="{}" placeholder="All" class="narrow"><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason">"#,
+                            r#"{hidden}<div class="wide"><span class="muted">Move to</span><select name="to" data-tree>{options}</select></div><input name="quantity" type="number" min="0" max="{}" placeholder="All" class="narrow" aria-label="Quantity"><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
                             item.stack_size.max(1)
                         ),
                         "Move",
                     )
                 };
                 mover
+                    + &equip_form(frame, id, item, equipment)
                     + &frame.form(
                         &format!("/accounts/{id}/inventory/remove"),
                         &format!(r#"{hidden}<input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason">"#),
@@ -1523,7 +1609,7 @@ fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminI
             };
             vec![
                 item.geid.to_string(),
-                item_name(item),
+                format!("{}<br><span class=\"muted where\">In: {}</span>", item_name(item), escape(&here)),
                 format!("<code>{}</code>", escape(&item.class_guid)),
                 item.stack_size.to_string(),
                 item.owner_id.to_string(),
@@ -1534,10 +1620,77 @@ fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminI
         .collect()
 }
 
+/// The free ports of what the player wears that `item` fits, as a form to equip it; nothing when there are none.
+fn equip_form(frame: &Frame, id: u32, item: &AdminInventoryItem, equipment: Option<&AdminEquipmentResponse>) -> String {
+    let Some(equipment) = equipment else { return String::new() };
+    let options: String = equipment
+        .ports
+        .iter()
+        .filter(|port| port.occupant_geid == 0 && port.candidates.contains(&item.geid))
+        .fold(String::new(), |mut out, port| {
+            let _ = write!(out, r#"<option value="{}:{}">{} › {}</option>"#, port.parent_geid, escape(&port.port), escape(&port.parent_name), escape(&port.port));
+            out
+        });
+    if options.is_empty() {
+        return String::new();
+    }
+    frame.form_class(
+        "stacked",
+        &format!("/accounts/{id}/inventory/equip"),
+        &format!(
+            r#"<input type="hidden" name="geid" value="{}"><div class="wide"><span class="muted">Equip on</span><select name="port">{options}</select></div><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
+            item.geid
+        ),
+        "Equip",
+    )
+}
+
+/// What the player wears, one row each under what it hangs from, with a form to take it off into an inventory.
+fn worn_table(frame: &Frame, id: u32, tree: &[AdminInventory], equipment: &AdminEquipmentResponse, editable: bool) -> String {
+    if equipment.worn.is_empty() {
+        return r#"<p class="muted">Nothing is worn yet: the loadout is made when the player first joins a shard.</p>"#.to_string();
+    }
+    let by_geid: HashMap<u64, &sc_api::internal::AdminWornItem> = equipment.worn.iter().map(|item| (item.geid, item)).collect();
+    let rows: Vec<Vec<String>> = equipment
+        .worn
+        .iter()
+        .map(|item| {
+            let name = if item.display_name.is_empty() { item.class_name.as_str() } else { item.display_name.as_str() };
+            let on = by_geid.get(&item.parent_geid).map_or_else(
+                || "the player".to_string(),
+                |parent| format!("{} › {}", if parent.display_name.is_empty() { &parent.class_name } else { &parent.display_name }, item.port),
+            );
+            let action = if !editable || !item.removable {
+                String::new()
+            } else {
+                let keep = |inventory: &AdminInventory| !inventory.live;
+                frame.form_class(
+                    "stacked",
+                    &format!("/accounts/{id}/inventory/unequip"),
+                    &format!(
+                        r#"<input type="hidden" name="geid" value="{}"><div class="wide"><span class="muted">Put it in</span><select name="to" data-tree>{}</select></div><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
+                        item.geid,
+                        inventory_options(tree, &keep, None, true)
+                    ),
+                    "Take off",
+                )
+            };
+            vec![
+                format!("{}{}", "\u{2003}".repeat(item.depth.saturating_sub(1) as usize), escape(name)),
+                item.geid.to_string(),
+                format!("{} {}", escape(&item.item_type), escape(&item.item_sub_type)),
+                escape(&on),
+                action,
+            ]
+        })
+        .collect();
+    table(&["Item", "Entity", "Type", "On", ""], &rows)
+}
+
 /// The classes found for `query`, each with a link that puts its GUID in the add form.
 async fn class_search(app: &App, id: u32, query: &str) -> String {
     let mut out = String::new();
-    match app.owners.search_classes(query).await {
+    match app.owners.search_classes(ClassSearch { query: query.to_string(), limit: 50, ..Default::default() }).await {
         Ok(classes) => {
             let rows: Vec<Vec<String>> = classes
                 .iter()
@@ -1566,6 +1719,51 @@ async fn class_search(app: &App, id: u32, query: &str) -> String {
         Err(status) => out.push_str(&failed("sc-entitygraph", &status)),
     }
     out
+}
+
+/// The classes the page's catalog asks for, as JSON: `q` the text, `cat` the category and `opt` the chosen sub-filters
+/// of it (its parts, kinds, weights), comma separated. No category: every item with an English name.
+async fn inventory_classes(State(app): State<Shared>, Path(_id): Path<u32>, RawQuery(raw): RawQuery) -> Response {
+    let query = query(raw);
+    let chosen: Vec<&str> = query.get("opt").map(|text| text.split(',').filter(|part| !part.is_empty()).collect()).unwrap_or_default();
+    let selection = match query.get("cat").map(String::as_str) {
+        None | Some("") => crate::catalog::Selection::default(),
+        Some(category) => match crate::catalog::selection(category, &chosen) {
+            Some(selection) => selection,
+            None => return (StatusCode::BAD_REQUEST, [(header::CONTENT_TYPE, "application/json")], json!({ "error": "unknown category" }).to_string()).into_response(),
+        },
+    };
+    let search = ClassSearch {
+        query: query.get("q").map(|text| text.trim().chars().take(MAX_CLASS_QUERY).collect()).unwrap_or_default(),
+        any_of: selection.any_of,
+        none_of: selection.none_of,
+        item_sub_types: selection.sub_types,
+        named_only: true,
+        limit: 60,
+    };
+    let (status, body) = match app.owners.search_classes(search).await {
+        Ok(classes) => {
+            let rows: Vec<Value> = classes
+                .iter()
+                .map(|class| {
+                    json!({
+                        "guid": class.guid,
+                        "name": class.display_name,
+                        "class": class.class_name,
+                        "type": class.item_type,
+                        "sub": class.item_sub_type,
+                        "room": class.occupancy_micro_scu,
+                        "container": class.container,
+                        "capacity": class.capacity_micro_scu,
+                        "stackLimit": crate::catalog::stack_limit(&class.item_type, class.stackable),
+                    })
+                })
+                .collect();
+            (StatusCode::OK, json!({ "classes": rows }))
+        }
+        Err(status) => (StatusCode::BAD_GATEWAY, json!({ "error": format!("sc-entitygraph: {}", status.message()) })),
+    };
+    (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
 async fn inventory(
@@ -1600,10 +1798,18 @@ async fn inventory(
     if tree.is_empty() {
         body.push_str(r#"<p class="muted">No inventory yet: sc-entitygraph makes them on first need.</p>"#);
     }
+    let equipment = app.owners.equipment(geid).await;
     if locked.is_none() {
         let class = query.get("class").map_or("", |class| class.trim());
         let guid = query.get("guid").map_or("", |guid| guid.trim());
         body.push_str(r#"<h2 id="add">Add an item</h2><fieldset>"#);
+        // With the script the catalog filters as you type; without it the classic search below still works.
+        let _ = write!(
+            body,
+            r#"<div id="catalog" data-url="{prefix}/accounts/{id}/inventory/classes" data-table="{table}"></div><script src="{prefix}/static/inventory.js" defer></script><div id="classic">"#,
+            prefix = app.prefix,
+            table = escape(&crate::catalog::table().to_string()),
+        );
         let _ = write!(
             body,
             r#"<form method="get" action="{}/accounts/{id}/inventory#add" class="inline"><input name="class" value="{}" maxlength="{MAX_CLASS_QUERY}" size="30" placeholder="Class name, English name or GUID"><button type="submit">Find class</button></form>"#,
@@ -1613,16 +1819,8 @@ async fn inventory(
         if !class.is_empty() {
             body.push_str(&class_search(&app, id, class).await);
         }
-        let inventories = tree.iter().filter(|inventory| !inventory.live).fold(String::new(), |mut out, inventory| {
-            let _ = write!(
-                out,
-                r#"<option value="{}">{}{}</option>"#,
-                escape(inventory_id(inventory)),
-                "· ".repeat(inventory.depth as usize),
-                escape(&inventory_label(inventory))
-            );
-            out
-        });
+        body.push_str("</div>");
+        let inventories = inventory_options(&tree, &|inventory| !inventory.live, Some(&format!("{geid}:PlayerInventory:0")), false);
         let personal = format!("{geid}:PlayerInventory:0");
         let inventories = if inventories.is_empty() {
             format!(r#"<option value="{0}">Personal inventory</option>"#, escape(&personal))
@@ -1630,15 +1828,28 @@ async fn inventory(
             inventories
         };
         let inventories = inventories + &new_bank_options(&tree, Some(geid));
-        body.push_str(&frame.form(
-            &format!("/accounts/{id}/inventory/add"),
+        let inventories = format!(r#"<div class="wide"><span class="muted">Give into</span><select name="inventory" data-tree>{inventories}</select></div>"#);
+        // The cart: the catalog's script lists what was added with its + here and keeps `items`; without the script the
+        // field is typed by hand, `class GUID:amount:copies`, comma separated.
+        body.push_str(&frame.form_class(
+            "stacked give",
+            &format!("/accounts/{id}/inventory/add-batch"),
             &format!(
-                r#"<select name="inventory">{inventories}</select><input name="class_guid" required size="38" value="{}" placeholder="Entity class GUID"><input name="stack" type="number" min="1" max="{MAX_STACK}" value="1" class="narrow"><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason">"#,
+                r#"{inventories}<div id="cart" class="cart"></div><input name="items" id="items" required size="60" placeholder="Class GUID:amount, ..." value="{}"><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason, for the whole batch">"#,
                 escape(guid)
             ),
-            "Add",
+            "Give the items",
         ));
-        body.push_str(r#"<p class="muted">A new item with a GEID from sc-entitygraph, owned by the player. A crate, a backpack or any class with an inventory container gets its own inventory with it.</p></fieldset>"#);
+        body.push_str(r#"<p class="muted">Each item is new, with a GEID from sc-entitygraph, owned by the player: add as many as you like with the +, then give them all with one reason. A crate, a backpack or any class with an inventory container gets its own inventory with it.</p></fieldset>"#);
+    }
+    let _ = write!(body, r#"<script src="{}/static/tree.js" defer></script>"#, app.prefix);
+    body.push_str(r#"<h2 id="worn">Worn</h2>"#);
+    match &equipment {
+        Ok(equipment) => {
+            body.push_str(&worn_table(&frame, id, &tree, equipment, locked.is_none()));
+            body.push_str(r#"<p class="muted">Equipping moves a stowed item to a port of something worn, if its type, size and tags fit; taking off stows it, with what hangs from it. Offline only: the player's client sees the change on its next join.</p>"#);
+        }
+        Err(status) => body.push_str(&failed("sc-entitygraph", status)),
     }
     body.push_str("<h2>Inventories</h2>");
     for inventory in &tree {
@@ -1646,9 +1857,9 @@ async fn inventory(
         let depth = inventory.depth.min(6);
         let _ = write!(
             body,
-            r#"<section class="inventory depth-{depth}" id="inv-{id_attr}"><h3>{label} <code>{id_text}</code></h3><p class="muted">{capacity} · {count} item{s}{parent}{shared}</p>"#,
+            r#"<section class="inventory depth-{depth}" id="inv-{id_attr}"><h3>{path} <code>{id_text}</code></h3><p class="muted">{capacity} · {count} item{s}{parent}{shared}</p>"#,
             id_attr = escape(&properties.id),
-            label = escape(&inventory_label(inventory)),
+            path = escape(&inventory_path(&tree, inventory)),
             id_text = escape(&properties.id),
             capacity = capacity_text(properties),
             count = inventory.item_count,
@@ -1666,7 +1877,7 @@ async fn inventory(
         let editable = locked.is_none() && !inventory.live;
         body.push_str(&table(
             &["Entity", "Class", "Class GUID", "Stack", "Owner", "Holds", ""],
-            &item_rows(&frame, id, &tree, inventory, editable),
+            &item_rows(&frame, id, &tree, inventory, editable, equipment.as_ref().ok()),
         ));
         if inventory.item_count as usize > inventory.items.len() {
             let _ = write!(body, r#"<p class="muted">Only the first {} of {} items are shown.</p>"#, inventory.items.len(), inventory.item_count);
@@ -1770,6 +1981,207 @@ async fn item_move(
         let text = format!("{what} to {to}.{}", if done.replayed { " (already applied)" } else { "" });
         let after = json!({ "geid": done.moved_geid, "inventory": to, "split_from": (done.moved_geid != item).then_some(item) });
         Ok((text, (before, Some(after))))
+    })
+    .await;
+    back(&app, id, INVENTORY_PAGE, result)
+}
+
+/// Equips a stowed item of the offline player to a free port of something it wears: `port` is `<worn item>:<port name>`, as
+/// the item's own form lists it.
+async fn item_equip(
+    State(app): State<Shared>,
+    Extension(admin): Extension<Admin>,
+    Extension(form): Extension<Form>,
+    Path(id): Path<u32>,
+) -> Response {
+    let item = match form.get("geid").parse::<u64>() {
+        Ok(item) if item > 0 => item,
+        _ => return back(&app, id, INVENTORY_PAGE, Err("Which item?".into())),
+    };
+    let target = form.get("port").split_once(':').and_then(|(parent, port)| {
+        let parent = parent.parse::<u64>().ok().filter(|parent| *parent > 0)?;
+        (!port.is_empty() && port.len() <= 100 && port.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).then(|| (parent, port.to_string()))
+    });
+    let Some((parent, port)) = target else { return back(&app, id, INVENTORY_PAGE, Err("Pick a port.".into())) };
+    let reason = match reason(&form) {
+        Ok(reason) => reason,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let geid = match offline_player(&app, id).await {
+        Ok(geid) => geid,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let before = item_now(&app, geid, item).await;
+    let entry = Entry {
+        action: "inventory.equip".into(),
+        owner: "sc-entitygraph".into(),
+        target_account_id: Some(id),
+        target_geid: Some(geid),
+        detail: json!({ "item": item, "parent": parent, "port": port, "reason": reason }),
+        ..Default::default()
+    };
+    let request = AdminEquipItemRequest { command_id: key(&form), owner_id: geid, geid: item, parent_geid: parent, port: port.clone(), actor: actor(&admin), reason };
+    let result = act(&app, &admin, &form, entry, async {
+        let done = app.owners.equip_item(request).await?;
+        let text = format!("Equipped {item} on {parent} at {port}.{}", if done.replayed { " (already applied)" } else { "" });
+        Ok((text, (before, Some(json!({ "worn_by": parent, "port": port })))))
+    })
+    .await;
+    back(&app, id, INVENTORY_PAGE, result)
+}
+
+/// Takes a worn item of the offline player off, into the inventory picked.
+async fn item_unequip(
+    State(app): State<Shared>,
+    Extension(admin): Extension<Admin>,
+    Extension(form): Extension<Form>,
+    Path(id): Path<u32>,
+) -> Response {
+    let item = match form.get("geid").parse::<u64>() {
+        Ok(item) if item > 0 => item,
+        _ => return back(&app, id, INVENTORY_PAGE, Err("Which item?".into())),
+    };
+    let to = form.get("to").to_string();
+    if !valid_inventory_id(&to) {
+        return back(&app, id, INVENTORY_PAGE, Err("Pick an inventory to put it in.".into()));
+    }
+    let reason = match reason(&form) {
+        Ok(reason) => reason,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let geid = match offline_player(&app, id).await {
+        Ok(geid) => geid,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let entry = Entry {
+        action: "inventory.unequip".into(),
+        owner: "sc-entitygraph".into(),
+        target_account_id: Some(id),
+        target_geid: Some(geid),
+        detail: json!({ "item": item, "to": to, "reason": reason }),
+        ..Default::default()
+    };
+    let request = AdminUnequipItemRequest { command_id: key(&form), owner_id: geid, geid: item, to_inventory_id: to.clone(), actor: actor(&admin), reason };
+    let result = act(&app, &admin, &form, entry, async {
+        let done = app.owners.unequip_item(request).await?;
+        let text = format!("Took {item} off into {to}.{}", if done.replayed { " (already applied)" } else { "" });
+        Ok((text, (Some(json!({ "worn": true })), Some(json!({ "inventory": to })))))
+    })
+    .await;
+    back(&app, id, INVENTORY_PAGE, result)
+}
+
+/// The most lines, copies of one line, and items a batch may hold.
+const MAX_BATCH_LINES: usize = 30;
+const MAX_COPIES: u32 = 20;
+const MAX_BATCH_ITEMS: u32 = 60;
+
+/// One line of a batch: a class, the amount in each item's stack and how many such items.
+struct BatchLine {
+    guid: String,
+    stack: u32,
+    copies: u32,
+}
+
+/// `guid:amount:copies` lines, comma separated; amount and copies default to 1.
+fn batch_lines(text: &str) -> Result<Vec<BatchLine>, String> {
+    let mut lines = Vec::new();
+    for part in text.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        let mut fields = part.split(':');
+        let guid = fields.next().unwrap_or("").to_lowercase();
+        let number = |field: Option<&str>, max: u32| match field {
+            None | Some("") => Ok(1),
+            Some(text) => text.parse::<u32>().ok().filter(|n| (1..=max).contains(n)).ok_or_else(|| format!("{part}: a number from 1 to {max}.")),
+        };
+        let (stack, copies) = (number(fields.next(), MAX_STACK)?, number(fields.next(), MAX_COPIES)?);
+        if !valid_class(&guid) || fields.next().is_some() {
+            return Err(format!("{part}: a class GUID, then the amount and copies."));
+        }
+        lines.push(BatchLine { guid, stack, copies });
+    }
+    if lines.is_empty() {
+        return Err("Add some items first.".into());
+    }
+    if lines.len() > MAX_BATCH_LINES || lines.iter().map(|line| line.copies).sum::<u32>() > MAX_BATCH_ITEMS {
+        return Err(format!("At most {MAX_BATCH_LINES} lines and {MAX_BATCH_ITEMS} items at once."));
+    }
+    Ok(lines)
+}
+
+/// Gives several items under one reason: each line is `copies` new items of `stack` each. An item that does not stack
+/// (the game's stack limit, `catalog::stack_limit`) takes no amount above 1. Each item has its own command id, so a retried
+/// form adds nothing twice.
+async fn item_add_batch(
+    State(app): State<Shared>,
+    Extension(admin): Extension<Admin>,
+    Extension(form): Extension<Form>,
+    Path(id): Path<u32>,
+) -> Response {
+    let inventory = form.get("inventory").to_string();
+    if !valid_inventory_id(&inventory) {
+        return back(&app, id, INVENTORY_PAGE, Err("Pick an inventory.".into()));
+    }
+    let lines = match batch_lines(form.get("items")) {
+        Ok(lines) => lines,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let reason = match reason(&form) {
+        Ok(reason) => reason,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    // Every class must exist, and an amount needs a class that stacks, before anything is added.
+    let mut named = Vec::new();
+    for line in &lines {
+        let search = ClassSearch { query: line.guid.clone(), limit: 1, ..Default::default() };
+        let class = match app.owners.search_classes(search).await {
+            Ok(found) => found.into_iter().find(|class| class.guid.eq_ignore_ascii_case(&line.guid)),
+            Err(status) => return back(&app, id, INVENTORY_PAGE, Err(format!("sc-entitygraph: {}", status.message()))),
+        };
+        let Some(class) = class else { return back(&app, id, INVENTORY_PAGE, Err(format!("No class {}: run sc-admin seed.", line.guid))) };
+        let limit = crate::catalog::stack_limit(&class.item_type, class.stackable);
+        if line.stack > limit.max(1) {
+            let text = if limit == 0 { format!("{} does not stack: one per item.", class.display_name) } else { format!("{} stacks to {limit}.", class.display_name) };
+            return back(&app, id, INVENTORY_PAGE, Err(text));
+        }
+        named.push(if class.display_name.is_empty() { class.class_name } else { class.display_name });
+    }
+    let geid = match offline_player(&app, id).await {
+        Ok(geid) => geid,
+        Err(text) => return back(&app, id, INVENTORY_PAGE, Err(text)),
+    };
+    let listed: Vec<Value> = lines.iter().zip(&named).map(|(line, name)| json!({ "class": line.guid, "name": name, "stack": line.stack, "copies": line.copies })).collect();
+    let entry = Entry {
+        action: "inventory.add".into(),
+        owner: "sc-entitygraph".into(),
+        target_account_id: Some(id),
+        target_geid: Some(geid),
+        detail: json!({ "items": listed, "inventory": inventory, "reason": reason }),
+        ..Default::default()
+    };
+    let base = key(&form);
+    let result = act(&app, &admin, &form, entry, async {
+        let total: u32 = lines.iter().map(|line| line.copies).sum();
+        let (mut done, mut added) = (0u32, Vec::new());
+        for (line, name) in lines.iter().zip(&named) {
+            for _ in 0..line.copies {
+                let request = AdminAddItemRequest {
+                    command_id: format!("{base}:{done}"),
+                    owner_id: geid,
+                    inventory_id: inventory.clone(),
+                    entity_class_guid: line.guid.clone(),
+                    stack_size: line.stack,
+                    actor: actor(&admin),
+                    reason: reason.clone(),
+                };
+                match app.owners.add_item(request).await {
+                    Ok(reply) => added.push(json!({ "geid": reply.geid, "class": line.guid, "name": name, "stack": line.stack })),
+                    Err(status) => return Err(Status::new(status.code(), format!("added {done} of {total}, then {name}: {}", status.message()))),
+                }
+                done += 1;
+            }
+        }
+        let summary = lines.iter().zip(&named).map(|(line, name)| if line.stack > 1 { format!("{} {name}", line.stack * line.copies) } else { format!("{}x {name}", line.copies) }).collect::<Vec<_>>().join(", ");
+        Ok((format!("Added {done} item{} to {inventory}: {summary}.", if done == 1 { "" } else { "s" }), (None, Some(json!({ "inventory": inventory, "items": added })))))
     })
     .await;
     back(&app, id, INVENTORY_PAGE, result)

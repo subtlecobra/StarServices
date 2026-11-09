@@ -156,6 +156,13 @@ mod tests {
         ) -> Result<tonic::Response<sc_api::internal::ResolveSessionResponse>, Status> {
             Ok(tonic::Response::new(sc_api::internal::ResolveSessionResponse::default()))
         }
+
+        async fn report_disconnect(
+            &self,
+            _: tonic::Request<sc_api::internal::PlayerDisconnect>,
+        ) -> Result<tonic::Response<sc_api::internal::ReportDisconnectResponse>, Status> {
+            Err(Status::unimplemented("report_disconnect"))
+        }
     }
 
     #[tokio::test]

@@ -162,3 +162,95 @@ written before are counted again on each inventory's next change. Seed again (th
 and items take no room unless their stowed edge names it. The admin calls need nothing new in the database: the GEID
 counter is made on the first item added, and sc-admin-web needs this sc-entitygraph before it (the admin calls are
 new RPCs). Adding by class needs the seeded classes.
+
+## Equipping
+
+How a player's worn gear is modelled, persisted and changed. Marked *(inferred)* where the game's data does not say.
+
+### What worn means
+
+A worn item is an entity with an `ATTACHED_TO(1)` edge to a port of another worn item, the body to the player's
+`Body_ItemPort`. It is not stowed (`stowed` false, no `STOWED_IN` edge, no inventory). A stowed item is in an inventory
+(`STOWED_IN(2)`). An item is one or the other: equipping is moving it from a stowed edge to an attached edge in one
+transaction, taking it off is the way back. The edge keeps only the CRC of the port's name (`attachmentPortCrc`, CRC-32C of
+the lowercased name, what the client keys its ports by); the name comes from the parent's class.
+
+```
+player --Body_ItemPort-- body --Armor_Undersuit-- undersuit --Armor_Torso-- torso --backpack-- backpack
+                                                          \--wep_sidearm-- pistol --magazine_attach-- magazine
+```
+
+What hangs from an item stays on it when it is taken off: a torso piece taken off arrives in the inventory with its
+backpack and weapons still attached to it. Its occupancy is its own class's.
+
+### Ports, from the game's data
+
+Each item class has `SItemPortContainerComponentParams.Ports` (`SItemPortDef`): `Name`, `MinSize`..`MaxSize` (the sizes of
+`AttachDef.Size` it takes), `Types` (an item type, optionally some sub types), `RequiredPortTags` (tags the item must have),
+`PortTags` (what the port offers items whose `AttachDef.RequiredTags` ask for it) and `Flags`. The seed keeps these on the
+class (`entity_classes.ports`) for the classes of what a character carries (`Char_*`, `WeaponPersonal`, `MobiGlas`,
+`Gadget`; not the ports of ships), with the item's `attachSize`, `attachTags` and `requiredTags`. 4.10.2, DataCore:
+
+| Parent class | Ports (sizes) and what they take |
+|---|---|
+| Player (`Body_ItemPort`) | the body `Char_Body` (the loadout's root; the player entity has no class of ports in the seed) |
+| Body (`body_01_noMagicPocket`) | `Armor_Undersuit` 1..1 `Char_Armor_Undersuit`; `Clothing_Feet`/`Hands`/`Legs`/`Torso_0` 1..1 their `Char_Clothing_*` type; `Clothing_Torso_1` 1..2 `Char_Clothing_Torso_1`; `Head_ItemPort` `Char_Head`; `lens_attach`; `mobiglas_attach` `MobiGlas`; `weapon_attach_hand_left/right`; `inventory_pocket(_2)`; `restraint_attach*` |
+| Undersuit (`rsi_odyssey_undersuit_01_01_01`) | `Armor_Torso`, `Armor_Arms`, `Armor_Legs`, `Armor_Helmet` (1..1, the `Char_Armor_*` type), `wep_sidearm` 1..1 `WeaponPersonal` Small, `wep_stocked_3` 2..5 `WeaponPersonal` Medium/Large, `medPen_attach_1` and `oxyPen_attach_1` `FPS_Consumable`, `magazine_attach_1/2` `WeaponAttachment` Magazine, `utility_attach_1` `WeaponPersonal` Gadget or `RemovableChip` Hacking |
+| Torso armor (`..._core_...`) | `wep_stocked_2` 2..4 and `wep_stocked_3` 2..5 (`WeaponPersonal` Medium (and Large on 3), `FPS_Deployable` Medium, `WeaponPersonal` Gadget), `magazine_attach_1..6`, `grenade_attach_1..3` 1..1 (`WeaponPersonal` Grenade, `FPS_Deployable` Small), `backpack` 1..2 `Char_Armor_Backpack` requiring tag `$backpack`, `gadget_attach_1` `Gadget` |
+| Backpack | `wep_stocked_2/3`, `gadget_attach_1` |
+| A weapon | `magazine_attach` `WeaponAttachment` Magazine requiring the weapon's own tag, `optics_attach` IronSight, ... |
+
+Sizes of items read: pistol `WeaponPersonal` Small size 1, rifle Medium size 2, medpen `FPS_Consumable` MedPack size 1,
+magazine size 1, armor size 1. The default loadout's port names (`Armor_Undersuit`, `wep_sidearm`, `medPen_attach_1`,
+`magazine_attach_1`) are all ports of these classes.
+
+`equip::fits` (sc-entitygraph): the item's `itemType` is one of the port's `Types`, and its sub type one of that type's
+sub types when it lists some; its `attachSize` is within `minSize..maxSize` (not checked for a class seeded without one); it carries each of the
+port's `requiredPortTags` (tags compared without case, a leading `$` dropped *(inferred: `$backpack` against the tag
+`backpack`)*), and the port offers each of the item's `requiredTags`. A sub type of `''` in the data (`Grenade`, `''`) is dropped.
+Ports a person does not equip to are left out *(inferred from the names and flags)*: `Head_ItemPort`, `lens_attach`,
+`mobiglas_attach`, `weapon_attach_hand_*` (what is in a hand), ports flagged `inventoryinternalonly` (the pockets) or
+`restraint_attach`. Only single items equip: a stack is moved out one at a time first.
+
+### Who changes it
+
+- **Offline** (sc-hub says the player is not on a shard): sc-entitygraph, through `AdminEquipItem` and `AdminUnequipItem`
+  (below). Once per command id, in one transaction, with the ownership, loop and capacity checks of every other
+  command: the item must be the player's and stowed, the parent worn by the player, the port free (an occupied port is
+  refused, take the item off first), and a taken-off item must fit the inventory it goes to. Neither call knows whether the
+  player is live (a worn item is not marked with a shard): the caller refuses, as for the other admin calls.
+- **Live**: the DGS has authority. The client asks with `pi.RmAuthorityProcessInventoryManagementOperation`, request type
+  Interaction (a port to inventory move) or Store; the DGS decodes `itemEntityId` and `itemPortPath`, checks the same way
+  against its own state, and tells sc-entitygraph with a `Move`/`Attach`/`Detach` command carrying the port CRC (the commands
+  exist; `Plan::equip` and `Plan::unequip` are their equivalents). **Not done**: the request is not decoded beyond its
+  head (see the protocol notes, "Inventory requests of the player"), so the DGS answers "completed" and nothing is stored.
+  The game tests it needs: equip a held pistol and a stowed torso piece in the client, log the request bytes, and
+  compare with `itemEntityId`/`itemPortPath`.
+
+### On join
+
+`EnsureLoadout` still makes the default gear once per loadout (`loadout:v2:<player>:<hash>`), and every join asks for it.
+The answer is now what is worn: the loadout's GEIDs with `0` for an item that was taken off (the DGS leaves it out, and
+whatever hung from it), and `equipped`: the items attached below the loadout's that it did not make, parents before
+children, each with its class CRC, port CRC and parent. The DGS binds those too. A changed loadout (another head) builds new
+default gear and erases the old; what was equipped on the old items is not lost: it is stowed in the player's
+personal inventory. *Not done*: putting it back on the new gear.
+
+A character that never equipped anything gets the default gear as before. Until the entitlements put the
+player's items in the game, the default gear stays what a new player wears.
+
+### Calls
+
+| Call | What |
+|---|---|
+| `AdminEquipment` | The worn items (parents before children, with the port each hangs from, and whether it can be taken off) and the equippable ports of each, with the occupant and the player's stowed single items that fit |
+| `AdminEquipItem` | Attach a stowed item to `<worn item>:<port name>` |
+| `AdminUnequipItem` | Detach a worn item and stow it, with what hangs from it, in an inventory (created on first need as for a move) |
+
+sc-admin-web shows the worn items on the Inventory tab, an "Equip on" chooser in the row of each item that fits a free
+port (the picker lists only free compatible ports), and a "Take off" form with the inventory tree to put it in.
+
+### Deploying
+
+Seed again so that classes have `attachSize`, `attachTags`, `requiredTags` and `ports` (until then nothing can be equipped:
+the port list is empty). sc-entitygraph before sc-admin-web and sc-dgs (new RPCs, the new `EnsureLoadout` fields).

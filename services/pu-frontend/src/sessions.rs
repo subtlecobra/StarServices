@@ -106,7 +106,7 @@ async fn ask(mut hub: HubInternalClient<Channel>, session: &[u8]) -> Option<Answ
             }
             let location = (response.home_location != 0).then_some(response.home_location);
             info!(account = response.account_id, nickname = %response.nickname, home = location, "session resolved");
-            Some(Answer::Known(Identity { account: Some(u64::from(response.account_id)), location }))
+            Some(Answer::Known(Identity { account: Some(u64::from(response.account_id)), location, geid: (response.geid != 0).then_some(response.geid) }))
         }
         Ok(Err(status)) => {
             warn!(error = status.message(), "session lookup failed");
@@ -125,9 +125,9 @@ pub fn test_identity(session: &[u8]) -> Option<Identity> {
     let fields = std::str::from_utf8(session).ok().and_then(|text| text.strip_prefix("hub-"));
     let (account, location) = match fields {
         Some(fields) => fields.split_once('-').map_or((fields, None), |(account, home)| (account, Some(home))),
-        None => return Some(Identity { account: None, location: None }),
+        None => return Some(Identity { account: None, location: None, geid: None }),
     };
-    Some(Identity { account: account.parse().ok(), location: location.and_then(|home| home.parse().ok()) })
+    Some(Identity { account: account.parse().ok(), location: location.and_then(|home| home.parse().ok()), geid: None })
 }
 
 #[cfg(not(test))]
@@ -146,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn a_known_session_gives_its_identity() {
         let sessions = hub_sessions();
-        let identity = Identity { account: Some(1_100_001), location: Some(1_105_811_199) };
+        let identity = Identity { account: Some(1_100_001), location: Some(1_105_811_199), geid: None };
         sessions.answers.lock().unwrap().insert(b"0123".to_vec(), (Answer::Known(identity), Instant::now()));
         let found = sessions.identity(b"0123").unwrap();
         assert_eq!((found.account, found.location), (Some(1_100_001), Some(1_105_811_199)));

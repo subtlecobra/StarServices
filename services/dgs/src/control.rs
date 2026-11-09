@@ -24,15 +24,17 @@ use tracing::{info, warn};
 
 use crate::{
     appearance::{self, Appearance},
+    departure,
     entity::Bind,
     frames::FrameMeter,
     holdings::Holdings,
     interaction::{Interaction, CALL_ELEVATOR, PANEL_ON_INTERACT, PANEL_REQUEST_INTERACT},
+    inventory::{completed_args, Request as InventoryRequest, COMPLETED_AFTER_PROCESS},
     location::{fallback_placement, governed_place, planets, player_home, CallPanel, Governed, HomeHangar},
     movement::{Bounds, ClientPosition, Input, Movement, Movements, SMALL_FRONT_HANGAR_GRID},
     outbox::{Outbox, Sent},
     transit::elevators::Elevators,
-    loadout::{self, loadout_binds, loadout_binds_with, DEFAULT_LOADOUT, Item},
+    loadout::{self, equipped_binds, loadout_binds, loadout_binds_with, DEFAULT_LOADOUT, Item},
     player::{badges_snapshot, player_geid, player_index, player_record},
     solar_system::{planet_id, quantum_grid_bind, solar_system_bind, SOLAR_SYSTEMS},
     universe::first_binds,
@@ -137,6 +139,10 @@ pub fn player_entities_wearing(account: u64, location: Option<u32>, planet_zone:
     })
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
+
 /// How long a join waits for sc-entitygraph to say what the player wears.
 const ITEMS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -227,6 +233,19 @@ impl Control {
         Ok(Response::new(EntityMethodResponse { to_caller: vec![answer] }))
     }
 
+    /// A call on the client's own player other than its action frames: an inventory request is completed, so that the
+    /// client goes on to the next one. Anything else gets no answer.
+    fn player_method(&self, request: &EntityMethodRequest) -> EntityMethodResponse {
+        let Some(inventory) = InventoryRequest::parse(&request.args, request.player_id) else {
+            info!(player = request.player_id, method = request.method, args = request.args.len(), "a call on the player that is not an inventory request");
+            return EntityMethodResponse::default();
+        };
+        let result = inventory.succeeds();
+        info!(player = request.player_id, method = request.method, request_id = inventory.request_id, kind = inventory.kind, result, "inventory request completed");
+        let answer = EntityMethodCall { entity_id: request.entity_id, method: request.method + COMPLETED_AFTER_PROCESS, args: completed_args(result, inventory.request_id, 0) };
+        EntityMethodResponse { to_caller: vec![answer] }
+    }
+
     pub fn new(settings: Settings) -> Self {
         let system_root = format!("{}system", settings.system.to_ascii_lowercase());
         let owned = settings.roots.contains(&system_root);
@@ -267,7 +286,7 @@ impl Control {
 
     /// The ids sc-entitygraph keeps the player's items under, one per item of `entities.loadout`: made on the first join
     /// with this loadout and the same afterwards. `None` without sc-entitygraph or while it cannot say.
-    async fn item_ids(&self, entities: &PlayerEntities) -> Option<Vec<u64>> {
+    async fn item_ids(&self, entities: &PlayerEntities) -> Option<(Vec<u64>, Vec<sc_api::internal::EquippedItem>)> {
         let mut graph = self.graph.clone()?;
         let player_id = entities.player.entity_id;
         let request = EnsureLoadoutRequest {
@@ -279,7 +298,7 @@ impl Control {
         match tokio::time::timeout(ITEMS_TIMEOUT, graph.ensure_loadout(request)).await.unwrap_or_else(|_| Err(tonic::Status::deadline_exceeded("no answer"))) {
             Ok(reply) => {
                 let reply = reply.into_inner();
-                (reply.geids.len() == entities.loadout.len()).then_some(reply.geids)
+                (reply.geids.len() == entities.loadout.len()).then_some((reply.geids, reply.equipped))
             }
             Err(status) => {
                 warn!(player_id, %status, "no stored items from sc-entitygraph, the player wears made up ones");
@@ -397,8 +416,9 @@ impl DgsControl for Control {
         let Some(mut entities) = player_entities_wearing(request.account_id, request.location_id, self.settings.planet_zone, wearing) else {
             return Err(Status::invalid_argument(format!("account {} has no character", request.account_id)));
         };
-        if let Some(ids) = self.item_ids(&entities).await {
+        if let Some((ids, equipped)) = self.item_ids(&entities).await {
             entities.items = loadout_binds_with(entities.player.entity_id, &entities.loadout, &ids);
+            entities.items.extend(equipped_binds(&equipped));
         }
         let badges = self.badges(request.account_id).await;
         if !badges.is_empty() {
@@ -437,7 +457,8 @@ impl DgsControl for Control {
     async fn leave_player(&self, request: Request<LeavePlayerRequest>) -> Result<Response<LeavePlayerResponse>, Status> {
         let request = request.into_inner();
         let mut holdings = self.holdings.lock().unwrap();
-        let released = holdings.leave(request.replicant, request.session);
+        let left = holdings.leave_account(request.replicant, request.session);
+        let released = left.map_or(0, |(_, entities)| entities);
         self.forget_movements(&holdings);
         drop(holdings);
         self.panels.lock().unwrap().retain(|_, held| (held.replicant, held.session) != (request.replicant, request.session));
@@ -447,7 +468,16 @@ impl DgsControl for Control {
         }
         drop(elevators);
         self.outbox.close((request.replicant, request.session));
-        info!(session = request.session, released, "player left");
+        info!(session = request.session, released, reason = request.reason, client_code = request.client_code, "player left");
+        // The entities this DGS held live go back to sc-entitygraph. Only a session this DGS held has any, and a replaced one
+        // belongs to the connection that took over.
+        if let (Some((account, _)), Some(graph)) = (left, &self.graph) {
+            if let (true, Some(geid)) = (departure::releases(request.reason), player_geid(account)) {
+                let at_ms = if request.at_ms == 0 { now_ms() } else { request.at_ms };
+                let event = departure::event(&self.settings.shard_id, request.replicant, request.session, account, geid, request.reason, request.client_code, at_ms);
+                departure::release(graph.clone(), event);
+            }
+        }
         Ok(Response::new(LeavePlayerResponse { released }))
     }
 
@@ -467,6 +497,9 @@ impl DgsControl for Control {
     /// that the client runs the panel's side of it. Anything else on a panel is refused, with no answer, as the game does.
     async fn entity_method(&self, request: Request<EntityMethodRequest>) -> Result<Response<EntityMethodResponse>, Status> {
         let request = request.into_inner();
+        if request.entity_id == request.player_id {
+            return Ok(Response::new(self.player_method(&request)));
+        }
         let panels = self.panels.lock().unwrap();
         let Some(held) = panels.get(&request.entity_id).filter(|held| (held.replicant, held.session) == (request.replicant, request.session)) else {
             drop(panels);
@@ -517,7 +550,23 @@ mod tests {
     }
 
     fn leave(session: u64) -> Request<LeavePlayerRequest> {
-        Request::new(LeavePlayerRequest { replicant: 1, session })
+        Request::new(LeavePlayerRequest { replicant: 1, session, ..Default::default() })
+    }
+
+    #[tokio::test]
+    async fn an_inventory_request_of_the_player_is_completed_ten_methods_on() {
+        let player = 300_000_100_001u64;
+        let mut args = 5u32.to_le_bytes().to_vec();
+        args.push(7);
+        args.extend(player.to_le_bytes());
+        args.extend([0u8; 40]);
+        let call = EntityMethodRequest { replicant: 1, session: 1, player_id: player, entity_id: player, method: 40, args };
+        let reply = pyro_1().entity_method(Request::new(call)).await.unwrap().into_inner();
+        assert_eq!(reply.to_caller.len(), 1);
+        assert_eq!((reply.to_caller[0].entity_id, reply.to_caller[0].method), (player, 50));
+        assert_eq!(reply.to_caller[0].args, completed_args(true, 5, 0));
+        let other = EntityMethodRequest { replicant: 1, session: 1, player_id: player, entity_id: player, method: 40, args: vec![1, 2, 3] };
+        assert!(pyro_1().entity_method(Request::new(other)).await.unwrap().into_inner().to_caller.is_empty());
     }
 
     #[tokio::test]
@@ -583,6 +632,26 @@ mod tests {
         assert_eq!(reply.released, 36);
         let status = dgs.status();
         assert_eq!((status.players, status.player_entities, status.shard_entities), (0, 0, 3));
+    }
+
+    /// The release to sc-entitygraph runs on its own task: a graph that is not there costs the leave nothing, and a leave
+    /// of a session the DGS does not hold, or of a replaced one, frees nothing and sends nothing.
+    #[tokio::test]
+    async fn a_leave_does_not_wait_for_sc_entitygraph_and_a_replaced_one_changes_nothing() {
+        let endpoint = tonic::transport::Endpoint::from_static("http://127.0.0.1:1");
+        let dgs = pyro_1().with_graph(EntityGraphInternalClient::new(endpoint.connect_lazy()));
+        dgs.join_player(join(1_000_001, None, 7)).await.unwrap();
+        let reason = sc_api::internal::DisconnectReason::Clean as i32;
+        let started = std::time::Instant::now();
+        let reply = dgs.leave_player(Request::new(LeavePlayerRequest { replicant: 1, session: 7, reason, client_code: 30016, at_ms: 5 })).await.unwrap();
+        assert_eq!(reply.into_inner().released, 36);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let late = dgs.leave_player(Request::new(LeavePlayerRequest { replicant: 1, session: 7, reason, ..Default::default() })).await.unwrap();
+        assert_eq!(late.into_inner().released, 0, "a repeat finds nothing");
+        dgs.join_player(join(1_000_001, None, 8)).await.unwrap();
+        let stale = dgs.leave_player(Request::new(LeavePlayerRequest { replicant: 1, session: 7, reason, ..Default::default() })).await.unwrap();
+        assert_eq!(stale.into_inner().released, 0, "the old connection's late leave keeps the new one");
+        assert_eq!(dgs.status().players, 1);
     }
 
     #[tokio::test]

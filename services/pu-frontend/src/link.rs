@@ -14,7 +14,7 @@ use std::{
 };
 
 use sc_api::internal::{
-    dgs_control_client::DgsControlClient, session_update::Update, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall,
+    dgs_control_client::DgsControlClient, hub_internal_client::HubInternalClient, session_update::Update, DisconnectReason, PlayerDisconnect, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall,
     EntityMethodRequest, InputFrame, JoinPlayerRequest, LeavePlayerRequest, SessionUpdate, SessionUpdatesRequest,
     LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerMovement, ShardEntitiesRequest, ShardEntitiesResponse,
 };
@@ -39,6 +39,8 @@ const KEEP_ALIVE_PERIOD: Duration = Duration::from_secs(5);
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(3);
 /// A leave nobody hears only leaves a record behind, so it is not retried for long.
 const LEAVE_ATTEMPTS: u32 = 5;
+/// The Hub is told once as often. A report it never hears is the Hub's own to find: its connection to the client ends too.
+const HUB_ATTEMPTS: u32 = 5;
 
 /// What every client gets, in the order it goes on the wire.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,9 +100,29 @@ enum Command {
 /// A connection's hold on its DGS. Dropping this is what ends it: whichever way a peer goes, its entities are freed.
 pub struct Session {
     commands: UnboundedSender<Command>,
+    ending: Arc<Mutex<End>>,
+}
+
+/// Why a connection ended, as its peer says when it knows. A peer dropped without a word timed out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct End {
+    pub reason: DisconnectReason,
+    /// The client's own cause code from its disconnect notice (30016 for a quit), 0 for none.
+    pub client_code: u32,
+}
+
+impl Default for End {
+    fn default() -> Self {
+        Self { reason: DisconnectReason::Timeout, client_code: 0 }
+    }
 }
 
 impl Session {
+    /// Says why the connection is about to end. The last word counts, and the end itself is the drop of the session.
+    pub fn end(&self, reason: DisconnectReason, client_code: u32) {
+        *self.ending.lock().unwrap() = End { reason, client_code };
+    }
+
     pub fn rejoin(&self) {
         let _ = self.commands.send(Command::Rejoin);
     }
@@ -112,6 +134,12 @@ pub struct Identity {
     /// `None` for a session with no account.
     pub account: Option<u64>,
     pub location: Option<u32>,
+    /// The player's GEID, as the Hub has it, which it needs to free the player's shard slot.
+    pub geid: Option<u64>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 fn reason(dgs: &str, status: &Status) -> String {
@@ -125,12 +153,23 @@ pub struct Link {
     retry: Duration,
     channels: Mutex<HashMap<String, Channel>>,
     events: UnboundedSender<Event>,
+    /// The Hub, which owns sessions and the shard slot, and is told when a connection ends. With none nobody is.
+    hub: Option<HubInternalClient<Channel>>,
+    shard_id: String,
 }
 
 impl Link {
     pub fn new(directory: Directory, events: UnboundedSender<Event>) -> Self {
         let replicant = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-        Self { directory, replicant, retry: RETRY_PERIOD, channels: Mutex::default(), events }
+        Self { directory, replicant, retry: RETRY_PERIOD, channels: Mutex::default(), events, hub: None, shard_id: String::new() }
+    }
+
+    /// Tells the Hub at `address` when a connection of this shard ends (`HubInternal.ReportDisconnect`).
+    pub fn reporting_to(mut self, address: &str, shard_id: &str) -> Result<Self, String> {
+        let endpoint = Endpoint::from_shared(address.to_string()).map_err(|e| format!("--hub {address}: {e}"))?;
+        self.hub = Some(HubInternalClient::new(endpoint.connect_timeout(CONNECT_TIMEOUT).timeout(CALL_TIMEOUT).connect_lazy()));
+        self.shard_id = shard_id.to_string();
+        Ok(self)
     }
 
     #[cfg(test)]
@@ -233,9 +272,9 @@ impl Link {
         }
     }
 
-    async fn leave(&self, dgs: &str, session: u64) {
+    async fn leave(&self, dgs: &str, session: u64, end: End, at_ms: u64) {
         for _ in 0..LEAVE_ATTEMPTS {
-            let request = LeavePlayerRequest { replicant: self.replicant, session };
+            let request = LeavePlayerRequest { replicant: self.replicant, session, reason: end.reason as i32, client_code: end.client_code, at_ms };
             let result = match self.client(dgs) {
                 Ok(mut client) => client.leave_player(Request::new(request)).await.map_err(|status| self.failed(dgs, &status)),
                 Err(reason) => Err(reason),
@@ -252,8 +291,45 @@ impl Link {
         warn!(dgs, session, "leave not heard, the DGS keeps this player's record until it is replaced");
     }
 
+    /// The event the Hub is told, and the DGS's leave carries the same key. `None` for a connection that is no one's, or that
+    /// a newer connection of the same player took over: the player has not left.
+    fn disconnect(&self, session: u64, identity: Identity, end: End, connected_at_ms: u64, at_ms: u64) -> Option<PlayerDisconnect> {
+        let (account, geid) = (identity.account?, identity.geid?);
+        (end.reason != DisconnectReason::Replaced).then(|| PlayerDisconnect {
+            event_id: format!("{}:{session}", self.replicant),
+            reason: end.reason as i32,
+            account_id: u32::try_from(account).unwrap_or_default(),
+            geid,
+            shard_id: self.shard_id.clone(),
+            client_code: end.client_code,
+            connected_at_ms,
+            at_ms,
+        })
+    }
+
+    /// Tells the Hub, on a task of its own: the end of a connection is never held up by a Hub that is slow or away.
+    fn report(self: &Arc<Self>, event: PlayerDisconnect) {
+        let Some(hub) = self.hub.clone() else { return };
+        let retry = self.retry;
+        tokio::spawn(async move {
+            for attempt in 1..=HUB_ATTEMPTS {
+                match hub.clone().report_disconnect(Request::new(event.clone())).await {
+                    Ok(reply) => {
+                        let reply = reply.into_inner();
+                        info!(event = %event.event_id, recorded = reply.recorded, slot_freed = reply.slot_freed, reason = ?event.reason(), "the Hub knows the player left");
+                        return;
+                    }
+                    Err(status) if attempt < HUB_ATTEMPTS => debug!(event = %event.event_id, %status, "the Hub did not hear the disconnect"),
+                    Err(status) => warn!(event = %event.event_id, %status, "the Hub did not hear the disconnect: it ends the player's session with its own connection"),
+                }
+                sleep(retry).await;
+            }
+        });
+    }
+
     /// One connection, from asking for its entities until its peer is dropped, when it frees them.
-    async fn run(self: Arc<Self>, from: SocketAddr, session: u64, identity: Identity, mut commands: UnboundedReceiver<Command>) {
+    async fn run(self: Arc<Self>, from: SocketAddr, session: u64, identity: Identity, ending: Arc<Mutex<End>>, mut commands: UnboundedReceiver<Command>) {
+        let connected_at_ms = now_ms();
         let asked = Mutex::new(None);
         let joining = async {
             let world = self.persist(from, "solar systems", || self.world()).await;
@@ -317,9 +393,15 @@ impl Link {
                 }
             }
         }
+        let end = *ending.lock().unwrap();
+        let at_ms = now_ms();
+        info!(%from, session, reason = ?end.reason, client_code = end.client_code, "connection ended");
+        if let Some(event) = self.disconnect(session, identity, end, connected_at_ms, at_ms) {
+            self.report(event);
+        }
         let dgs = asked.lock().unwrap().clone();
         if let Some(dgs) = dgs {
-            self.leave(&dgs, session).await;
+            self.leave(&dgs, session, end, at_ms).await;
         }
     }
 
@@ -339,8 +421,9 @@ impl Link {
     /// Starts a connection's calls. Needs a runtime, so the packet path does this and not `Peer::new`.
     pub fn open(self: &Arc<Self>, from: SocketAddr, session: u64, identity: Identity) -> Session {
         let (commands, receiver) = unbounded_channel();
-        tokio::spawn(self.clone().run(from, session, identity, receiver));
-        Session { commands }
+        let ending = Arc::new(Mutex::new(End::default()));
+        tokio::spawn(self.clone().run(from, session, identity, ending.clone(), receiver));
+        Session { commands, ending }
     }
 
     /// Hands a player's input frames to the DGS that holds it, and tells the loop where the player now is. One call per
@@ -391,5 +474,104 @@ impl Link {
             let status = reply.map(tonic::Response::into_inner).inspect_err(|reason| warn!(%reason, "DGS not answering")).ok();
             let _ = link.events.send(Event::Status { dgs, status });
         });
+    }
+}
+
+/// What the Hub is told when a connection ends, against a Hub that records the reports it gets.
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use sc_api::internal::{
+        hub_internal_server::{HubInternal, HubInternalServer},
+        GetPlayerShardRequest, GetPlayerShardResponse, ReportDisconnectResponse, ResolveSessionRequest, ResolveSessionResponse,
+    };
+    use tokio::time::timeout;
+    use tonic::transport::Server;
+
+    use super::*;
+
+    struct FakeHub {
+        reports: UnboundedSender<PlayerDisconnect>,
+        /// Calls refused before one is taken.
+        refuse: AtomicU32,
+    }
+
+    #[tonic::async_trait]
+    impl HubInternal for FakeHub {
+        async fn get_player_shard(&self, _: Request<GetPlayerShardRequest>) -> Result<tonic::Response<GetPlayerShardResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+        async fn resolve_session(&self, _: Request<ResolveSessionRequest>) -> Result<tonic::Response<ResolveSessionResponse>, Status> {
+            Err(Status::unimplemented(""))
+        }
+        async fn report_disconnect(&self, request: Request<PlayerDisconnect>) -> Result<tonic::Response<ReportDisconnectResponse>, Status> {
+            if self.refuse.load(Ordering::SeqCst) > 0 {
+                self.refuse.fetch_sub(1, Ordering::SeqCst);
+                return Err(Status::unavailable("restarting"));
+            }
+            let _ = self.reports.send(request.into_inner());
+            Ok(tonic::Response::new(ReportDisconnectResponse { recorded: true, slot_freed: true }))
+        }
+    }
+
+    async fn link(refuse: u32) -> (Arc<Link>, tokio::sync::mpsc::UnboundedReceiver<PlayerDisconnect>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (reports, received) = unbounded_channel();
+        let hub = HubInternalServer::new(FakeHub { reports, refuse: AtomicU32::new(refuse) });
+        tokio::spawn(Server::builder().add_service(hub).serve_with_incoming(tonic::transport::server::TcpIncoming::from(listener)));
+        let (events, _) = unbounded_channel();
+        let directory = Directory::parse("shard-a", "pyro:pyro-1=pyrosystem", "").unwrap();
+        let link = Link::new(directory, events).reporting_to(&format!("http://{address}"), "shard-a").unwrap().retrying_every(Duration::from_millis(5));
+        (Arc::new(link), received)
+    }
+
+    fn player() -> Identity {
+        Identity { account: Some(1_000_001), location: None, geid: Some(300_000_000_001) }
+    }
+
+    fn open(link: &Arc<Link>, session: u64, identity: Identity) -> Session {
+        link.open("127.0.0.1:1".parse().unwrap(), session, identity)
+    }
+
+    #[tokio::test]
+    async fn a_client_that_said_it_was_going_is_reported_clean_with_its_code() {
+        let (link, mut reports) = link(0).await;
+        let session = open(&link, 7, player());
+        session.end(DisconnectReason::Clean, 30016);
+        drop(session);
+        let event = timeout(Duration::from_secs(5), reports.recv()).await.unwrap().unwrap();
+        assert_eq!((event.reason(), event.client_code, event.shard_id.as_str()), (DisconnectReason::Clean, 30016, "shard-a"));
+        assert_eq!((event.geid, event.account_id), (300_000_000_001, 1_000_001));
+        assert_eq!(event.event_id, format!("{}:7", link.replicant));
+        assert!(event.at_ms >= event.connected_at_ms && event.connected_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_goes_silent_is_a_timeout() {
+        let (link, mut reports) = link(0).await;
+        drop(open(&link, 8, player()));
+        let event = timeout(Duration::from_secs(5), reports.recv()).await.unwrap().unwrap();
+        assert_eq!(event.reason(), DisconnectReason::Timeout);
+    }
+
+    #[tokio::test]
+    async fn a_hub_that_is_away_for_a_moment_still_hears_it() {
+        let (link, mut reports) = link(2).await;
+        drop(open(&link, 9, player()));
+        let event = timeout(Duration::from_secs(5), reports.recv()).await.unwrap().unwrap();
+        assert_eq!(event.event_id, format!("{}:9", link.replicant));
+    }
+
+    #[tokio::test]
+    async fn a_replaced_connection_and_one_with_no_player_report_nothing() {
+        let (link, mut reports) = link(0).await;
+        let replaced = open(&link, 10, player());
+        replaced.end(DisconnectReason::Replaced, 0);
+        drop(replaced);
+        drop(open(&link, 11, Identity { account: None, location: None, geid: None }));
+        drop(open(&link, 12, Identity { geid: None, ..player() }));
+        assert!(timeout(Duration::from_millis(300), reports.recv()).await.is_err());
     }
 }

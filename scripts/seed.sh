@@ -45,8 +45,17 @@ for region in "${regions[@]}"; do
   fi
 done
 
-cargo build --release -p sc-admin
+# Build sc-admin only when the one built is not this source's: another version, or a source of it or of a crate it uses
+# changed since (a release candidate keeps its version while it changes).
 admin=target/x86_64-unknown-linux-musl/release/sc-admin
+wanted=$(sed -n 's/^version = "\(.*\)"$/\1/p' tools/sc-admin/Cargo.toml | head -1)
+built=$([[ -x $admin ]] && "$admin" --version 2>/dev/null | awk '{print $2}' || true)
+if [[ $built == "$wanted" && -z $(find tools/sc-admin crates proto Cargo.toml Cargo.lock -type f \( -name '*.rs' -o -name '*.proto' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$admin" -print -quit) ]]; then
+  echo "sc-admin $built is up to date"
+else
+  echo "building sc-admin ${wanted} (built: ${built:-none})"
+  cargo build --release -p sc-admin
+fi
 
 forwards=()
 stop_forwards() {

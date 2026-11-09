@@ -11,7 +11,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
-use sc_api::internal::{ AccountSummary, GameBadge, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
+use sc_api::internal::{ AccountSummary, GameBadge, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipPort, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminWornItem, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter, EntitlementStatus},
@@ -25,13 +25,15 @@ use tower::ServiceExt;
 
 use crate::{
     audit::{AuditLog, MemoryAudit},
-    backend::{Identity, Owners},
+    backend::{ClassSearch, Identity, Owners},
     web::{router, App},
 };
 
 const ADMIN: u32 = 1_000_001;
 const PLAYER: u32 = 1_000_002;
 const PLAYER_GEID: u64 = 300_000_000_002;
+/// A class that stacks (a consumable); the crate the fake finds otherwise does not.
+const MEDPEN_GUID: &str = "0a0b0c0d-0000-0000-0000-000000000002";
 /// An account sc-identity knows no player for.
 const NO_PLAYER: u32 = 1_000_003;
 const CSRF: &str = "c5rf-token-value";
@@ -300,8 +302,65 @@ impl Owners for Fake {
         Ok(AdminRemoveItemResponse { removed: true, erased: 2, replayed: false })
     }
 
-    async fn search_classes(&self, query: &str) -> Result<Vec<AdminEntityClass>, Status> {
-        self.called(format!("classes {query}"));
+    async fn equipment(&self, geid: u64) -> Result<AdminEquipmentResponse, Status> {
+        assert_eq!(geid, PLAYER_GEID);
+        let worn = |geid: u64, name: &str, kind: &str, parent: u64, port: &str, depth: u32, removable: bool| AdminWornItem {
+            geid,
+            class_name: name.into(),
+            display_name: name.to_uppercase(),
+            item_type: kind.into(),
+            parent_geid: parent,
+            port: port.into(),
+            depth,
+            removable,
+            ..Default::default()
+        };
+        Ok(AdminEquipmentResponse {
+            worn: vec![
+                worn(700, "body", "Char_Body", PLAYER_GEID, "Body_ItemPort", 1, false),
+                worn(701, "undersuit", "Char_Armor_Undersuit", 700, "Armor_Undersuit", 2, true),
+                worn(702, "pistol", "WeaponPersonal", 701, "wep_sidearm", 3, true),
+            ],
+            ports: vec![
+                AdminEquipPort { parent_geid: 701, parent_name: "UNDERSUIT".into(), port: "wep_sidearm".into(), occupant_geid: 702, occupant_name: "PISTOL".into(), candidates: vec![400_000_000_002] },
+                AdminEquipPort { parent_geid: 701, parent_name: "UNDERSUIT".into(), port: "medPen_attach_1".into(), candidates: vec![400_000_000_002], ..Default::default() },
+            ],
+        })
+    }
+
+    async fn equip_item(&self, request: AdminEquipItemRequest) -> Result<AdminEquipItemResponse, Status> {
+        self.called(format!("equip {} {} {} {} {}", request.command_id, request.owner_id, request.geid, request.parent_geid, request.port));
+        let mut applied = self.inventory_commands.lock().unwrap();
+        let replayed = applied.contains_key(&request.command_id);
+        applied.entry(request.command_id).or_insert(request.geid);
+        Ok(AdminEquipItemResponse { replayed })
+    }
+
+    async fn unequip_item(&self, request: AdminUnequipItemRequest) -> Result<AdminUnequipItemResponse, Status> {
+        self.called(format!("unequip {} {} {} -> {}", request.command_id, request.owner_id, request.geid, request.to_inventory_id));
+        let mut applied = self.inventory_commands.lock().unwrap();
+        let replayed = applied.contains_key(&request.command_id);
+        applied.entry(request.command_id).or_insert(request.geid);
+        Ok(AdminUnequipItemResponse { replayed })
+    }
+
+    async fn search_classes(&self, search: ClassSearch) -> Result<Vec<AdminEntityClass>, Status> {
+        let pairs = |list: &[(String, Vec<String>)]| list.iter().map(|(item_type, subs)| if subs.is_empty() { item_type.clone() } else { format!("{item_type}:{}", subs.join("|")) }).collect::<Vec<_>>().join("+");
+        self.called(format!("classes {} {} {} {} {}", search.query, pairs(&search.any_of), pairs(&search.none_of), search.item_sub_types.join("+"), search.named_only));
+        if search.query.starts_with(MEDPEN_GUID) {
+            return Ok(vec![AdminEntityClass {
+                guid: MEDPEN_GUID.into(),
+                class_name: "medpen_01".into(),
+                display_name: "MedPen".into(),
+                item_type: "FPS_Consumable".into(),
+                item_sub_type: "MedPack".into(),
+                stackable: true,
+                ..Default::default()
+            }]);
+        }
+        if search.query.starts_with("dead") {
+            return Ok(Vec::new());
+        }
         Ok(vec![AdminEntityClass {
             guid: "c0ffee00-0000-0000-0000-000000000001".into(),
             class_name: "crate<1>".into(),
@@ -604,6 +663,89 @@ async fn an_admin_cannot_lock_themselves_out() {
 }
 
 #[tokio::test]
+async fn the_catalog_asks_for_the_classes_of_the_chosen_category_and_its_sub_filters() {
+    let site = site();
+    let sidearms = site.get(&format!("/admin/accounts/{PLAYER}/inventory/classes?q=cod&cat=weapons&opt=sidearms"), Some("admin")).await;
+    assert_eq!(sidearms.status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&sidearms.body).unwrap();
+    assert_eq!(json["classes"][0]["guid"], "c0ffee00-0000-0000-0000-000000000001");
+    assert_eq!(json["classes"][0]["container"], true);
+    assert_eq!(json["classes"][0]["stackLimit"], 0, "a crate does not stack");
+    let calls = || site.fake.calls().into_iter().filter(|call| call.starts_with("classes ")).collect::<Vec<_>>();
+    assert_eq!(calls().last().unwrap(), "classes cod WeaponPersonal:Small   true", "only sidearms, and only classes with an English name");
+    async fn get(site: &Site, query: &str) -> Reply {
+        site.get(&format!("/admin/accounts/{PLAYER}/inventory/classes?{query}"), Some("admin")).await
+    }
+
+    // An armor's part and weight together; a group with nothing chosen does not narrow.
+    get(&site, "cat=armor&opt=core,arms,heavy").await;
+    assert_eq!(calls().last().unwrap(), "classes  Char_Armor_Torso+Char_Armor_Arms  Heavy true");
+    get(&site, "cat=armor&opt=light").await;
+    assert_eq!(
+        calls().last().unwrap(),
+        "classes  Char_Armor_Undersuit+Char_Armor_Helmet+Char_Armor_Torso+Char_Armor_Arms+Char_Armor_Legs+Char_Armor_Backpack+Char_Flair  Light+LightArmor true"
+    );
+    // No category: any item. A choice of another category is not taken. Other leaves out what the categories hold.
+    get(&site, "q=x").await;
+    assert_eq!(calls().last().unwrap(), "classes x    true");
+    get(&site, "cat=ammo&opt=heavy").await;
+    assert_eq!(calls().last().unwrap(), "classes  WeaponAttachment:Magazine   true");
+    get(&site, "cat=other").await;
+    let other = calls().last().unwrap().clone();
+    assert!(other.starts_with("classes   WeaponPersonal:") && other.contains("+Char_Armor_Torso+") && other.ends_with(" true"), "{other}");
+    assert_eq!(get(&site, "cat=nonsense").await.status, StatusCode::BAD_REQUEST);
+
+    // The stack limit of a class that stacks.
+    let medpen = get(&site, &format!("q={MEDPEN_GUID}")).await;
+    let json: serde_json::Value = serde_json::from_str(&medpen.body).unwrap();
+    assert_eq!(json["classes"][0]["stackLimit"], 99);
+
+    let anonymous = site.get(&format!("/admin/accounts/{PLAYER}/inventory/classes"), None).await;
+    assert_ne!(anonymous.status, StatusCode::OK, "only for an admin");
+    let script = site.get("/admin/static/inventory.js", None).await;
+    assert_eq!(script.status, StatusCode::OK);
+    assert!(script.body.contains("textContent") && !script.body.contains("innerHTML"), "built from text nodes");
+}
+
+#[tokio::test]
+async fn a_batch_gives_every_item_under_one_reason_and_only_stackable_ones_take_an_amount() {
+    let site = site();
+    let bank = format!("{PLAYER_GEID}:Location:2026442305");
+    let crate_guid = "c0ffee00-0000-0000-0000-000000000001";
+    let path = format!("/admin/accounts/{PLAYER}/inventory/add-batch");
+    // Two crates (separate items), and five medpens in one stack.
+    let items = format!("{crate_guid}:1:2,{MEDPEN_GUID}:5:1");
+    let fields = [("inventory", bank.as_str()), ("items", items.as_str()), ("reason", "event prize")];
+    let reply = site.act(&path, &fields).await;
+    assert!(notice(&reply).contains("Added 3 items") && notice(&reply).contains("2x Cargo crate") && notice(&reply).contains("5 MedPen"), "{}", notice(&reply));
+    let calls = site.fake.calls();
+    assert_eq!(calls.iter().filter(|call| call.starts_with("add ")).count(), 3);
+    assert!(calls.contains(&format!("add admin:{RID}:0 {PLAYER_GEID} {bank} {crate_guid} x1")));
+    assert!(calls.contains(&format!("add admin:{RID}:1 {PLAYER_GEID} {bank} {crate_guid} x1")), "a copy is its own item");
+    assert!(calls.contains(&format!("add admin:{RID}:2 {PLAYER_GEID} {bank} {MEDPEN_GUID} x5")), "a stack is one item");
+    let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
+    assert_eq!((record.entry.action.as_str(), record.outcome.as_str()), ("inventory.add", "ok"));
+    assert_eq!(record.after.unwrap()["items"].as_array().unwrap().len(), 3);
+
+    // An amount for an item that does not stack, above a stack's limit, an unknown class, nothing at all: nothing added.
+    let refused = site_with(MemoryAudit::default());
+    for (items, expected) in [
+        (format!("{crate_guid}:3"), "does not stack"),
+        (format!("{MEDPEN_GUID}:100"), "stacks to 99"),
+        ("dead0000-0000-0000-0000-000000000000".to_string(), "No class"),
+        (String::new(), "Add some items"),
+        (format!("{crate_guid}:1:21"), "number from 1 to 20"),
+    ] {
+        let fields = [("inventory", bank.as_str()), ("items", items.as_str()), ("reason", "r")];
+        let reply = refused.act(&path, &fields).await;
+        assert!(reply.location.contains("error=1") && notice(&reply).contains(expected), "{items}: {}", notice(&reply));
+    }
+    assert!(refused.fake.calls().iter().all(|call| !call.starts_with("add ")), "nothing was added");
+    let no_reason = [("inventory", bank.as_str()), ("items", crate_guid), ("reason", "")];
+    assert!(refused.act(&path, &no_reason).await.location.contains("error=1"));
+}
+
+#[tokio::test]
 async fn the_inventory_page_shows_the_tree_with_its_forms() {
     let site = site();
     let reply = site.get(&format!("/admin/accounts/{PLAYER}/inventory"), Some("admin")).await;
@@ -612,7 +754,18 @@ async fn the_inventory_page_shows_the_tree_with_its_forms() {
     assert!(body.contains("Personal inventory"));
     assert!(body.contains("Item bank at RR_P6_LEO"), "a location bank is named by its place");
     assert!(body.contains(r#"class="inventory depth-1" id="inv-400000000001:Container:0""#), "the crate's inventory nests");
-    assert!(body.contains("Container of crate&lt;1&gt; 400000000001"));
+    assert!(body.contains(r#"data-label="crate&lt;1&gt;""#), "a container is named by the item that holds it, not by a GEID");
+    assert!(body.contains(r##"title="400000000001:Container:0">crate&lt;1&gt;</a>"##), "what an item holds is named too");
+    assert!(body.contains(r#"<select name="inventory" data-tree>"#) && body.contains(r#"data-parent="400000000001:Location:2026442305""#.replace("400000000001", &PLAYER_GEID.to_string()).as_str()), "the picker is a tree: a container knows its parent");
+    assert!(body.contains(r#"<script src="/admin/static/tree.js" defer></script>"#));
+    assert!(body.contains("<h3>RR_P6_LEO (Pyro, 2026442305) › Item bank › crate&lt;1&gt;"), "a heading is the path from the top");
+    assert!(body.contains(r#"data-path="RR_P6_LEO (Pyro, 2026442305) › Item bank""#), "the picker knows each path");
+    assert!(body.contains(r#"<span class="muted where">In: "#), "an item says where it is, in words");
+    assert!(body.contains("› crate&lt;1&gt;"), "a container's path ends with its own name, escaped");
+    assert!(body.contains(r#"<form method="post" action="/admin/accounts/1000002/inventory/move" class="stacked">"#));
+    let tree_js = site.get("/admin/static/tree.js", None).await;
+    assert_eq!(tree_js.status, StatusCode::OK);
+    assert!(tree_js.body.contains("createTextNode") && !tree_js.body.contains("innerHTML"), "built from text nodes");
     assert!(!body.contains("crate<1>"), "values are escaped");
     assert!(body.contains("Ammo box"));
     assert!(body.contains(r##"href="#inv-400000000001:Container:0""##), "an item links the inventory it holds");
@@ -620,22 +773,25 @@ async fn the_inventory_page_shows_the_tree_with_its_forms() {
     assert!(body.contains("Held by something live on a shard"));
     assert!(!body.contains(r#"name="geid" value="901""#), "nothing in a live hold is changed");
     assert!(!body.contains(r#"<option value="900:Container:0">"#), "nor is anything moved or added into it");
-    assert!(body.contains(r#"action="/admin/accounts/1000002/inventory/add""#));
+    assert!(body.contains(r#"action="/admin/accounts/1000002/inventory/add-batch""#), "one form for the whole batch");
+    assert!(body.contains(r#"<div id="cart" class="cart"></div>"#) && body.contains(r#"name="items""#));
     assert!(body.contains(&format!(r#"value="{CSRF}""#)));
+    assert!(body.contains(r#"<div id="catalog" data-url="/admin/accounts/1000002/inventory/classes""#), "the filtering catalog");
+    assert!(body.contains(r#"<script src="/admin/static/inventory.js" defer></script>"#) && !body.contains("<script>"), "no inline script");
     // The item banks the player has none at yet can be picked: sc-entitygraph makes them on the first item.
     let places = crate::places::places();
     let fresh = places.iter().find(|place| place.id != 2_026_442_305).expect("a home location");
-    assert!(body.contains(&format!(r#"<option value="{PLAYER_GEID}:Location:{}">Item bank at "#, fresh.id)), "a new bank is offered");
+    assert!(body.contains(&format!(r#"<option value="{PLAYER_GEID}:Location:{}" data-parent="" data-label="Item bank at "#, fresh.id)), "a new bank is offered");
     assert!(body.contains("(new)"));
-    let existing = format!(r#"<option value="{PLAYER_GEID}:Location:2026442305">"#);
+    let existing = format!(r#"<option value="{PLAYER_GEID}:Location:2026442305" "#);
     assert!(body.split(&existing).skip(1).all(|rest| !rest.split("</option>").next().unwrap().contains("(new)")), "a bank it has is not new");
 
     let search = site.get(&format!("/admin/accounts/{PLAYER}/inventory?class=crate"), Some("admin")).await;
     assert!(search.body.contains("Cargo crate"));
     assert!(search.body.contains("guid=c0ffee00-0000-0000-0000-000000000001#add"));
-    assert_eq!(site.fake.calls(), ["classes crate"]);
+    assert_eq!(site.fake.calls(), ["classes crate    false"]);
     let picked = site.get(&format!("/admin/accounts/{PLAYER}/inventory?class=crate&guid=c0ffee00-0000-0000-0000-000000000001"), Some("admin")).await;
-    assert!(picked.body.contains(r#"name="class_guid" required size="38" value="c0ffee00-0000-0000-0000-000000000001""#));
+    assert!(picked.body.contains(r#"name="items" id="items" required size="60" placeholder="Class GUID:amount, ..." value="c0ffee00-0000-0000-0000-000000000001""#));
 }
 
 #[tokio::test]
@@ -705,6 +861,44 @@ async fn an_owners_refusal_is_shown_and_recorded() {
 }
 
 #[tokio::test]
+async fn the_page_lists_what_is_worn_and_offers_only_fitting_free_ports() {
+    let site = site();
+    let page = site.get(&format!("/admin/accounts/{PLAYER}/inventory"), Some("admin")).await;
+    let body = &page.body;
+    assert!(body.contains(r#"<h2 id="worn">Worn</h2>"#) && body.contains("UNDERSUIT › wep_sidearm"), "worn items say what they hang from");
+    assert!(body.contains(r#"action="/admin/accounts/1000002/inventory/unequip""#));
+    assert!(!body.contains(r#"name="geid" value="700""#), "the body is the character: no way to take it off");
+    assert!(body.contains(r#"name="geid" value="702""#), "the pistol can come off");
+    // The ammo box fits the free medpen port, not the taken sidearm port.
+    assert!(body.contains(r#"<option value="701:medPen_attach_1">UNDERSUIT › medPen_attach_1</option>"#));
+    assert!(!body.contains(r#"<option value="701:wep_sidearm">"#), "a taken port is not offered");
+    assert_eq!(body.matches(r#"inventory/equip""#).count(), 1, "one item fits somewhere");
+    assert!(body.contains("</select></div><input name=\"reason\""), "the chooser sits above the reason");
+    assert!(!body.contains("<script>"));
+
+    let fields = [("geid", "400000000002"), ("port", "701:medPen_attach_1"), ("reason", "off duty")];
+    let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/equip"), &fields).await;
+    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    let calls = site.fake.calls();
+    assert!(calls.iter().any(|call| call.starts_with("equip admin:") && call.ends_with(&format!("{PLAYER_GEID} 400000000002 701 medPen_attach_1"))), "{calls:?}");
+    let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
+    assert_eq!((record.entry.action.as_str(), record.outcome.as_str()), ("inventory.equip", "ok"));
+
+    let bank = format!("{PLAYER_GEID}:Location:2026442305");
+    let off = [("geid", "702"), ("to", bank.as_str()), ("reason", "stash")];
+    let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/unequip"), &off).await;
+    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    assert!(site.fake.calls().iter().any(|call| call.ends_with(&format!("{PLAYER_GEID} 702 -> {bank}"))));
+    // A port name with anything but letters, digits and _ is no port.
+    for port in ["701:", "x:wep", "701:a b", "701:../x", ""] {
+        let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/equip"), &[("geid", "400000000002"), ("port", port), ("reason", "r")]).await;
+        assert!(reply.location.contains("error=1"), "{port}");
+    }
+    let no_reason = site.act(&format!("/admin/accounts/{PLAYER}/inventory/unequip"), &[("geid", "702"), ("to", bank.as_str()), ("reason", "")]).await;
+    assert!(no_reason.location.contains("error=1"));
+}
+
+#[tokio::test]
 async fn inventory_changes_wait_until_the_player_is_off_a_shard() {
     let site = site();
     *site.fake.on_shard.lock().unwrap() = true;
@@ -718,6 +912,8 @@ async fn inventory_changes_wait_until_the_player_is_off_a_shard() {
         ("move", vec![("geid", "400000000002"), ("from", "400000000001:Container:0"), ("to", bank.as_str()), ("reason", "r")]),
         ("add", vec![("inventory", bank.as_str()), ("class_guid", "c0ffee00"), ("reason", "r")]),
         ("remove", vec![("geid", "400000000002"), ("reason", "r")]),
+        ("equip", vec![("geid", "400000000002"), ("port", "701:medPen_attach_1"), ("reason", "r")]),
+        ("unequip", vec![("geid", "702"), ("to", bank.as_str()), ("reason", "r")]),
     ];
     for (action, fields) in &posts {
         let refused = site.act(&format!("/admin/accounts/{PLAYER}/inventory/{action}"), fields).await;

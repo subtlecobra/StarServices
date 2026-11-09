@@ -5,7 +5,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use sc_api::internal::{ ItemTypeFilter, BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, StarterEntitlement, };
+use sc_api::internal::{ ItemTypeFilter, BlueprintDefault, ContainerSeed, EntityClassInventory, EntityClassSeed, ItemPortSeed, MissionContractSeed, RentalPrice, ReputationLadderStanding, ReputationScope, ReputationStanding, ScenarioSeed, ShopItem, ShipInsuranceSeed, VehicleSeed, StarterEntitlement, };
 use sc_proto::{
     services::solar_system_shop::v1::RentalOffering,
 };
@@ -149,9 +149,34 @@ pub fn read(game: &Game, rental_prices: Vec<RentalPrice>) -> Result<Content, Str
                 item_sub_type: class.item_sub_type.clone(),
                 item_type_enum: class.item_type_enum,
                 item_sub_type_enum: class.item_sub_type_enum,
+                stackable: class.stackable,
                 name,
                 description,
                 occupancy_micro_scu: class.occupancy_micro_scu,
+                attach_size: class.attach_size,
+                attach_tags: class.attach_tags.clone(),
+                required_tags: class.required_tags.clone(),
+                ports: class
+                    .ports
+                    .iter()
+                    .map(|port| ItemPortSeed {
+                        name: port.name.clone(),
+                        min_size: port.min_size,
+                        max_size: port.max_size,
+                        types: type_filters(&port.types),
+                        required_port_tags: port.required_port_tags.clone(),
+                        port_tags: port.port_tags.clone(),
+                        flags: port.flags.clone(),
+                    })
+                    .collect(),
+                vehicle: class.vehicle.as_ref().map(|vehicle| VehicleSeed {
+                    max_bounding_box: vehicle.max_bounding_box.map(|size| size.to_vec()).unwrap_or_default(),
+                    insurance: vehicle.insurance.as_ref().map(|insurance| ShipInsuranceSeed {
+                        base_wait_time_minutes: insurance.base_wait_time_minutes,
+                        mandatory_wait_time_minutes: insurance.mandatory_wait_time_minutes,
+                        base_expediting_fee: insurance.base_expediting_fee,
+                    }),
+                }),
                 inventory: inventory.map(|c| EntityClassInventory {
                     capacity_micro_scu: c.capacity_micro_scu,
                     closed: c.closed,

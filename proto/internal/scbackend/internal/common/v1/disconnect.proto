@@ -1,0 +1,36 @@
+// A player's disconnect, as every reporter states it and every receiver handles it. See docs/DISCONNECT.md.
+syntax = "proto3";
+
+package scbackend.internal.common.v1;
+
+enum DisconnectReason {
+  DISCONNECT_REASON_UNSPECIFIED = 0;
+  // The client said it was going (its transport disconnect notice: exit to menu, quit, Alt+F4).
+  DISCONNECT_REASON_CLEAN = 1;
+  // The server ended the connection (a kick, a duplicate login, an AFK removal).
+  DISCONNECT_REASON_KICKED = 2;
+  // Silence for the peer timeout. A crashed or killed client and a lost network look the same, and land here.
+  DISCONNECT_REASON_TIMEOUT = 3;
+  // A reporter saw the connection go without a notice or a timeout of its own: the Hub's TLS connection closing.
+  DISCONNECT_REASON_CONNECTION_LOST = 4;
+  // The same player connected again, and this connection was taken over. Nothing of the player ends with it.
+  DISCONNECT_REASON_REPLACED = 5;
+}
+
+// One player's connection to a shard ending. Sent by whoever learns of it first (the replicant, the Hub) to the Hub,
+// which owns sessions and the shard slot, and by a DGS to sc-entitygraph for the entities it held.
+message PlayerDisconnect {
+  // The key every receiver deduplicates on: `<replicant>:<session>` from a replicant, `hub:<hub session>` from the Hub.
+  // A repeat, or a late report of an older connection, changes nothing.
+  string event_id = 1;
+  DisconnectReason reason = 2;
+  uint32 account_id = 3;
+  uint64 geid = 4;  // the player's GEID; 0 when the reporter does not know it
+  string shard_id = 5;
+  // The client's own cause code from its disconnect notice (30016 for a quit), 0 when it sent none.
+  uint32 client_code = 6;
+  // When the connection began and when it ended, in Unix milliseconds. A receiver ignores the report when the player
+  // has joined again since `connected_at_ms`.
+  uint64 connected_at_ms = 7;
+  uint64 at_ms = 8;
+}

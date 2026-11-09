@@ -8,6 +8,7 @@
 //! player's `player_home_location`.
 
 mod internal;
+mod ships;
 
 use std::{collections::HashMap, net::SocketAddr, process::ExitCode, sync::Arc};
 
@@ -18,7 +19,7 @@ use prost::{
 };
 use prost_reflect::DescriptorPool;
 use sc_db::{internal, DatabaseArgs, Postgres, Row};
-use sc_api::internal::entity_document_internal_server::EntityDocumentInternalServer;
+use sc_api::internal::{entity_document_internal_server::EntityDocumentInternalServer, ship_records_internal_server::ShipRecordsInternalServer};
 use sc_proto::services::entity_document::v1::{
     external_entity_document_service_server::{ExternalEntityDocumentService, ExternalEntityDocumentServiceServer},
     CommitRequest, CommitResponse, CreateRequest, CreateResponse, DocumentHeader, EntityDocument, EntityDocumentBody,
@@ -241,16 +242,17 @@ fn class_names() -> Result<HashMap<u32, String>, String> {
 
 async fn serve(args: Args) -> Result<(), String> {
     let service = Arc::new(Documents {
-        db: Postgres::connect(&args.database.postgres, SCHEMA).await?,
+        db: Postgres::connect(&args.database.postgres, &format!("{SCHEMA}\n{}", ships::SCHEMA)).await?,
         classes: class_names()?,
     });
     let server = ExternalEntityDocumentServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)
         .max_decoding_message_size(MAX_MESSAGE_BYTES);
     // On the same port: the gateway routes by service name, and no GRPCRoute lists the internal one.
+    let ships = ShipRecordsInternalServer::from_arc(service.clone()).max_decoding_message_size(MAX_MESSAGE_BYTES);
     let internal = EntityDocumentInternalServer::from_arc(service).max_decoding_message_size(MAX_MESSAGE_BYTES);
     info!(listen = %args.listen, "entity document listening");
-    Server::builder().add_service(server).add_service(internal).serve(args.listen).await.map_err(|e| e.to_string())
+    Server::builder().add_service(server).add_service(internal).add_service(ships).serve(args.listen).await.map_err(|e| e.to_string())
 }
 
 fn main() -> ExitCode {

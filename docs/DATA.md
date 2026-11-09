@@ -44,6 +44,8 @@ Valkey cluster of the region, owned by `sc-gamedata`: see Game data per region b
 | sc-admin-web | rental, `RentalInternal.ListRentals`, `CreateRental`, `ExtendRental`, `EndRental` | Rentals, made with a granted rental, renewed without a charge, or ended now |
 | sc-admin-web | entity_document, `EntityDocumentInternal.GetDocuments`, `PutDocument` | `player_home_location`, `player_spawn_location` and a ship's `vehicle_state`; written only while the player is on no shard |
 | sc-admin-web | hub, `HubInternal.GetPlayerShard`; presence, `PresenceInternal.GetPresences` | Whether the player is on a shard, where the DGS holds their live state, or in the menu |
+| sc-entitygraph | entity_document, `ShipRecordsInternal.RecordShip`, `GetShips`, `ReplaceShip` | The durable record of each ship a player owns; the graph is made right from it, see [SHIPS.md](SHIPS.md) |
+| sc-dgs | entitygraph, `ShipsInternal` (`ListShips`, `ClaimShip`, `RetrieveShip`, `ReportShip`) | The ASOP kiosk's list, claims and retrievals, filtered by the hangar's size |
 | sc-admin-web | entitygraph of `entityRegion`, `EntityGraphInternal.AdminInventoryTree`, `AdminMoveItem`, `AdminAddItem`, `AdminRemoveItem`, `AdminSearchEntityClasses` | A player's inventories and containers with their items; moving (or splitting), adding by entity class and removing items, as the player's own command is checked, once per command id; the seeded entity classes. See [INVENTORY.md](INVENTORY.md) |
 
 ## YugabyteDB
@@ -57,7 +59,7 @@ Valkey cluster of the region, owned by `sc-gamedata`: see Game data per region b
 | eatransaction | Its purchase journal only (`ea_purchases`, and `ea_transactions` from before it orchestrated) |
 | rental | Rentals (`rentals`, `rental_history`) and keyed extensions (`rental_commands`) |
 | delivery | Pending deliveries |
-| entity_document | Per-entity documents as protobuf bytes, such as `player_home_location` and `player_tutorial`, with Prepare and Commit |
+| entity_document | Per-entity documents as protobuf bytes, such as `player_home_location` and `player_tutorial`, with Prepare and Commit; and `ship_records`, the durable record of each ship (docs/SHIPS.md) |
 | character_customizer | Saved customizations |
 | reputation, achievements, stats, blueprint_library | Per-player progress |
 | mission_service, mission_scenario, contract_broker, mission_token | Mission and contract state |
@@ -76,6 +78,7 @@ One ArangoDB per region, see [One entity database per region](#one-entity-databa
 | Service | Data |
 |---|---|
 | entitygraph | Entities and edges: the `Node` and `EntityEdge` model, stow contexts, and `Move`. `entitygraph_meta` also keeps the counter of item GEIDs it allocates (from 400,000,000,000), and `applied_commands` the answer of each admin command |
+| entitygraph | Ships: the ship entity in `<owner>:Hangar:<location>` and a `ships` document per ship, a copy made right from the record in entity_document (docs/SHIPS.md) |
 | entitygraph | Inventories and containers: a ship holds a locker that holds a weapon that holds a magazine. Personal, location, ship and container inventories, capacity and who may use them: see [INVENTORY.md](INVENTORY.md) |
 | entity_subscription | What a client follows in that graph, `entity_subscriptions`. An entity's owner, which also follows it, comes from entitygraph. For now in the ArangoDB of `entityRegion` |
 | instance_manager | Instances. For now in the ArangoDB of `entityRegion` |

@@ -486,7 +486,7 @@ async fn only_the_governing_dgs_being_down_holds_the_solar_systems_batch() {
 async fn a_shard_with_no_dgs_address_holds_every_join() {
     let (events, mut answers) = unbounded_channel();
     let link = Arc::new(Link::new(Directory::parse(SHARD, "pyro:pyro-1=pyrosystem", "").unwrap(), events).retrying_every(RETRY));
-    let session = link.open("127.0.0.1:1".parse().unwrap(), 1, Identity { account: Some(1_000_001), location: None });
+    let session = link.open("127.0.0.1:1".parse().unwrap(), 1, Identity { account: Some(1_000_001), location: None, geid: None });
     assert!(timeout(HELD, answers.recv()).await.is_err());
     drop(session);
 }

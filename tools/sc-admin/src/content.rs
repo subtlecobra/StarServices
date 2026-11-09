@@ -2,7 +2,7 @@
 //! taken from the game data and the client, and nothing here makes content up.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
 };
 
@@ -52,6 +52,8 @@ pub struct Class {
     /// The DataCore `EItemType` and `EItemSubType` numbers of those names, 0 for a name the enums do not list.
     pub item_type_enum: i32,
     pub item_sub_type_enum: i32,
+    /// The record carries the tag `Item.Inventory.Stackable`, which the client checks to let an item stack.
+    pub stackable: bool,
     name_token: String,
     description_token: String,
     policy: Option<String>,
@@ -59,6 +61,92 @@ pub struct Class {
     pub occupancy_micro_scu: Option<i64>,
     /// The `InventoryContainer` record of an item that holds an inventory (a crate, a backpack, a cargo grid).
     pub container: Option<String>,
+    /// The `AttachDef` size and tags, which an item port checks (see "Equipping" in docs/INVENTORY.md).
+    pub attach_size: Option<i32>,
+    pub attach_tags: String,
+    pub required_tags: String,
+    /// The item ports of a class that carries gear (`ports_wanted`); none for any other class.
+    pub ports: Vec<Port>,
+    /// The size and insurance of a vehicle class (`VehicleComponentParams`, `shipInsuranceParams`); none for any other.
+    pub vehicle: Option<Vehicle>,
+}
+
+/// What a vehicle class says about its size and its insurance.
+pub struct Vehicle {
+    /// `maxBoundingBoxSize` in metres: width, length, height.
+    pub max_bounding_box: Option<[f64; 3]>,
+    pub insurance: Option<Insurance>,
+}
+
+/// `ShipInsuranceParams`: the minutes a claim takes, the minutes of it that cannot be paid away, and the fee to do so.
+pub struct Insurance {
+    pub base_wait_time_minutes: f64,
+    pub mandatory_wait_time_minutes: f64,
+    pub base_expediting_fee: u32,
+}
+
+/// The vehicle part of a class: its component's bounding box and the insurance params next to its static class data.
+fn vehicle_of(vehicle: Option<&Value>, data: &Value) -> Option<Vehicle> {
+    let component = vehicle?;
+    let size = &component["maxBoundingBoxSize"];
+    let max_bounding_box = match (size["x"].as_f64(), size["y"].as_f64(), size["z"].as_f64()) {
+        (Some(x), Some(y), Some(z)) if x > 0.0 && y > 0.0 && z > 0.0 => Some([x, y, z]),
+        _ => None,
+    };
+    let insurance = data["StaticEntityClassData"].as_array().into_iter().flatten().find_map(|entry| {
+        let params = &entry["shipInsuranceParams"];
+        params.is_object().then(|| Insurance {
+            base_wait_time_minutes: params["baseWaitTimeMinutes"].as_f64().unwrap_or(0.0),
+            mandatory_wait_time_minutes: params["mandatoryWaitTimeMinutes"].as_f64().unwrap_or(0.0),
+            base_expediting_fee: params["baseExpeditingFee"].as_u64().unwrap_or(0) as u32,
+        })
+    });
+    Some(Vehicle { max_bounding_box, insurance })
+}
+
+/// An `SItemPortDef` of an `SItemPortContainerComponentParams`.
+pub struct Port {
+    pub name: String,
+    pub min_size: i32,
+    pub max_size: i32,
+    pub types: Vec<TypeFilter>,
+    pub required_port_tags: String,
+    pub port_tags: String,
+    pub flags: String,
+}
+
+/// The classes whose item ports are seeded: the body, armor, clothing, and personal weapons and gadgets, which are what a
+/// player wears. A ship's or a vehicle's ports are not, and are a different thing than equipping a character.
+fn ports_wanted(item_type: &str) -> bool {
+    item_type.starts_with("Char_") || matches!(item_type, "WeaponPersonal" | "MobiGlas" | "Gadget")
+}
+
+/// The depth the DataCore reader needs to give the fields of a port (its types, sizes and tags).
+const PORT_DEPTH: usize = 4;
+
+fn ports_of(component: &Value) -> Vec<Port> {
+    component["Ports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|port| Port {
+            name: text(port, "Name").to_string(),
+            min_size: port["MinSize"].as_i64().unwrap_or(0) as i32,
+            max_size: port["MaxSize"].as_i64().unwrap_or(0) as i32,
+            types: port["Types"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|kind| TypeFilter {
+                    item_type: text(kind, "Type").to_string(),
+                    item_sub_types: kind["SubTypes"].as_array().into_iter().flatten().filter_map(|sub| sub.as_str()).filter(|sub| !sub.is_empty()).map(str::to_string).collect(),
+                })
+                .collect(),
+            required_port_tags: text(port, "RequiredPortTags").to_string(),
+            port_tags: text(port, "PortTags").to_string(),
+            flags: text(port, "Flags").to_string(),
+        })
+        .collect()
 }
 
 /// An `InventoryContainer` record: the capacity of the inventory of the items that use it.
@@ -204,7 +292,8 @@ fn localized(token: &str, text: &HashMap<String, String>) -> LocalizedText {
 fn class_of(name: &str, guid: &str, data: &Value) -> Class {
     let components = data["Components"].as_array().into_iter().flatten();
     let params = components.chain(data["StaticEntityClassData"].as_array().into_iter().flatten());
-    let (mut definition, mut policy, mut container, mut occupancy) = (&Value::Null, None, None, None);
+    let (mut definition, mut policy, mut container, mut occupancy, mut port_params) = (&Value::Null, None, None, None, None);
+    let mut vehicle_params: Option<&Value> = None;
     for component in params {
         match text(component, "__struct__") {
             "SAttachableComponentParams" => {
@@ -213,6 +302,8 @@ fn class_of(name: &str, guid: &str, data: &Value) -> Class {
                 occupancy = cargo_micro_scu(&definition["inventoryOccupancyVolume"])
                     .or_else(|| cargo_micro_scu(&component["inventoryOccupancyVolume"]));
             }
+            "SItemPortContainerComponentParams" => port_params = Some(component),
+            "VehicleComponentParams" => vehicle_params = Some(component),
             "DefaultEntitlementEntityParams" => {
                 policy = reference(&component["entitlementPolicy"]).map(str::to_string)
             }
@@ -231,11 +322,17 @@ fn class_of(name: &str, guid: &str, data: &Value) -> Class {
         item_sub_type: text(definition, "SubType").to_string(),
         item_type_enum: 0,
         item_sub_type_enum: 0,
+        stackable: false,
         name_token: text(localization, "Name").to_string(),
         description_token: text(localization, "Description").to_string(),
         policy,
         occupancy_micro_scu: occupancy,
         container,
+        attach_size: definition["Size"].as_i64().map(|size| size as i32),
+        attach_tags: text(definition, "Tags").to_string(),
+        required_tags: text(definition, "RequiredTags").to_string(),
+        ports: port_params.filter(|_| ports_wanted(text(definition, "Type"))).map(ports_of).unwrap_or_default(),
+        vehicle: vehicle_of(vehicle_params, data),
     }
 }
 
@@ -451,15 +548,44 @@ impl Game {
     pub fn classes(&self) -> Result<Vec<Class>, String> {
         let records = self.records("EntityClassDefinition", 1)?;
         let (types, sub_types) = (self.enum_numbers("EItemType")?, self.enum_numbers("EItemSubType")?);
+        let stackable = self.stackable_tags()?;
         records
             .iter()
             .map(|record| {
                 let mut class = class_of(&record.name, &record.guid, &record.data);
                 class.item_type_enum = types.get(&class.item_type).copied().unwrap_or(0);
                 class.item_sub_type_enum = sub_types.get(&class.item_sub_type).copied().unwrap_or(0);
+                class.stackable = references(&record.data["tags"]).iter().any(|tag| stackable.contains(tag));
+                // The ports are nested deeper than the rest of the record the other classes are read at.
+                if !class.ports.is_empty() {
+                    let entry = self.datacore.record(record.index).map_err(|e| format!("record {}: {e}", record.index))?;
+                    let deep = self.datacore.record_data(&entry, PORT_DEPTH).map_err(|e| format!("{}: {e}", record.name))?;
+                    class.ports = class_of(&record.name, &record.guid, &deep.to_json()).ports;
+                }
                 Ok(class)
             })
             .collect()
+    }
+
+    /// The GUIDs of the tag `Item.Inventory.Stackable`: a `Stackable` tag under an `Inventory` tag under `Item`.
+    pub fn stackable_tags(&self) -> Result<HashSet<String>, String> {
+        let tags = self.records("Tag", 1)?;
+        let name = |guid: &str| tags.iter().find(|tag| tag.guid == guid).map(|tag| text(&tag.data, "tagName").to_string());
+        let parents = |guid: &str| -> Vec<String> {
+            tags.iter().filter(|tag| references(&tag.data["children"]).iter().any(|child| child == guid)).map(|tag| tag.guid.clone()).collect()
+        };
+        let named = |guids: Vec<String>, wanted: &str| -> Vec<String> { guids.into_iter().filter(|guid| name(guid).as_deref() == Some(wanted)).collect() };
+        let mut found = HashSet::new();
+        for tag in tags.iter().filter(|tag| text(&tag.data, "tagName") == "Stackable") {
+            let inventory = named(parents(&tag.guid), "Inventory");
+            if inventory.iter().any(|guid| !named(parents(guid), "Item").is_empty()) {
+                found.insert(tag.guid.clone());
+            }
+        }
+        if found.is_empty() {
+            return Err("no tag Item.Inventory.Stackable in the DataCore".into());
+        }
+        Ok(found)
     }
 
     /// The numbers of a DataCore enum's options, which are their positions in its definition: the client checks an
@@ -857,5 +983,76 @@ mod enum_tests {
         for (name, number) in [("Fluid", 54), ("UNDEFINED", 154), ("Personal", 110), ("Male", 91), ("MedPack", 97), ("Helmet", 70)] {
             assert_eq!(sub_types[name], number, "{name}");
         }
+    }
+
+    /// With the game archive (`SC_P4K`): the classes the game tags `Item.Inventory.Stackable` include its grenades.
+    #[test]
+    #[ignore]
+    fn grenades_are_stackable_and_rifles_are_not() {
+        let path = std::env::var("SC_P4K").expect("SC_P4K");
+        let game = Game::open(Path::new(&path)).unwrap();
+        let classes = game.classes().unwrap();
+        let grenades: Vec<&Class> = classes.iter().filter(|class| class.item_type == "WeaponPersonal" && class.item_sub_type == "Grenade").collect();
+        assert!(!grenades.is_empty() && grenades.iter().all(|class| class.stackable), "every grenade stacks");
+        assert!(classes.iter().filter(|class| class.item_type == "WeaponPersonal" && class.item_sub_type == "Large").all(|class| !class.stackable), "a rifle does not");
+    }
+
+    #[test]
+    fn a_gear_class_keeps_its_size_tags_and_ports() {
+        let data = json!({ "Components": [
+            { "__struct__": "SAttachableComponentParams", "AttachDef": { "Type": "Char_Armor_Undersuit", "SubType": "UNDEFINED", "Size": 1, "Tags": "Odyssey $armor_mobi++", "RequiredTags": "" } },
+            { "__struct__": "SItemPortContainerComponentParams", "Ports": [{
+                "Name": "wep_sidearm", "MinSize": 1, "MaxSize": 2, "RequiredPortTags": "", "PortTags": "", "Flags": "body_attach inventory",
+                "Types": [{ "Type": "WeaponPersonal", "SubTypes": ["Small", ""] }],
+            }] },
+        ] });
+        let class = class_of("suit", "5287b146-fa24-49b8-8126-326164217c4f", &data);
+        assert_eq!((class.attach_size, class.attach_tags.as_str()), (Some(1), "Odyssey $armor_mobi++"));
+        assert_eq!(class.ports.len(), 1);
+        let port = &class.ports[0];
+        assert_eq!((port.name.as_str(), port.min_size, port.max_size), ("wep_sidearm", 1, 2));
+        assert_eq!(port.types, [TypeFilter { item_type: "WeaponPersonal".into(), item_sub_types: vec!["Small".into()] }], "an empty sub type is dropped");
+        // A ship part's ports are not seeded.
+        let ship = json!({ "Components": [
+            { "__struct__": "SAttachableComponentParams", "AttachDef": { "Type": "Turret", "SubType": "GunTurret", "Size": 3 } },
+            { "__struct__": "SItemPortContainerComponentParams", "Ports": [{ "Name": "gun", "MinSize": 1, "MaxSize": 3 }] },
+        ] });
+        assert!(class_of("turret", "5287b146-fa24-49b8-8126-326164217c4f", &ship).ports.is_empty());
+    }
+
+    /// With the game archive (`SC_P4K`): the body and an undersuit carry the ports equipping uses.
+    #[test]
+    #[ignore]
+    fn the_body_and_undersuits_carry_their_ports() {
+        let path = std::env::var("SC_P4K").expect("SC_P4K");
+        let game = Game::open(Path::new(&path)).unwrap();
+        let classes = game.classes().unwrap();
+        let by_name = |name: &str| classes.iter().find(|class| class.name == name).expect(name);
+        let body = by_name("body_01_noMagicPocket");
+        assert!(body.ports.iter().any(|port| port.name == "Armor_Undersuit" && port.types.iter().any(|kind| kind.item_type == "Char_Armor_Undersuit")));
+        let suit = by_name("rsi_odyssey_undersuit_01_01_01");
+        let sidearm = suit.ports.iter().find(|port| port.name == "wep_sidearm").expect("wep_sidearm");
+        assert_eq!((sidearm.min_size, sidearm.max_size), (1, 1));
+        let pistol = by_name("klwe_pistol_energy_01");
+        assert_eq!((pistol.item_type.as_str(), pistol.item_sub_type.as_str(), pistol.attach_size), ("WeaponPersonal", "Small", Some(1)));
+    }
+
+    /// With the game archive (`SC_P4K`): a ship class carries its bounding box and its insurance, other classes neither.
+    #[test]
+    #[ignore]
+    fn a_ship_class_keeps_its_size_and_insurance() {
+        let path = std::env::var("SC_P4K").expect("SC_P4K");
+        let game = Game::open(Path::new(&path)).unwrap();
+        let classes = game.classes().unwrap();
+        let titan = classes.iter().find(|class| class.name == "AEGS_Avenger_Titan").expect("the Avenger Titan");
+        let vehicle = titan.vehicle.as_ref().expect("a vehicle");
+        assert_eq!(vehicle.max_bounding_box, Some([15.0, 20.0, 6.5]));
+        let insurance = vehicle.insurance.as_ref().expect("insured");
+        assert_eq!((insurance.base_expediting_fee, (insurance.base_wait_time_minutes * 100.0).round()), (2343, 405.0));
+        assert!(classes.iter().filter(|class| class.item_type == "WeaponPersonal").all(|class| class.vehicle.is_none()));
+        let sized = classes.iter().filter(|class| class.vehicle.as_ref().is_some_and(|v| v.max_bounding_box.is_some())).count();
+        let insured = classes.iter().filter(|class| class.vehicle.as_ref().is_some_and(|v| v.insurance.is_some())).count();
+        println!("vehicle classes with a size: {sized}, with insurance: {insured}");
+        assert!(sized > 50 && insured > 50);
     }
 }
