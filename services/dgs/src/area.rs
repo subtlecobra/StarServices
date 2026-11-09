@@ -160,6 +160,9 @@ mod tests {
         async fn admin_unequip_item(&self, _: Request<sc_api::internal::AdminUnequipItemRequest>) -> Result<Response<sc_api::internal::AdminUnequipItemResponse>, Status> {
             Err(Status::unimplemented("admin_unequip_item"))
         }
+        async fn inventory_operation(&self, _: Request<sc_api::internal::InventoryOperationRequest>) -> Result<Response<sc_api::internal::InventoryOperationResponse>, Status> {
+            Err(Status::unimplemented("inventory_operation"))
+        }
         async fn seed_entity_classes(
             &self,
             _: Request<tonic::Streaming<sc_api::internal::SeedEntityClassesRequest>>,

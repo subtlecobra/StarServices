@@ -90,12 +90,11 @@ const LAST_REGISTERED_INDEX: i64 = 1_199_999;
 
 pub const ROLES: &[&str] = &["admin"];
 
-/// The badges the game client knows, by their `PlatformBadge` id. It maps them to two mask words (0x140536600). The
-/// console takes an account as a developer's when the second word has bit 0, 1 or 2, which ids 14, 1 and 126 set
-/// (`CXConsole::IsCommandExecutionAllowed`): that unlocks its restricted commands and cvars. STAFF, QA, GM and the others
-/// set bits of the first word only. The `RSI_` ones are named for the bit they set in the client's `EAccountBadgeMask`,
-/// the second word (reflected at 0x142d4d3e0): QA 0x01 (id 14), STAFF 0x02 (1), GM 0x04 (126), SUBSCRIBER 0x08 (5),
-/// CONCIERGE 0x10 (9), MMHC 0x20 (123), BACKER 0x40 (4). The client reads only the ids.
+/// The badges the game has, once each, by their `PlatformBadge` id: the seven of its `EAccountBadgeMask` (reflected at
+/// 0x142d4d3e0), named for the bit each sets in the mask's second word: QA 0x01 (id 14), STAFF 0x02 (1), GM 0x04 (126),
+/// SUBSCRIBER 0x08 (5), CONCIERGE 0x10 (9), MMHC 0x20 (123), BACKER 0x40 (4). The console takes an account as a
+/// developer's when that word has bit 0, 1 or 2, which ids 14, 1 and 126 set (`CXConsole::IsCommandExecutionAllowed`):
+/// that unlocks its restricted commands and cvars. The client reads only the ids.
 pub const GAME_BADGES: &[(u32, &str)] = &[
     (1, "RSI_STAFF"),
     (14, "RSI_QA"),
@@ -104,13 +103,6 @@ pub const GAME_BADGES: &[(u32, &str)] = &[
     (9, "RSI_CONCIERGE"),
     (123, "RSI_MMHC"),
     (4, "RSI_BACKER"),
-    (0x65, "STAFF (account mask)"),
-    (0x66, "CONCIERGE (account mask)"),
-    (0x67, "QA (account mask)"),
-    (0x68, "SUBSCRIBER (account mask)"),
-    (0x6b, "GM (account mask)"),
-    (0x6d, "MMHC (account mask)"),
-    (0x71, "BACKER (account mask)"),
 ];
 
 pub fn game_badge(id: u32) -> Option<GameBadge> {

@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn the_badge_catalog_has_the_developer_badges() {
         let ids: Vec<u32> = web::GAME_BADGES.iter().map(|(id, _)| *id).collect();
-        assert!([0x65, 0x67, 0x6b].iter().all(|id| ids.contains(id)), "STAFF, QA and GM");
+        assert!(ids.len() == 7, "the game's seven badges, once each");
         assert!([1, 14, 126].iter().all(|id| ids.contains(id)), "the console's developer badges");
         assert!(web::game_badge(0x42).is_none());
     }
@@ -477,11 +477,11 @@ mod tests {
         assert!(identity.set_account_state(Request::new(bad_role)).await.is_err());
 
         // In-game badges: replaced as a set, kept apart from the roles, and only known ids.
-        let badges = SetAccountStateRequest { account_id: made.account_id, game_badges: vec![0x6b, 0x67], set_game_badges: true, ..Default::default() };
+        let badges = SetAccountStateRequest { account_id: made.account_id, game_badges: vec![126, 14], set_game_badges: true, ..Default::default() };
         let badged = identity.set_account_state(Request::new(badges)).await.unwrap().into_inner().account.unwrap();
         let ids: Vec<u32> = badged.game_badges.iter().map(|badge| badge.id).collect();
-        assert_eq!(ids, [0x67, 0x6b]);
-        assert_eq!(badged.game_badges[0].name, "QA (account mask)");
+        assert_eq!(ids, [14, 126]);
+        assert_eq!(badged.game_badges[0].name, "RSI_QA");
         assert_eq!(badged.roles, ["admin"]);
         let unknown = SetAccountStateRequest { account_id: made.account_id, game_badges: vec![0x42], set_game_badges: true, ..Default::default() };
         assert!(identity.set_account_state(Request::new(unknown)).await.is_err());

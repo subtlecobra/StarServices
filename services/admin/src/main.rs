@@ -103,6 +103,8 @@ async fn serve(args: Args) -> Result<(), String> {
         prefix,
         login: args.login,
         secure_cookies: args.secure_cookies,
+        flashes: Default::default(),
+        class_names: Default::default(),
     });
     let listener = tokio::net::TcpListener::bind(args.listen).await.map_err(|e| format!("bind {}: {e}", args.listen))?;
     info!(listen = %args.listen, prefix = %app.prefix, "admin site listening");

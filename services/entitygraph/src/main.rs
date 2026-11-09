@@ -9,6 +9,7 @@ mod equip;
 mod filter;
 mod grant;
 mod loadout;
+mod operations;
 mod read;
 mod release;
 mod seed;
@@ -28,7 +29,7 @@ use commands::{Plan, WRITES};
 use futures_util::{stream, Stream, StreamExt};
 use prost::Message;
 use sc_db::{internal, Arango, DatabaseArgs};
-use sc_api::internal::{ AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
+use sc_api::internal::{ AdminEquipItemRequest, InventoryOperationRequest, InventoryOperationResponse, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, entity_graph_internal_server::{EntityGraphInternal, EntityGraphInternalServer}, push_publisher_client::PushPublisherClient, AdminAddItemRequest, AdminAddItemResponse, AdminInventoryTreeRequest, AdminInventoryTreeResponse, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, AdminSearchEntityClassesResponse, EnsureLoadoutRequest, EnsureLoadoutResponse, GrantItemsRequest, GrantItemsResponse, RevokeItemsRequest, RevokeItemsResponse, EntityOwner, GetOwnersRequest, GetOwnersResponse, LoadAreaRequest, PublishRequest, SeedContainersRequest, SeedEntityClassesRequest, SeedResponse, };
 use sc_proto::{
     common::command::v1::{notify_destination, CommandResponseBody},
     services::entitygraph::v1::{
@@ -91,7 +92,7 @@ struct Args {
     #[arg(long, env = "SCBACKEND_PUSH", default_value = "http://sc-push:50051")]
     push: String,
     /// sc-entity-document, which keeps the durable record of each ship (docs/SHIPS.md).
-    #[arg(long, env = "SCBACKEND_ENTITY_DOCUMENT", default_value = "http://sc-entity-document:50051")]
+    #[arg(long, env = "SCBACKEND_ENTITY_DOCUMENT", default_value = "http://sc-entity-document.scbackend.svc:50051")]
     entity_document: String,
 }
 
@@ -100,6 +101,8 @@ struct Graph {
     db: Arango,
     push: PushPublisherClient<Channel>,
     known_players: Mutex<HashSet<u64>>,
+    /// The ships, for the cross-check with the durable records when a hangar is read. None in a test that has no records.
+    ships: Option<Arc<ships::Ships>>,
 }
 
 fn now_ms() -> u64 {
@@ -175,6 +178,34 @@ impl Graph {
             Some(account) => self.ensure_player(&account).await,
             None => Ok(()),
         }
+    }
+
+    /// What the ship list needs before the client's `EntityQuery` on one of its `Location` or `Hangar` inventories: the
+    /// inventory exists (made on first need), and, for a hangar, its ships agree with the durable records (the record
+    /// wins). A failure of the cross-check is logged and the graph answers alone.
+    async fn prepare_player_inventory(&self, account: Option<&Account>, inventory_id: &str) -> Result<(), Status> {
+        let Some(account) = account else {
+            return Ok(());
+        };
+        let Some(parsed) = doc::parse_inventory_id(inventory_id) else {
+            return Ok(());
+        };
+        if parsed.holder != account.geid {
+            return Ok(());
+        }
+        read::ensure_player_inventory(&self.db, account.geid, inventory_id, now_ms()).await?;
+        if parsed.context == doc::HANGAR {
+            if let Some(ships) = &self.ships {
+                match ships.synced_rows(account.geid).await {
+                    Ok((rows, repaired, orphans)) => info!(
+                        owner = account.geid, inventory = inventory_id, ships = rows.len(), repaired, orphans = orphans.len(),
+                        "hangar read for the ship list"
+                    ),
+                    Err(error) => warn!(owner = account.geid, %error, "hangar ship cross-check failed; the graph answers alone"),
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Applies a plan once per command id. The id is recorded in the same transaction, so a retry after
@@ -292,6 +323,10 @@ impl EntityGraphInternal for Graph {
         Ok(Response::new(equip::unequip_item(&self.db, request.into_inner()).await?))
     }
 
+    async fn inventory_operation(&self, request: Request<InventoryOperationRequest>) -> Reply<InventoryOperationResponse> {
+        Ok(Response::new(operations::run(&self.db, request.into_inner()).await?))
+    }
+
     async fn seed_entity_classes(&self, request: Request<tonic::Streaming<SeedEntityClassesRequest>>) -> Reply<SeedResponse> {
         Ok(Response::new(SeedResponse { rows: seed::classes(&self.db, request.into_inner()).await? }))
     }
@@ -309,8 +344,14 @@ impl EntityGraphService for Graph {
 
     async fn entity_query(&self, request: Request<EntityQueryRequest>) -> Reply<EntityQueryResponse> {
         self.ensure_caller(request.metadata()).await?;
+        let request_account = caller(&self.state, request.metadata());
         let body = request.into_inner().body.unwrap_or_default();
-        let result = read::entity_query(&self.db, body.scope, body.query.unwrap_or_default()).await?;
+        let query = body.query.unwrap_or_default();
+        if !query.inventory_id.is_empty() {
+            read::ensure_container(&self.db, &query.inventory_id, now_ms()).await?;
+            self.prepare_player_inventory(request_account.as_ref(), &query.inventory_id).await?;
+        }
+        let result = read::entity_query(&self.db, body.scope, query).await?;
         Ok(Response::new(EntityQueryResponse { body: Some(result) }))
     }
 
@@ -458,6 +499,7 @@ const INDEXES: &[(&str, &[&str], bool)] = &[
     ("inventories", &["holderId"], false),
     ("inventories", &["dirty"], true),
     ("entities", &["ownerId"], false),
+    ("ships", &["ownerId"], false),
     ("entities", &["inventoryId"], true),
     ("entities", &["parentUrn"], false),
     ("entity_classes", &["guidHashCrc"], false),
@@ -477,26 +519,33 @@ async fn open(arango: &str) -> Result<Arango, String> {
                        FILTER LENGTH(parts) == 3
                        UPDATE i WITH { context: parts[1], subjectId: parts[2], holderId: parts[0], dirty: true } IN inventories";
     db.aql(migrate, json!({})).await?;
+    seed::repair_item_types(&db).await?;
     Ok(db)
 }
 
 async fn serve(args: Args) -> Result<(), String> {
     let endpoint = Endpoint::from_shared(args.push.clone()).map_err(|e| format!("--push: {e}"))?;
+    let db = open(&args.database.arango).await?;
+    // An unreachable sc-entity-document fails a call in seconds rather than hanging on a connect.
+    let documents = Endpoint::from_shared(args.entity_document.clone())
+        .map_err(|e| format!("--entity-document: {e}"))?
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(10));
+    let ships = Arc::new(ships::Ships {
+        db: db.clone(),
+        records: Arc::new(sc_api::internal::ship_records_internal_client::ShipRecordsInternalClient::new(documents.connect_lazy())),
+    });
     let service = Arc::new(Graph {
         state: State::load(&args.common.data)?,
-        db: open(&args.database.arango).await?,
+        db,
         push: PushPublisherClient::new(endpoint.connect_lazy()),
         known_players: Mutex::default(),
+        ships: Some(ships.clone()),
     });
     let server = EntityGraphServiceServer::from_arc(service.clone())
         .accept_compressed(CompressionEncoding::Gzip)
         .max_decoding_message_size(MAX_MESSAGE_BYTES);
-    let documents = Endpoint::from_shared(args.entity_document.clone()).map_err(|e| format!("--entity-document: {e}"))?;
-    let ships = ships::Ships {
-        db: service.db.clone(),
-        records: Arc::new(sc_api::internal::ship_records_internal_client::ShipRecordsInternalClient::new(documents.connect_lazy())),
-    };
-    let ships = sc_api::internal::ships_internal_server::ShipsInternalServer::new(ships).max_decoding_message_size(MAX_MESSAGE_BYTES);
+    let ships = sc_api::internal::ships_internal_server::ShipsInternalServer::from_arc(ships).max_decoding_message_size(MAX_MESSAGE_BYTES);
     let internal = EntityGraphInternalServer::from_arc(service).max_decoding_message_size(MAX_MESSAGE_BYTES);
     info!(listen = %args.listen, "entity graph listening");
     Server::builder().add_service(server).add_service(internal).add_service(ships).serve(args.listen).await.map_err(|e| e.to_string())

@@ -103,6 +103,8 @@ the entity. `MoveAll` checks the same for the source inventory, and refuses a so
 - The personal inventory, with the player entity, on the account's first call (as before).
 - A player's inventory whose id names the caller as its owner (a location, a hangar, a personal entity inventory)
   is created, infinite, the first time something is stowed or moved into it, with its holder edge to the player.
+- A player's own `Location` and `Hangar` inventory is also created by the first `EntityQuery` that asks for it by id (the
+  ASOP ship list's two inventory reads, see SHIPS.md), even if nothing was ever stowed there; nobody else's is.
 - A `Container` inventory is created with every created entity whose class has an inventory container: a ship's cargo
   grids, crates, backpacks. Stowing into `<entity>:Container:0` of an existing entity whose class is not known also
   creates it, infinite; a class known to have no container gets none.
@@ -110,6 +112,31 @@ the entity. `MoveAll` checks the same for the source inventory, and refuses a so
   with stowed edges, so the tree walks find them.
 - A move's `target_inventory_lazy_creation` and `CreateInventoryCommand` work as the client sends them; the context,
   subject, name and owner it leaves out are filled from the id.
+
+## What the client asks when it opens an item
+
+Opening an item with storage (`OpenNestedInventory`) is run by the client itself, as the token holder. It first looks the
+item up in the inventory it is in: `EntityQuery` with `inventory_id`, a filter on `classGuidCrc`, a tree projection and
+`outgoing_edges`. The inventory's items come from the `STOWED_IN` edges in the answer. A tree walk follows edges from
+what is held to what holds it, so it never returns the edge a root leaves by; `outgoing_edges` therefore also adds the
+outgoing edges of the nodes of a tree. Without the stowed edge the client finds "0 items" in the inventory and the
+request fails (`GetGridItem ... doesn't have item requested`) with nothing shown. Only then does it query the item's
+own `<geid>:Container:0`, which is made on that first query when it is missing and the item's class has a container
+(an item made before the class was seeded). The inventory queries are logged (`inventory entity query`, nodes and edges).
+
+## Inventory access tokens
+
+The client asks for access to an inventory that is not the personal one (the container of a worn item or of one it opens)
+before it uses it, and queues every request on that inventory until it gets it. The request is an `EntityTokenRequest` (replication
+message 21) on the item's entity for the container component's user token, and the answer an `EntityTokenEvent` (23), granted or
+denied; the layouts are in the protocol notes, "Inventory access tokens". The replicant relays: it reads the request and asks the
+DGS (`DgsControl.EntityToken`, with the token, request and flag byte as the client sent them), then sends the decision as the event.
+The DGS decides (`services/dgs/src/token.rs`):
+- A user token (flag bit 0) of an item in the player's worn tree is granted; of any other item the player owns (sc-entitygraph
+  `GetOwners`) too; of one another owner has, denied. Arbitrated tokens (flag 0xce), an entity without owner, a session the DGS
+  does not hold and an unreachable sc-entitygraph get no answer, as before.
+- Every request is logged (`entity token request`, with the player, entity, token, request, flags, decision and why), and the
+  replicant logs `entity token decided by the DGS` and `entity token event to the client`.
 
 ## Commands and queries
 
@@ -162,6 +189,9 @@ written before are counted again on each inventory's next change. Seed again (th
 and items take no room unless their stowed edge names it. The admin calls need nothing new in the database: the GEID
 counter is made on the first item added, and sc-admin-web needs this sc-entitygraph before it (the admin calls are
 new RPCs). Adding by class needs the seeded classes.
+
+Entities made before the item type numbers were seeded have 0 for them; at start and after each class seed sc-entitygraph
+gives them the numbers of their class (idempotent), which also ends the client's "Entity Item Types Mismatch" errors.
 
 ## Equipping
 
@@ -219,13 +249,27 @@ Ports a person does not equip to are left out *(inferred from the names and flag
   command: the item must be the player's and stowed, the parent worn by the player, the port free (an occupied port is
   refused, take the item off first), and a taken-off item must fit the inventory it goes to. Neither call knows whether the
   player is live (a worn item is not marked with a shard): the caller refuses, as for the other admin calls.
-- **Live**: the DGS has authority. The client asks with `pi.RmAuthorityProcessInventoryManagementOperation`, request type
-  Interaction (a port to inventory move) or Store; the DGS decodes `itemEntityId` and `itemPortPath`, checks the same way
-  against its own state, and tells sc-entitygraph with a `Move`/`Attach`/`Detach` command carrying the port CRC (the commands
-  exist; `Plan::equip` and `Plan::unequip` are their equivalents). **Not done**: the request is not decoded beyond its
-  head (see the protocol notes, "Inventory requests of the player"), so the DGS answers "completed" and nothing is stored.
-  The game tests it needs: equip a held pistol and a stowed torso piece in the client, log the request bytes, and
-  compare with `itemEntityId`/`itemPortPath`.
+- **Live**: the DGS has authority (`services/dgs/src/equip.rs`, `worn.rs`, `inventory.rs`). The client sends
+  `pi.RmAuthorityProcessInventoryManagementOperation` for every request it does not run itself, and waits for
+  `pi.RmTokenMoveRequestCompleted(result, requestId, item)`. The DGS decodes the request (the layout is in the protocol
+  notes, "Inventory requests of the player"), and applies it to the tree of what the player wears, which it builds when the
+  player joins (the loadout's binds and the equipped items sc-entitygraph lists):
+  - **Interaction with an `itemPortPath`** (equip from an inventory): the client names the item by class CRC
+    (`classId`, the CRC of the class GUID) and the source inventory, not by entity (`itemEntityId` is 0). The DGS finds the
+    player's stowed single item of that class there (`AdminInventoryTree`), resolves the path (`Body_ItemPort:Armor_Undersuit:
+    Armor_Helmet`: from the player's port down through the worn items, the last element the free port of the last item),
+    refuses a port that is taken, and asks sc-entitygraph to attach it (`AdminEquipItem`, once per command id
+    `live:<replicant>:<session>:<player>:<request id>`), which checks ownership, that it is stowed, and the class rules
+    (`equip::fits`). On success the item is bound to the client under its parent with the port's CRC (the loadout's own
+    bind), and the answer carries its GEID.
+  - **Store** (a worn item into the inventory in `targetInventory`): `AdminUnequipItem`, then the item and what hangs from
+    it are unbound from the client (children first).
+  - **Move**: a worn item is a Store; a stowed one goes through `AdminMoveItem` (by entity, or by class in the source
+    inventory), and nothing is bound.
+  - The other request types are in "Live inventory operations" below. Anything not listed there (OpenNestedInventory) is still
+    answered as completed without a change. A request that cannot be applied is answered with result `false`, never left to
+    hang.
+  What hangs from an equipped stowed item (a backpack on a torso piece) is not bound yet: only the item itself is.
 
 ### On join
 
@@ -254,3 +298,64 @@ port (the picker lists only free compatible ports), and a "Take off" form with t
 
 Seed again so that classes have `attachSize`, `attachTags`, `requiredTags` and `ports` (until then nothing can be equipped:
 the port list is empty). sc-entitygraph before sc-admin-web and sc-dgs (new RPCs, the new `EnsureLoadout` fields).
+
+### Persisting live equips
+
+The effect in the game and the stored state are made by the same step: the DGS asks sc-entitygraph to attach or detach
+the item before it changes its own tree and binds anything, so nothing the player sees is missing from the graph, and a
+rejection (a class that does not fit, an item that is not the player's) fails the request. This is the existing
+`AdminEquipItem`, `AdminUnequipItem` and `AdminMoveItem`, which `Plan::equip`/`unequip`/`moves` apply in one transaction
+and record once per command id. They are named for the admin portal but are the commands of any caller; the `actor` the
+DGS gives is `dgs`. The seam is `equip::ItemStore`; `GraphItems` is its sc-entitygraph implementation and the tests use a
+fake.
+
+- **Idempotency**: the command id is `live:<replicant>:<session>:<player>:<request id>`: a retry of the same request is a
+  replay, and a request id is not reused within a session.
+- **Disconnect**: nothing to flush: every change is stored as it is made. `LeavePlayer` only drops the DGS's tree, and the
+  `ReleasePlayer` path (docs/DISCONNECT.md) clears the live markers as before.
+- **Crash of the DGS** between the graph call and the bind: the graph has the change and the client was not shown it; the
+  replicant rejoins the player (a new `boot_id`), and `EnsureLoadout` rebuilds the worn tree from the graph, so the player
+  sees what is stored. A crash before the call changes nothing, and the client's request is lost with it (the replicant
+  answers nothing; the client reconnects).
+- **Join**: `EnsureLoadout` answers the loadout's GEIDs (0 for one taken off) and `equipped`, the rest of what is attached;
+  the DGS binds both, so an equip made in a session is worn again at the next join.
+- **Not stored yet**: what hangs from an item equipped in a session is bound only after the next join; dropped items are bound only to the client of the player who dropped them (not streamed to others, not rebuilt after a DGS restart); a failure of sc-entitygraph fails the request instead of being retried (the client can ask
+  again).
+- **Open**: a call that lets a DGS mark the change with the shard (so that the admin portal refuses it while the player is
+  live, as for the other live entities) is not needed for worn items, which carry no shard id; revisit with item entities
+  unstowed on a shard.
+
+
+## Live inventory operations
+
+The requests of a live player that are not an equip, a take-off or a move. The DGS (`services/dgs/src/equip.rs`) decodes the
+request, asks sc-entitygraph for the change with `InventoryOperation` (`ItemStore`: `stack`, `stack_all`, `split`, `swap`,
+`repool_ammo`, `drop_item`, `pickup`), and answers the client with the result bit and an item. Each is one transaction
+(`services/entitygraph/src/operations.rs`) applied once per command id `live:<replicant>:<session>:<player>:<request id>`
+with its answer recorded, so a repeat gets the same one (`replayed`). The ownership, capacity and loop checks are those of
+every other command; a stack that changed between the read and the write fails the request. Stack limits are the game's:
+99, 999 for currency, 1 (no stacking) for a class that is not `stackable`.
+
+| Type | What the DGS asks | Result item |
+|---|---|---|
+| Stack (5) | The item (`itemEntityId`, else the stowed item of `classId` in the source inventory) goes onto the fullest other stack of its class with room, in the target inventory (else its own); `amount` of it (0: all). An emptied stack is erased | the stack that took |
+| StackAll (13) | The stacks of the source inventory (else the target) of `classId` (0: every class) are merged into as few as the limit allows | the first surviving stack |
+| Split (4) | A new item (new GEID, same class and owner) takes `amount` from a stack, in the target inventory (else the stack's own); `amount` must be below the stack | the new item |
+| Swap (6), SwapOutfit (11) | The item trades places with the worn item at `itemPortPath`, else with the entity in `unstowAggregateRootId`. Stowed with stowed exchange inventories; stowed with worn is `Plan::unequip` plus `equip` (the stowed item must fit the port, single); worn with worn exchange ports (both must fit; neither may hang from the other). What hangs from an item goes with it | the item asked for |
+| StoreAndHide (8) | As Store/Move: a worn item is taken off (unbound with what hangs from it), a stowed one moved | as Move |
+| Sort (3) | Nothing: the order is the client's display. Answered as completed | none |
+| Drop (0) | A stowed item (or `amount` of a stack, as a new item) is unstowed on the DGS's shard, owned by no one, with `droppedBy`, `zoneId`, `position` and `orientation` of the player; the DGS binds it under the player's zone. A worn item is refused | the world item |
+| Interaction with a port path ending in a body `inventory_pocket(_2)` *(inferred from the live log: the client sends it to put an item into the personal storage; the port is `inventoryinternalonly`, so nothing is worn)* | The item (`itemEntityId`, else the stowed item of `classId` in the source inventory) is moved (`amount`, 0: all) from the source inventory to `<player>:PlayerInventory:0`; one already in it stays; a worn item is taken off into it. Nothing is bound | the item |
+| Interaction with a port path of a wearable port, the item a stack | One is split off the stack (command id `<id>:split`, into the stack's inventory) and that new item is equipped (`<id>:equip`); when equipping it fails it is stacked back (`<id>:undo`). Sequential, not one transaction: a DGS crash between the steps leaves a stack of one next to the stack | the new item |
+| Interaction with an entity and no port | Pickup: an item dropped on this shard (`droppedBy` set, owner none or the player) is stowed in the target inventory (else the personal one), owned by the player, and unbound. An entity that is no such item (NOT_FOUND) leaves the request completed without a change, as before | the item |
+| AmmoRepool (12) | The rounds (`ammoCount`) of the stowed magazines of `classId` in the inventory are poured into as few magazines as possible, fullest first. Capacity is the class's `ammoCapacity` when the seed has it (it does not yet), else the fullest magazine; magazines with no count are left alone | the fullest magazine |
+
+Binding after a swap: the swapped worn items are unbound with what hangs from them (children first) and every item the
+graph says is now worn (`placed`, parents first, with the children that moved) is bound under its parent with the port's key.
+
+Not verified in game, and inferred: which request field names the second item of a Swap/SwapOutfit, what SwapOutfit moves
+beyond Swap, the meaning of `amount` and of the target in Stack/Split, that a dropped item bound with the item flags and no
+port shows in the world, that a pickup is an Interaction with the world entity and no port, and what AmmoRepool's fields mean
+(the layout of the common fields is decoded, see the protocol notes). Dropped items have no owner and so are not in any
+admin tree; nothing streams them to other clients or rebinds them after a DGS restart yet. Seeding the magazine size
+(`ammoCapacity`) needs the sc-admin seed export.

@@ -141,6 +141,22 @@ async fn replace_all(db: &Arango, collection: &str, docs: &[Value]) -> Result<()
     Ok(())
 }
 
+/// Entities made before their class was seeded with item type numbers have 0 for them, which the client reports as
+/// "Entity Item Types Mismatch" and treats as an AI module. Gives each the numbers of its class. Idempotent: an entity
+/// that has them, or whose class has none, is left alone. Returns how many were changed.
+pub async fn repair_item_types(db: &Arango) -> Result<u64, String> {
+    let query = "FOR e IN entities FILTER e.itemTypeEnum IN [null, 0] AND e.classGuidCrc != null AND e.classGuidCrc != 0
+                     LET class = FIRST(FOR c IN entity_classes FILTER c.guidHashCrc == e.classGuidCrc RETURN c)
+                     FILTER class != null AND class.itemTypeEnum != null AND class.itemTypeEnum != 0
+                     UPDATE e WITH { itemTypeEnum: class.itemTypeEnum, itemSubTypeEnum: NOT_NULL(class.itemSubTypeEnum, 0) } IN entities
+                     RETURN 1";
+    let changed = db.aql(query, json!({})).await?.len() as u64;
+    if changed > 0 {
+        info!(entities = changed, "item type numbers of existing entities repaired from their classes");
+    }
+    Ok(changed)
+}
+
 /// Writes the classes as they arrive. Returns how many were written.
 pub async fn classes<S>(db: &Arango, mut requests: S) -> Result<u64, Status>
 where
@@ -157,6 +173,7 @@ where
         written += docs.len() as u64;
     }
     info!(classes = written, "entity classes seeded");
+    repair_item_types(db).await.map_err(internal)?;
     Ok(written)
 }
 

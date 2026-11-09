@@ -305,6 +305,9 @@ fn ship_row(record: &ShipRecord) -> Value {
     })
 }
 
+/// How long a list waits for the durable records before it answers from the graph alone.
+const RECORDS_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 const UPSERT_SHIP: &str = "UPSERT { _key: @row._key } INSERT @row UPDATE @row IN ships";
 
 /// The view of a record at `now` for a hangar.
@@ -326,7 +329,13 @@ fn view(record: &ShipRecord, hangar: sc_api::internal::HangarSize, exact: bool, 
 impl Ships {
     async fn class(&self, guid: &str) -> Result<Value, Status> {
         let guid = guid.trim().to_lowercase();
-        let rows = self.db.aql("FOR c IN entity_classes FILTER c._key == @g OR c.guid == @g RETURN c", json!({ "g": guid })).await.map_err(internal)?;
+        // A class is keyed by its GUID: a lookup by key. The scan of every class by the `guid` field (no index) is only for
+        // a class stored under another key.
+        let by_key = self.db.aql("RETURN DOCUMENT('entity_classes', @g)", json!({ "g": guid })).await.map_err(internal)?;
+        let rows = match by_key.into_iter().find(|row| !row.is_null()) {
+            Some(row) => vec![row],
+            None => self.db.aql("FOR c IN entity_classes FILTER c.guid == @g LIMIT 1 RETURN c", json!({ "g": guid })).await.map_err(internal)?,
+        };
         rows.into_iter().next().ok_or_else(|| Status::not_found(format!("no entity class {guid}: run sc-admin seed")))
     }
 
@@ -338,10 +347,27 @@ impl Ships {
     /// Makes the graph hold `record`: its entity in the owner's hangar bank, and its `ships` row. Repeating it changes
     /// nothing. The entity and the row are written in one transaction.
     async fn write_graph(&self, record: &ShipRecord) -> Result<(), Status> {
+        self.write_graph_with(record, None).await
+    }
+
+    /// Only the `ships` row of a record whose entity the graph holds: one transaction and no lookups.
+    async fn write_row(&self, record: &ShipRecord) -> Result<(), Status> {
+        self.db.transaction(&["ships"], &[(UPSERT_SHIP, json!({ "row": ship_row(record) }))]).await.map_err(crate::write_error)
+    }
+
+    /// `write_graph` with the class when the caller has looked it up already.
+    async fn write_graph_with(&self, record: &ShipRecord, known: Option<&Value>) -> Result<(), Status> {
         let exists = self.db.aql("FOR e IN entities FILTER e._key == @k RETURN 1", json!({ "k": record.geid.to_string() })).await.map_err(internal)?;
         let mut statements: Vec<(String, Value)> = Vec::new();
         if exists.is_empty() {
-            let class = self.class(&record.entity_class_guid).await?;
+            let looked_up;
+            let class = match known {
+                Some(class) => class,
+                None => {
+                    looked_up = self.class(&record.entity_class_guid).await?;
+                    &looked_up
+                }
+            };
             let mut plan = Plan::new(None, now_ms());
             let to = bank(record.owner_id, record.location_id);
             plan.refuse_live_inventory(&to, record.owner_id);
@@ -374,7 +400,7 @@ impl Ships {
         let record = self.records.replace(ShipRecord { graph_synced: false, ..record }, expected_revision).await?;
         self.write_graph(&record).await?;
         let synced = self.records.replace(ShipRecord { graph_synced: true, ..record.clone() }, record.revision).await?;
-        self.write_graph(&synced).await?;
+        self.write_row(&synced).await?;
         Ok(synced)
     }
 
@@ -436,10 +462,10 @@ impl Ships {
                 record = self.records.replace(ShipRecord { geid, ..record.clone() }, record.revision).await?;
             }
             // 3. The graph. A failure here leaves a record that is not graph_synced; `list` and `reconcile` finish it.
-            match self.write_graph(&record).await {
+            match self.write_graph_with(&record, Some(&class)).await {
                 Ok(()) => {
                     let synced = self.records.replace(ShipRecord { graph_synced: true, ..record.clone() }, record.revision).await?;
-                    self.write_graph(&synced).await?;
+                    self.write_row(&synced).await?;
                     record = synced;
                 }
                 Err(error) => {
@@ -470,7 +496,7 @@ impl Ships {
             self.write_graph(&record).await?;
             if !record.graph_synced {
                 let synced = self.records.replace(ShipRecord { graph_synced: true, ..record.clone() }, record.revision).await?;
-                self.write_graph(&synced).await?;
+                self.write_row(&synced).await?;
             }
             repaired += 1;
             info!(owner, ship = %record.ship_uid, "ship made right in the graph from its record");
@@ -480,25 +506,40 @@ impl Ships {
         Ok((repaired, orphans))
     }
 
-    pub async fn list(&self, request: ListShipsRequest) -> Result<ListShipsResponse, Status> {
-        need_owner(request.owner_id)?;
-        let now = if request.now_ms == 0 { now_ms() as i64 } else { request.now_ms };
+    /// The graph's `ships` rows of an owner, made to agree with the durable records: the record wins, and a row whose
+    /// revision differs, or that is missing, is rewritten. Returns the rows as they are after, how many were repaired and
+    /// the orphans (graph ships with no record). If the records cannot be asked the graph answers alone.
+    pub async fn synced_rows(&self, owner: u64) -> Result<(Vec<Value>, u32, Vec<u64>), Status> {
         let owned = |db: &Arango| {
             let db = db.clone();
-            async move { db.aql("FOR s IN ships FILTER s.ownerId == @o RETURN s", json!({ "o": request.owner_id.to_string() })).await.map_err(internal) }
+            async move { db.aql("FOR s IN ships FILTER s.ownerId == @o RETURN s", json!({ "o": owner.to_string() })).await.map_err(internal) }
         };
-        let mut rows = owned(&self.db).await?;
+        // The graph's rows and the records are asked together; the records get `RECORDS_WAIT` at most.
+        let (rows, records) = tokio::join!(owned(&self.db), async {
+            match tokio::time::timeout(RECORDS_WAIT, self.records.all(owner)).await {
+                Ok(records) => records,
+                Err(_) => Err(Status::deadline_exceeded("sc-entity-document did not answer in time")),
+            }
+        });
+        let mut rows = rows?;
         let (mut repaired, mut orphans) = (0, Vec::new());
         // The cross-check with the records. If they cannot be asked, the graph answers alone: it is what the game reads.
-        match self.records.all(request.owner_id).await {
+        match records {
             Ok(records) => {
-                (repaired, orphans) = self.reconcile(request.owner_id, &records, &rows).await?;
+                (repaired, orphans) = self.reconcile(owner, &records, &rows).await?;
                 if repaired > 0 {
                     rows = owned(&self.db).await?;
                 }
             }
-            Err(error) => warn!(owner = request.owner_id, %error, "the ship records could not be asked; the graph answers alone"),
+            Err(error) => warn!(owner, %error, "the ship records could not be asked; the graph answers alone"),
         }
+        Ok((rows, repaired, orphans))
+    }
+
+    pub async fn list(&self, request: ListShipsRequest) -> Result<ListShipsResponse, Status> {
+        need_owner(request.owner_id)?;
+        let now = if request.now_ms == 0 { now_ms() as i64 } else { request.now_ms };
+        let (rows, repaired, orphans) = self.synced_rows(request.owner_id).await?;
         let ships = rows
             .iter()
             .filter(|row| !row["_key"].as_str().and_then(|key| key.parse::<u64>().ok()).is_some_and(|geid| orphans.contains(&geid)))
@@ -592,11 +633,14 @@ mod tests {
     #[derive(Default)]
     struct Memory {
         by_uid: Mutex<HashMap<String, ShipRecord>>,
+        /// The calls made, in order: the cost of an operation in round trips to sc-entity-document.
+        calls: Mutex<Vec<&'static str>>,
     }
 
     #[tonic::async_trait]
     impl Records for Memory {
         async fn record(&self, mut record: ShipRecord) -> Result<ShipRecord, Status> {
+            self.calls.lock().unwrap().push("record");
             let mut all = self.by_uid.lock().unwrap();
             if let Some(found) = all.values().find(|found| found.command_id == record.command_id || found.ship_uid == record.ship_uid) {
                 return Ok(found.clone());
@@ -606,9 +650,11 @@ mod tests {
             Ok(record)
         }
         async fn all(&self, owner: u64) -> Result<Vec<ShipRecord>, Status> {
+            self.calls.lock().unwrap().push("all");
             Ok(self.by_uid.lock().unwrap().values().filter(|record| record.owner_id == owner).cloned().collect())
         }
         async fn replace(&self, mut record: ShipRecord, expected: u64) -> Result<ShipRecord, Status> {
+            self.calls.lock().unwrap().push("replace");
             let mut all = self.by_uid.lock().unwrap();
             let held = all.get(&record.ship_uid).ok_or_else(|| Status::not_found("no ship"))?;
             if held.revision != expected {
@@ -655,13 +701,16 @@ mod tests {
 
         // Acquisition writes the record, then the entity and its row, once per command.
         let small = ships.acquire(acquire("a", &small_guid, ShipPolicy::Lifetime)).await.unwrap();
+        assert_eq!(std::mem::take(&mut *records.calls.lock().unwrap()), ["record", "replace", "replace"], "an acquisition is three round trips to the records, no more");
         let large = ships.acquire(acquire("b", &large_guid, ShipPolicy::Unspecified)).await.unwrap();
         let (small_ship, large_ship) = (small.ship.unwrap().ship.unwrap(), large.ship.unwrap().ship.unwrap());
         assert!(small.graph_synced && !small.replayed);
         assert!(small_ship.geid >= crate::admin::FIRST_ITEM_GEID && small_ship.geid != large_ship.geid);
         assert_eq!((small_ship.pad_size(), large_ship.pad_size()), (PadSize::Xsmall, PadSize::Large));
         assert_eq!(small_ship.insurance.unwrap().base_wait_minutes, 4.05, "the wait comes from the class");
+        records.calls.lock().unwrap().clear();
         let again = ships.acquire(acquire("a", &small_guid, ShipPolicy::Lifetime)).await.unwrap();
+        assert_eq!(std::mem::take(&mut *records.calls.lock().unwrap()), ["record"], "a repeated command is one");
         assert_eq!((again.replayed, again.ship.unwrap().ship.unwrap().geid), (true, small_ship.geid));
         let held = db.aql("FOR e IN entities FILTER e.ownerId == @o RETURN e._key", json!({ "o": owner.to_string() })).await.unwrap();
         assert_eq!(held.len(), 2, "one entity per ship");
@@ -672,7 +721,9 @@ mod tests {
         // The kiosk of a small hangar lists the ship that fits; a large one both; an exact large one only the large.
         let list = |size: HangarSize, exact: bool, at: u32| ListShipsRequest { owner_id: owner, location_id: at, hangar_size: size as i32, exact_size: exact, now_ms: 0 };
         let geids = |reply: ListShipsResponse| reply.ships.iter().map(|view| view.ship.as_ref().unwrap().geid).collect::<Vec<_>>();
+        records.calls.lock().unwrap().clear();
         assert_eq!(geids(ships.list(list(HangarSize::Small, false, location)).await.unwrap()), [small_ship.geid]);
+        assert_eq!(std::mem::take(&mut *records.calls.lock().unwrap()), ["all"], "a list is one call to the records and repairs nothing");
         assert_eq!(geids(ships.list(list(HangarSize::Large, true, location)).await.unwrap()), [large_ship.geid]);
         let mut both = geids(ships.list(list(HangarSize::Xlarge, false, 0)).await.unwrap());
         both.sort();

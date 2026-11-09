@@ -14,7 +14,7 @@ use std::{
 };
 
 use sc_api::internal::{
-    dgs_control_client::DgsControlClient, hub_internal_client::HubInternalClient, session_update::Update, DisconnectReason, PlayerDisconnect, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall,
+    dgs_control_client::DgsControlClient, hub_internal_client::HubInternalClient, session_update::Update, DisconnectReason, PlayerDisconnect, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall, EntityTokenRequest, entity_token_response::Decision,
     EntityMethodRequest, InputFrame, JoinPlayerRequest, LeavePlayerRequest, SessionUpdate, SessionUpdatesRequest,
     LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerMovement, ShardEntitiesRequest, ShardEntitiesResponse,
 };
@@ -88,6 +88,8 @@ pub enum Event {
     Movement { from: SocketAddr, session: u64, movement: Option<PlayerMovement> },
     /// What the DGS sends back to a client for one of its remote method calls.
     Calls { from: SocketAddr, session: u64, calls: Vec<EntityMethodCall> },
+    /// The DGS's decision on a client's token request: granted or denied, for the client's `EntityTokenEvent`.
+    Token { from: SocketAddr, session: u64, entity: u64, token: u32, request: u32, granted: bool },
     /// What the DGS has for the client of its own accord, such as a carriage of its hangar's elevator.
     Update { from: SocketAddr, session: u64, update: Update },
 }
@@ -459,6 +461,29 @@ impl Link {
                     let _ = link.events.send(Event::Calls { from, session, calls });
                 }
                 Err(reason) => info!(%from, entity, method, %reason, "entity method not taken"),
+            }
+        });
+    }
+
+    /// Hands a client's token request to the DGS that holds the player, and its decision back to the loop. A DGS that
+    /// does not decide, or does not answer, sends nothing and the client keeps waiting.
+    pub fn entity_token(self: &Arc<Self>, from: SocketAddr, session: u64, dgs: String, call: EntityTokenRequest) {
+        let link = self.clone();
+        tokio::spawn(async move {
+            let (entity, token, request) = (call.entity_id, call.token, call.request);
+            let asked = EntityTokenRequest { replicant: link.replicant, session, ..call };
+            let reply = match link.client(&dgs) {
+                Ok(mut client) => client.entity_token(Request::new(asked)).await.map_err(|status| format!("{} {}", status.code(), status.message())),
+                Err(reason) => Err(reason),
+            };
+            match reply.map(|reply| reply.into_inner().decision) {
+                Ok(decision) if decision == Decision::Granted as i32 || decision == Decision::Denied as i32 => {
+                    let granted = decision == Decision::Granted as i32;
+                    info!(%from, entity, token, request, granted, "entity token decided by the DGS");
+                    let _ = link.events.send(Event::Token { from, session, entity, token, request, granted });
+                }
+                Ok(_) => info!(%from, entity, token, request, "entity token left unanswered by the DGS"),
+                Err(reason) => info!(%from, entity, token, request, %reason, "entity token not taken"),
             }
         });
     }

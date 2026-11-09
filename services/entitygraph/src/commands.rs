@@ -752,6 +752,79 @@ impl Plan {
         self.patch(geid, "{ stowed: true, inventoryId: @to, shardId: null, moving: false }", json!({ "to": inventory_id }));
     }
 
+    /// A worn item moves to another port: its attached edge (one per child) is replaced. What hangs from it goes with
+    /// it. Refused when the item is not worn.
+    pub fn reattach(&mut self, geid: u64, parent: u64, port_crc: u32) {
+        self.touches(geid);
+        self.touches(parent);
+        self.push(
+            "RETURN ASSERT(LENGTH(FOR x IN entity_edges FILTER x._key == @edge LIMIT 1 RETURN 1) == 1,
+                           'precondition: the item is not worn')",
+            json!({ "edge": attached_edge_key(geid) }),
+        );
+        self.edge(&EntityEdge {
+            r#type: EntityEdgeType::AttachedTo as i32,
+            start: Some(entity_vertex(geid)),
+            end: Some(entity_vertex(parent)),
+            properties: Some(EntityEdgeProperties {
+                attachment_type: AttachmentType::ItemPort as i32,
+                attachment_port_crc: port_crc,
+                ..Default::default()
+            }),
+        });
+    }
+
+    /// A stowed item leaves its inventory and is live on `shard_id` (the DGS has it), as a dropped item is.
+    pub fn unstow(&mut self, geid: u64, shard_id: &str) {
+        self.touches(geid);
+        self.sources.push(geid.to_string());
+        self.release(geid);
+        self.push("REMOVE @edge IN entity_edges OPTIONS { ignoreErrors: true }", json!({ "edge": stowed_edge_key(geid) }));
+        self.patch(
+            geid,
+            "{ stowed: false, unstowedFromInventoryId: NOT_NULL(e.inventoryId, ''), inventoryId: null, shardId: @shard }",
+            json!({ "shard": shard_id }),
+        );
+    }
+
+    /// An item lies in the world: nobody owns it, in `zone` at `position` and `orientation` (`x y z w`), dropped by
+    /// `dropped_by`.
+    pub fn place_in_world(&mut self, geid: u64, zone: u64, position: [f64; 3], orientation: [f64; 4], dropped_by: u64) {
+        let [x, y, z] = position;
+        let [qx, qy, qz, qw] = orientation;
+        self.patch(
+            geid,
+            "{ ownerId: '0', droppedBy: @by, zoneId: @zone, position: { x: @x, y: @y, z: @z }, orientation: { x: @qx, y: @qy, z: @qz, w: @qw } }",
+            json!({ "by": dropped_by.to_string(), "zone": zone.to_string(), "x": x, "y": y, "z": z, "qx": qx, "qy": qy, "qz": qz, "qw": qw }),
+        );
+    }
+
+    /// An item lying in the world is stowed in `inventory_id` (created on first need as for a move) and owned by `owner`.
+    pub fn pick_up(&mut self, geid: u64, inventory_id: &str, owner: u64) {
+        self.touches(geid);
+        self.ensure_inventory(inventory_id);
+        self.refuse_cycle(&entity_id(geid), inventory_id);
+        self.push(
+            "RETURN ASSERT(LENGTH(FOR i IN inventories FILTER i._key == @to LIMIT 1 RETURN 1) == 1,
+                           'precondition: the target inventory does not exist')",
+            json!({ "to": key(inventory_id) }),
+        );
+        if let Some(doc) = stowed_edge(geid, inventory_id) {
+            self.push(format!("INSERT @doc INTO entity_edges {OVERWRITE}"), json!({ "doc": doc }));
+        }
+        self.claim(geid, inventory_id);
+        self.patch(
+            geid,
+            "{ stowed: true, inventoryId: @to, shardId: null, ownerId: @owner, droppedBy: null, zoneId: null, moving: false }",
+            json!({ "to": inventory_id, "owner": owner.to_string() }),
+        );
+    }
+
+    /// The rounds in a magazine.
+    pub fn set_ammo(&mut self, geid: u64, rounds: u32) {
+        self.patch(geid, "{ ammoCount: @rounds }", json!({ "rounds": rounds }));
+    }
+
     pub fn moves(&mut self, command: &MoveCommand) {
         for body in &command.moves {
             self.touches(body.entity_id);

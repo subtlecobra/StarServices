@@ -220,6 +220,99 @@ message AdminUnequipItemResponse {
 }
 // ---- Admin equipment (end) ----
 
+// ---- Inventory operations of a live player (begin), see docs/INVENTORY.md "Live inventory operations" ----
+// The requests a player's client makes of its DGS that are not an equip, a take-off or a move. Each is one transaction,
+// applied once per command id, for the player `owner_id`, with the checks of every other command (ownership, capacity,
+// loops). The DGS has authority while the player is live and calls this before it answers its client.
+message InventoryOperationRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  string actor = 3;
+  string reason = 4;
+  oneof operation {
+    StackOperation stack = 10;
+    StackAllOperation stack_all = 11;
+    SplitOperation split = 12;
+    SwapOperation swap = 13;
+    RepoolAmmoOperation repool_ammo = 14;
+    DropOperation drop = 15;
+    PickupOperation pickup = 16;
+  }
+}
+
+// Puts a stowed stack into another stack of the same class (and owner) in `inventory_id`, up to the class's stack limit.
+// What does not fit stays in the first stack; an emptied stack is erased.
+message StackOperation {
+  uint64 geid = 1;           // the stack that gives
+  string inventory_id = 2;   // where the other stack is; empty: where `geid` is
+  uint32 amount = 3;         // 0: all of it
+}
+
+// Merges the stacks of an inventory into as few as the limit allows, of one class or (class_crc 0) of every class.
+message StackAllOperation {
+  string inventory_id = 1;
+  uint32 class_crc = 2;
+}
+
+// A new item takes `amount` from a stack, stowed in `to_inventory_id` (empty: the stack's own inventory).
+message SplitOperation {
+  uint64 geid = 1;
+  uint32 amount = 2;  // below the stack
+  string to_inventory_id = 3;
+}
+
+// Two items trade places: each is where the other was, in a port of a worn item or in an inventory. What hangs from an
+// item goes with it.
+message SwapOperation {
+  uint64 geid = 1;
+  uint64 other_geid = 2;
+}
+
+// Redistributes the rounds of the magazines of one class stowed in an inventory so that as few as possible are partly
+// filled. A magazine with no round count is left as it is.
+message RepoolAmmoOperation {
+  string inventory_id = 1;
+  uint32 class_crc = 2;
+}
+
+// An item leaves its inventory for the world: unstowed on `shard_id` at a place in the zone `zone_id`, owned by no one.
+message DropOperation {
+  uint64 geid = 1;
+  uint32 amount = 2;  // below a stack drops that many from it; 0 or all: the item
+  string shard_id = 3;
+  uint64 zone_id = 4;
+  double x = 5;
+  double y = 6;
+  double z = 7;
+  double qx = 8;
+  double qy = 9;
+  double qz = 10;
+  double qw = 11;
+}
+
+// An item lying in the world of `shard_id` (dropped, owned by no one or by the player) is stowed in the player's inventory.
+message PickupOperation {
+  uint64 geid = 1;
+  string shard_id = 2;
+  string to_inventory_id = 3;  // empty: the player's personal inventory
+}
+
+message PlacedItem {
+  uint64 geid = 1;
+  uint32 class_crc = 2;
+  uint64 parent_geid = 3;
+  uint32 port_crc = 4;
+}
+
+message InventoryOperationResponse {
+  uint64 geid = 1;       // the item the request ends in: the stack that took, the new one, the one dropped or picked up
+  uint32 class_crc = 2;  // of `geid`
+  bool replayed = 3;
+  repeated uint64 erased = 4;       // stacks emptied and erased
+  repeated PlacedItem placed = 5;   // items now worn that were not where they are, parents before children
+}
+// ---- Inventory operations of a live player (end) ----
+
 // ---- Admin inventories (end) ----
 
 message LoadoutItem {
@@ -321,6 +414,8 @@ service EntityGraphInternal {
   rpc AdminEquipItem(AdminEquipItemRequest) returns (AdminEquipItemResponse);
   // Takes a worn item off, with what hangs from it, into an inventory.
   rpc AdminUnequipItem(AdminUnequipItemRequest) returns (AdminUnequipItemResponse);
+  // A live player's stack, split, swap, ammo repool, drop and pickup (see InventoryOperationRequest).
+  rpc InventoryOperation(InventoryOperationRequest) returns (InventoryOperationResponse);
   // ---- Admin inventories (end) ----
   // A player left a shard (see docs/DISCONNECT.md): clears the live markers (unstowed with a shard id) of the entities the
   // player owns that were on `shard_id`, so changes to them are no longer refused. A DGS sends it for the entities it held

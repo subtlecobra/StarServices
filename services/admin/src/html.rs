@@ -100,7 +100,7 @@ impl Frame<'_> {
         format!(
             r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} - admin</title><link rel="stylesheet" href="{prefix}/static/admin.css"></head>
+<title>{title} - admin</title><link rel="stylesheet" href="{prefix}/static/admin.css"><script src="{prefix}/static/details.js" defer></script></head>
 <body><header><a class="brand" href="{prefix}/">Admin</a> <a href="{prefix}/audit">Audit</a>
 <span class="who">{handle}</span></header><main><h1>{title}</h1>
 {body}</main></body></html>"#,
@@ -115,6 +115,7 @@ pub fn account_tabs(prefix: &str, account_id: u32, current: &str) -> String {
     let mut out = String::from(r#"<nav class="tabs">"#);
     for (path, label) in [
         ("", "Overview"),
+        ("/badges", "Badges"),
         ("/money", "Money"),
         ("/assets", "Assets"),
         ("/ships", "Ships"),
@@ -127,6 +128,19 @@ pub fn account_tabs(prefix: &str, account_id: u32, current: &str) -> String {
     }
     out.push_str("</nav>");
     out
+}
+
+/// A collapsible section: `<details id>` with a title and, when known, the number of things in it. `open` is decided on
+/// the server (the section being worked on, or the first); the page's script also opens the sections on the way to the
+/// anchor in the address. `inner` is already escaped.
+pub fn section_open(id: &str, title: &str, count: Option<usize>, open: bool, inner: &str) -> String {
+    let count = count.map_or(String::new(), |count| format!(r#" <span class="count">{count}</span>"#));
+    format!(
+        r#"<details class="section" id="{}"{}><summary><h2>{}{count}</h2></summary>{inner}</details>"#,
+        escape(id),
+        if open { " open" } else { "" },
+        escape(title),
+    )
 }
 
 /// A table of already escaped cells.

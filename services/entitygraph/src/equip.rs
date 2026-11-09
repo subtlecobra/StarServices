@@ -36,7 +36,7 @@ pub fn port_crc(name: &str) -> u32 {
     })
 }
 
-fn text<'a>(value: &'a Value, field: &str) -> &'a str {
+pub(crate) fn text<'a>(value: &'a Value, field: &str) -> &'a str {
     value[field].as_str().unwrap_or_default()
 }
 
@@ -84,7 +84,7 @@ pub fn fits(port: &Value, class: &Value) -> Result<(), String> {
 }
 
 /// The port of `class` called `name`, case ignored.
-fn port_named<'a>(class: &'a Value, name: &str) -> Option<&'a Value> {
+pub(crate) fn port_named<'a>(class: &'a Value, name: &str) -> Option<&'a Value> {
     class["ports"].as_array()?.iter().find(|port| text(port, "name").eq_ignore_ascii_case(name))
 }
 
@@ -141,7 +141,7 @@ pub async fn worn(db: &Arango, player: u64) -> Result<Vec<Worn>, Status> {
 }
 
 /// Whether `item` sits in a port equipping reaches: not the body or the head, which are the character.
-fn removable(items: &[Worn], item: &Worn) -> bool {
+pub(crate) fn removable(items: &[Worn], item: &Worn) -> bool {
     items
         .iter()
         .find(|parent| parent.geid == item.parent)
@@ -218,7 +218,7 @@ pub async fn equipment(db: &Arango, request: AdminEquipmentRequest) -> Result<Ad
     Ok(AdminEquipmentResponse { worn, ports })
 }
 
-async fn class_of(db: &Arango, crc: Value) -> Result<Value, Status> {
+pub(crate) async fn class_of(db: &Arango, crc: Value) -> Result<Value, Status> {
     let rows = db.aql("FOR c IN entity_classes FILTER c.guidHashCrc == @crc LIMIT 1 RETURN c", json!({ "crc": crc })).await.map_err(internal)?;
     rows.into_iter().next().ok_or_else(|| Status::not_found("the item's class is not seeded: run sc-admin seed"))
 }

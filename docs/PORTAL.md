@@ -59,6 +59,10 @@ written to `admin_audit` as `pending` before the owner is asked, and is finished
 after; the owner applies the key `admin:<request id>` once. The account's player is `AccountSummary.geid` from
 sc-identity.
 
+The outcome of a change is shown once, on the page the post redirects to. It is kept in the portal's memory, per admin, for
+at most a minute, never in the address or a cookie, so a refreshed or copied link shows no stale notice; the next page
+read takes it and it is gone.
+
 The Inventory tab asks sc-entitygraph (`EntityGraphInternal`, the "Admin inventories" block, see
 [INVENTORY.md](INVENTORY.md)):
 
@@ -87,11 +91,55 @@ The Inventory tab asks sc-entitygraph (`EntityGraphInternal`, the "Admin invento
   holds it, branches expand and collapse (Expand all, Collapse all), the arrow keys walk it and Enter chooses; the choice
   is shown as a path (`Orison › Item bank › Pembroke Core`). Without the script the same select is a plain indented list.
   Each item says `In: <path>` and each inventory heading is its path.
-- Worn: the items the player wears, under what they hang from. An item that fits a free port of something worn
-  has an "Equip on" chooser listing only those ports; a worn item (not the body or head) has "Take off" into any
-  inventory. See "Equipping" in [INVENTORY.md](INVENTORY.md). Offline only, like the rest.
+- Character & storage: the worn gear and the inventories are one tree. The character is at the top, open, with what it
+  wears under what it hangs from (body, undersuit, armor, weapon, by port); below it Storage: the personal inventory
+  (open), the item banks and the other top-level inventories, each a collapsed branch. A container's inventory is nested
+  under the item that holds it, so a crate or a backpack is a branch of its own, collapsed until opened. A branch says its
+  name, an occupancy bar and words (`0.5 of 2 SCU`) and its item count; an item says its name, the quantity, its GEID and
+  class (the class GUID on hover). An inventory whose holder is not among the loaded items of the inventory it sits in
+  is listed under "Also inside" there.
+- Each item row has a small Actions menu: Equip (only for an item that fits a free port of something worn, with those
+  ports to choose from), Move..., and Remove for a stowed item; Take off (into the personal inventory by default) for
+  a worn one. Move, and putting a worn item somewhere else, are on the item's own page (`/inventory/item?geid=`), which
+  has the inventory tree picker, so no row carries a list of every inventory (the old page did, per item). A stack's
+  part is moved with the quantity.
+- Paging: the items of an inventory are 25 to a page, each inventory with its own pager (`pg:<inventory id>=<page>` in the
+  query), and the top-level inventories 25 to a page (`ip=<page>`). The tree is read whole from sc-entitygraph (up to 500
+  items per inventory); the paging is the portal's. A redirect after a change comes back with `open=<ids>` and the anchor
+  of the inventory worked on, which opens it and the way down to it; `details.js` (served by the portal, text nodes only)
+  also opens the sections on the way to any `#anchor` and adds Expand all / Collapse all. Without scripts the server has
+  opened what matters.
 - Refused, as locations are, while sc-hub has the player on a shard or does not answer: the DGS holds a playing
   player's items. sc-entitygraph checks the rest as for the player's own command: capacity, loops, ownership.
+
+The Ships tab is one page of collapsible sections, each with its count: Ships in hangars (open), Grant ships (closed until
+a search or a cart is open), Ship entitlements and Rentals. The old Hangar tab was merged into it: `/hangar` leads to
+`/ships` with its query, and `/hangar/grant` and `/hangar/report` still post. The hangar ships come from
+sc-entitygraph's `ShipsInternal` (the same endpoint as the inventory, no extra setting; see [SHIPS.md](SHIPS.md)).
+
+- Ships in hangars: `ListShips` for the player at every location: class (English name), state, pad size, the hangar's
+  place by name, insurance (none, lifetime, or until a date), the claim's ready time and cost, and the numbers of ships the
+  list `repaired` in the graph and of `orphans` it found. A pad size "not set" means the class has no size in the seed.
+- Grant ships: find vehicle classes (the search filters the item type `NOITEM_Vehicle`, an assumption of the game data's
+  naming; "any class" searches all), press Add to fill the cart (kept in the query string, no script; up to 10 classes and
+  20 ships), then choose the home hangar (the home locations table of the game build; the player's home location is
+  preselected), the insurance (none, a number of days, or lifetime), optionally a pad size, and a reason. One post calls
+  `AcquireShip` per ship (command id `admin:<request id>:<n>`, so a resubmitted form makes no second ship) and writes
+  one audit entry (`ship.grant`). The pad size and the claim times come from the class's seed (`vehicle.maxBoundingBox`,
+  `vehicle.insurance`); in a cluster not re-seeded with them the pad size must be picked in the form, else the result says
+  the ships are listed for no hangar, and the claim times are 0.
+- A deployed ship left behind (a shard that crashed) can be put away at its record's hangar or marked destroyed
+  (`ReportShip`, audited as `ship.store` / `ship.destroy`). Other transitions (claims, retrieval) are made in game.
+- Ship entitlements (the vehicle entitlements and every rental, with the vehicle state saved for each) and Rentals (end,
+  extend) are what the Ships tab showed before.
+- Refused, like the inventory, while the player is on a shard or sc-hub does not answer.
+
+Speed: a page asks its owners together, not one after the other. The Ships page makes the hub and presence checks, the hangar
+list, the rentals, both entitlement queries, the home location and every class name in one go (the page takes as long as the
+slowest owner), names each class once (the names are remembered by the portal), and reads the saved states of the entitlements
+together. A change checks only the hub (not presence) before it asks the owner. The grant calls `AcquireShip` for one ship
+after the other on purpose: each takes the entity graph's write locks, so concurrent calls would only queue, and a failure then
+says how many were granted. The cost of the calls on sc-entitygraph's side is in [SHIPS.md](SHIPS.md).
 
 ## Accounts and admins
 

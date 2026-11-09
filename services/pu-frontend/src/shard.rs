@@ -21,7 +21,7 @@ use std::{
 };
 
 use blake2::{digest::consts::U16, Blake2s, Digest};
-use sc_api::internal::{session_update::Update, DgsFrames, DisconnectReason, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, InputFrame, PlayerMovement, Rotation};
+use sc_api::internal::{session_update::Update, DgsFrames, DisconnectReason, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, EntityTokenRequest, InputFrame, PlayerMovement, Rotation};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UdpSocket},
@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 use crate::batches::{Batches, Completion};
 use crate::dgs::Directory;
 use crate::input::{
-    action_frame, client_authority, indexes_hold, movement_update, remote_method, remote_method_message, variables_update, MESSAGE_ENTITY_REMOTE_METHOD,
+    action_frame, client_authority, indexes_hold, movement_update, remote_method, remote_method_message, token_event_message, token_request, variables_update, MESSAGE_ENTITY_REMOTE_METHOD, MESSAGE_ENTITY_TOKEN_REQUEST,
 };
 use crate::link::{Event, Identity, Link, PlayerEntities, Session, World};
 use crate::sessions::Sessions;
@@ -271,6 +271,8 @@ struct Peer {
     input: Vec<InputFrame>,
     /// The client's remote method calls on entities other than its player, not yet given to its DGS.
     methods: Vec<EntityMethodRequest>,
+    /// Token requests of the client the DGS has not decided yet.
+    tokens: Vec<EntityTokenRequest>,
     /// Bind batches of the DGS's updates sent and not yet reported spawned, which end when they are.
     update_batches: Vec<u32>,
     /// The last unbind batch's id. Unbind batches are counted apart from bind batches.
@@ -571,8 +573,27 @@ impl Peer {
         self.methods.push(EntityMethodRequest { replicant: 0, session: 0, player_id: player, entity_id, method, args: args.to_vec() });
     }
 
+    /// A client's `EntityTokenRequest`, for the DGS to decide: it has authority over what the token guards.
+    fn receive_token_request(&mut self, payload: &[u8]) {
+        let Some(player) = self.joined().map(|joined| joined.player.entity_id) else { return };
+        let Some((entity_id, token, request, flags)) = token_request(payload) else { return };
+        if self.stage != Stage::InGame {
+            return;
+        }
+        self.tokens.push(EntityTokenRequest { replicant: 0, session: 0, player_id: player, entity_id, token, request, flags: u32::from(flags) });
+    }
+
+    /// The DGS's decision, as the `EntityTokenEvent` the client waits for.
+    fn receive_token(&mut self, entity: u64, token: u32, request: u32, granted: bool) {
+        info!(entity, token, request, granted, "entity token event to the client");
+        self.pending.push_back(token_event_message(entity, token, request, granted));
+    }
+
     fn forward_methods(&mut self, link: &Arc<Link>, from: SocketAddr) {
         let Some(dgs) = self.joined().map(|joined| joined.dgs.clone()) else { return };
+        for call in std::mem::take(&mut self.tokens) {
+            link.entity_token(from, self.session_id, dgs.clone(), call);
+        }
         for call in std::mem::take(&mut self.methods) {
             link.entity_method(from, self.session_id, dgs.clone(), call);
         }
@@ -768,6 +789,7 @@ impl Peer {
             last_seen: Instant::now(),
             input: Vec::new(),
             methods: Vec::new(),
+            tokens: Vec::new(),
             update_batches: Vec::new(),
             unbind_batch: 0,
             input_in_flight: false,
@@ -842,6 +864,12 @@ fn receive_event(event: Event, peers: &mut HashMap<SocketAddr, Peer>) -> Option<
         Event::Update { from, session, update } => {
             if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
                 peer.receive_update(update);
+                return Some(from);
+            }
+        }
+        Event::Token { from, session, entity, token, request, granted } => {
+            if let Some(peer) = peers.get_mut(&from).filter(|peer| current(peer, session)) {
+                peer.receive_token(entity, token, request, granted);
                 return Some(from);
             }
         }
@@ -994,6 +1022,9 @@ fn replication_data(data: &[u8], from: SocketAddr, peer: &mut Peer) -> Option<Ve
             peer.receive_method(payload);
         } else {
             info!(%from, id, payload = %hex(payload), "client message");
+            if id == MESSAGE_ENTITY_TOKEN_REQUEST {
+                peer.receive_token_request(payload);
+            }
         }
     }
     let resent = data[2] & FLAG_RESEND != 0;

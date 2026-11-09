@@ -16,6 +16,7 @@ use sc_proto::{
 };
 use serde_json::{json, Value};
 use tonic::Status;
+use tracing::info;
 
 use crate::{
     doc::{self, entity_id, inventory_handle},
@@ -277,6 +278,76 @@ async fn attachments(
     Ok(())
 }
 
+/// An item whose class has an inventory container but which was made before the class was seeded (or before it had
+/// one) has no `Container` inventory yet. The client asks for it by id when it opens the item, so it is made then, the
+/// way creating the item would have: sized by the class, held by the item. Nothing is made for an entity that does not
+/// exist or whose class is not known to have a container. Returns whether it was made.
+pub async fn ensure_container(db: &Arango, inventory_id: &str, now: u64) -> Result<bool, Status> {
+    let Some(parsed) = doc::parse_inventory_id(inventory_id) else {
+        return Ok(false);
+    };
+    if parsed.context != doc::CONTAINER {
+        return Ok(false);
+    }
+    let Some(mut inventory) = doc::implied_inventory_doc(inventory_id, now) else {
+        return Ok(false);
+    };
+    doc::merge(&mut inventory, json!({ "dirty": true }));
+    let edge = doc::holder_edge(inventory_id, parsed.holder);
+    let query = "FOR e IN entities FILTER e._key == @holder
+                     LET class = FIRST(FOR c IN entity_classes FILTER c.guidHashCrc == e.classGuidCrc RETURN c)
+                     FILTER class.inventory != null
+                     LET missing = LENGTH(FOR i IN inventories FILTER i._key == @key LIMIT 1 RETURN 1) == 0
+                     FILTER missing
+                     INSERT MERGE(@doc, { inventoryType: @physical,
+                                          configuration: { physical: { capacity: class.inventory.capacityMicroScu, occupancy: 0 } } })
+                         INTO inventories OPTIONS { overwriteMode: 'ignore' }
+                     RETURN 1";
+    let bind = json!({
+        "holder": parsed.holder.to_string(),
+        "key": doc::key(inventory_id),
+        "doc": inventory,
+        "physical": sc_proto::services::entitygraph::v1::InventoryType::Physical as i32,
+    });
+    let made = db.aql(query, bind).await.map_err(internal)?;
+    if made.is_empty() {
+        return Ok(false);
+    }
+    let insert = "INSERT @edge INTO entity_edges OPTIONS { overwriteMode: 'ignore' }";
+    db.aql(insert, json!({ "edge": edge })).await.map_err(internal)?;
+    info!(inventory = inventory_id, "container inventory made on first query");
+    Ok(true)
+}
+
+/// The client opens the ASOP's ship list by asking for the player's own `Location` (kind 3) and `Hangar` (kind 8)
+/// inventories at the location id it computes from its local data, with `EntityQuery` and `inventory_id`. Neither exists
+/// until something is stowed there, and a missing inventory makes the query fail instead of answering "no ships". So the
+/// player's own inventory of these two kinds is made, infinite and held by the player, the first time it is asked for.
+/// Another player's id, any other context and a malformed id make nothing. Returns whether it was made.
+pub async fn ensure_player_inventory(db: &Arango, owner: u64, inventory_id: &str, now: u64) -> Result<bool, Status> {
+    let Some(parsed) = doc::parse_inventory_id(inventory_id) else {
+        return Ok(false);
+    };
+    if parsed.holder != owner || !matches!(parsed.context, doc::LOCATION | doc::HANGAR) {
+        return Ok(false);
+    }
+    let Some(inventory) = doc::implied_inventory_doc(inventory_id, now) else {
+        return Ok(false);
+    };
+    let query = "LET missing = LENGTH(FOR i IN inventories FILTER i._key == @key LIMIT 1 RETURN 1) == 0
+                 FILTER missing
+                 INSERT @doc INTO inventories OPTIONS { overwriteMode: 'ignore' }
+                 RETURN 1";
+    let made = db.aql(query, json!({ "key": doc::key(inventory_id), "doc": inventory })).await.map_err(internal)?;
+    if made.is_empty() {
+        return Ok(false);
+    }
+    let insert = "INSERT @edge INTO entity_edges OPTIONS { overwriteMode: 'ignore' }";
+    db.aql(insert, json!({ "edge": doc::holder_edge(inventory_id, owner) })).await.map_err(internal)?;
+    info!(inventory = inventory_id, context = parsed.context, "player inventory made on first query");
+    Ok(true)
+}
+
 pub async fn entity_query(
     db: &Arango,
     scope: Option<Scope>,
@@ -313,7 +384,16 @@ pub async fn entity_query(
     let projection = query.projection.unwrap_or_default();
     let tree = projection.tree.clone().unwrap_or_default();
     let (nodes, edges) = if tree.enabled {
-        entity_tree(db, &roots, &tree).await?
+        let (nodes, mut edges) = entity_tree(db, &roots, &tree).await?;
+        if projection.outgoing_edges {
+            // The tree walk follows edges from what is held to what holds it, so it never returns the edge a
+            // node leaves by: the stowed edge of an item, which is what puts it in its inventory.
+            let known: HashSet<String> = edges.iter().filter_map(|edge| edge["_key"].as_str().map(str::to_string)).collect();
+            let mut leaving = outgoing_edges(db, &nodes).await?;
+            leaving.retain(|edge| edge["_key"].as_str().is_some_and(|key| !known.contains(key)));
+            edges.extend(leaving);
+        }
+        (nodes, edges)
     } else if projection.outgoing_edges {
         let edges = outgoing_edges(db, &roots).await?;
         (roots, edges)
@@ -329,6 +409,17 @@ pub async fn entity_query(
         ..Default::default()
     };
     attachments(db, &nodes, &projection, &mut response).await?;
+    if !query.inventory_id.is_empty() {
+        let results = response.results.as_ref();
+        info!(
+            inventory = %query.inventory_id,
+            filtered = query.filter.is_some(),
+            tree = tree.enabled,
+            nodes = results.map_or(0, |graph| graph.nodes.len()),
+            edges = results.map_or(0, |graph| graph.edges.len()),
+            "inventory entity query"
+        );
+    }
     Ok(response)
 }
 

@@ -28,10 +28,12 @@ pub const PLAYER_INVENTORY: &str = "PlayerInventory";
 pub const LOCATION: &str = "Location";
 /// The inventory of an entity, such as a crate, a backpack or a ship's cargo grid: holder the entity, subject 0.
 pub const CONTAINER: &str = "Container";
+/// A player's ship bank at a location (the client's `EInventoryContext` 8): holder the player, subject the location id.
+pub const HANGAR: &str = "Hangar";
 /// A player's own inventory inside an entity: owner the subject.
 pub const PERSONAL_ENTITY_INVENTORY: &str = "PersonalEntityInventory";
 /// Contexts whose owner is the holder, as `SInventoryConfiguration::Create` (0x140649510) sets it.
-const HOLDER_OWNED: &[&str] = &["Entitlement", LOCATION, PLAYER_INVENTORY, "PlayerEscrowInventory", "Prison", "Hangar"];
+const HOLDER_OWNED: &[&str] = &["Entitlement", LOCATION, PLAYER_INVENTORY, "PlayerEscrowInventory", "Prison", HANGAR];
 /// The `Player` record of the game data (5287b146-fa24-49b8-8126-326164217c4f).
 pub const PLAYER_CLASS_CRC: u32 = 2_961_494_058;
 /// `NOITEM_Player` and its `UNDEFINED` subtype, which the client expects of a player and reports otherwise as

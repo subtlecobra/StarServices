@@ -18,6 +18,8 @@ use sc_api::internal::{
 use tonic::{transport::Channel, Status};
 use tracing::{info, warn};
 
+use crate::platform::{PlatformLink, Step as PlatformStep};
+
 /// `CSCLoadingPlatformManager`'s states, as its log lines name them. An open platform is lowered to receive a ship
 /// (inferred: the names say only that open is idle after lowering, and `LandingAreaComponentParams.alwaysLowerPlatformBeforeSpawn`
 /// says a ship spawns on a lowered platform).
@@ -29,23 +31,32 @@ pub enum PlatformState {
     RaisingPlatform,
 }
 
-/// How long the platform takes each way (inferred; the animation is the client's).
-pub const PLATFORM_TRAVEL: Duration = Duration::from_secs(8);
+/// How long the platform takes each way: measured on the small hangars (transit data.md: open 33 s, close 31.6667 s).
+/// Medium, large and XL durations are not read; they use these until they are.
+pub const PLATFORM_OPEN_TIME: Duration = Duration::from_millis(33_000);
+pub const PLATFORM_CLOSE_TIME: Duration = Duration::from_micros(31_666_700);
 
 /// The hangar's ship platform. The game drops a request in the wrong state and says so in its log; so does this.
 #[derive(Debug)]
 pub struct Platform {
     state: PlatformState,
     moving_until: Option<Duration>,
+    open_time: Duration,
+    close_time: Duration,
 }
 
 impl Default for Platform {
     fn default() -> Self {
-        Self { state: PlatformState::ClosedIdle, moving_until: None }
+        Self { state: PlatformState::ClosedIdle, moving_until: None, open_time: PLATFORM_OPEN_TIME, close_time: PLATFORM_CLOSE_TIME }
     }
 }
 
 impl Platform {
+    /// Back to rest, for a retrieval that is abandoned (the client is gone, so nothing is sent).
+    pub fn reset(&mut self) {
+        (self.state, self.moving_until) = (PlatformState::ClosedIdle, None);
+    }
+
     pub fn state(&self) -> PlatformState {
         self.state
     }
@@ -55,7 +66,7 @@ impl Platform {
         if self.state != PlatformState::ClosedIdle {
             return false;
         }
-        (self.state, self.moving_until) = (PlatformState::LoweringPlatform, Some(now + PLATFORM_TRAVEL));
+        (self.state, self.moving_until) = (PlatformState::LoweringPlatform, Some(now + self.open_time));
         true
     }
 
@@ -64,7 +75,7 @@ impl Platform {
         if self.state != PlatformState::OpenIdle {
             return false;
         }
-        (self.state, self.moving_until) = (PlatformState::RaisingPlatform, Some(now + PLATFORM_TRAVEL));
+        (self.state, self.moving_until) = (PlatformState::RaisingPlatform, Some(now + self.close_time));
         true
     }
 
@@ -203,6 +214,9 @@ pub struct Kiosk<B: ShipBackend> {
     /// so a ship goes to the smallest that fits when the kiosk of that hangar is the one used (inferred).
     exact: bool,
     pub platform: Platform,
+    /// Where the platform's changes go: the hangar's client. Without one (no known layout, or a test) the platform runs
+    /// on its clock alone.
+    link: Option<PlatformLink>,
     retrieval: Option<Retrieval>,
     commands: u64,
 }
@@ -210,11 +224,56 @@ pub struct Kiosk<B: ShipBackend> {
 impl<B: ShipBackend> Kiosk<B> {
     pub fn new(backend: B, owner: u64, location_id: u32, hangar_class: &str, exact: bool) -> Self {
         let size = hangar_class::hangar_size_of(hangar_class);
-        Self { backend, owner, location_id, size, exact, platform: Platform::default(), retrieval: None, commands: 0 }
+        Self { backend, owner, location_id, size, exact, platform: Platform::default(), link: None, retrieval: None, commands: 0 }
     }
 
     pub fn size(&self) -> HangarSize {
         self.size
+    }
+
+    /// Sends the platform's door and manager changes to the hangar's client.
+    pub fn with_link(mut self, link: PlatformLink) -> Self {
+        self.link = Some(link);
+        self
+    }
+
+    fn announce(&self, step: PlatformStep) {
+        if let Some(link) = &self.link {
+            link.announce(step);
+        }
+    }
+
+    /// `RequestOpen`: lowers the platform and tells the client. `false` when it is not closed and idle.
+    fn open_platform(&mut self, now: Duration) -> bool {
+        let opened = self.platform.request_open(now);
+        if opened {
+            self.announce(PlatformStep::Open);
+        }
+        opened
+    }
+
+    /// `RequestClose`: raises the platform and tells the client.
+    fn close_platform(&mut self, now: Duration) -> bool {
+        let closed = self.platform.request_close(now);
+        if closed {
+            self.announce(PlatformStep::Close);
+        }
+        closed
+    }
+
+    /// The client is gone, or the retrieval failed past repair: the ship goes back to the bank and the platform to rest.
+    /// Nothing is sent: the next join binds the hangar as it is. `false` when nothing was being retrieved.
+    pub async fn abort(&mut self, now_ms: i64, request_id: u64) -> bool {
+        let Some(retrieval) = self.retrieval.take().filter(|retrieval| !retrieval.done()) else { return false };
+        let geid = retrieval.geid();
+        warn!(owner = self.owner, geid, "ship retrieval abandoned: stored again");
+        let command_id = self.command("abort", request_id);
+        let request = ReportShipRequest { command_id, owner_id: self.owner, geid, state: ShipState::Stored as i32, location_id: self.location_id, now_ms };
+        if let Err(status) = self.backend.report(request).await {
+            warn!(geid, %status, "the ship stays deployed in its record until it is stored");
+        }
+        self.platform.reset();
+        true
     }
 
     /// A command id for a call, unique to this kiosk's use; a repeat of a call (a client's retry) must reuse the id the
@@ -252,7 +311,7 @@ impl<B: ShipBackend> Kiosk<B> {
         let request = RetrieveShipRequest { command_id, owner_id: self.owner, geid, hangar_size: self.size as i32, exact_size: self.exact, now_ms, ..Default::default() };
         self.backend.retrieve(request).await?;
         let (retrieval, action) = Retrieval::start(geid);
-        self.platform.request_open(now);
+        self.open_platform(now);
         self.retrieval = Some(retrieval);
         info!(owner = self.owner, geid, "ship retrieval started");
         Ok(vec![action])
@@ -261,10 +320,11 @@ impl<B: ShipBackend> Kiosk<B> {
     /// The platform's clock; what the retrieval asks next.
     pub fn tick(&mut self, now: Duration) -> Vec<Action> {
         let Some(state) = self.platform.tick(now) else { return Vec::new() };
+        self.announce(if state == PlatformState::OpenIdle { PlatformStep::Opened } else { PlatformStep::Closed });
         let Some(retrieval) = self.retrieval.as_mut() else { return Vec::new() };
         let action = retrieval.platform(state);
         if matches!(action, Some(Action::RaisePlatform)) {
-            self.platform.request_close(now);
+            self.close_platform(now);
         }
         action.into_iter().collect()
     }
@@ -275,7 +335,7 @@ impl<B: ShipBackend> Kiosk<B> {
         let action = retrieval.spawned(ok);
         match &action {
             Action::RaisePlatform => {
-                self.platform.request_close(now);
+                self.close_platform(now);
             }
             Action::ReleaseShip { geid } => {
                 let geid = *geid;
@@ -285,7 +345,7 @@ impl<B: ShipBackend> Kiosk<B> {
                 if let Err(status) = self.backend.report(request).await {
                     warn!(geid, %status, "the ship stays deployed in its record until it is stored");
                 }
-                self.platform.request_close(now);
+                self.close_platform(now);
             }
             _ => {}
         }
@@ -376,11 +436,11 @@ mod tests {
         assert!(!platform.request_close(T0), "closed already");
         assert!(platform.request_open(T0));
         assert!(!platform.request_open(T0), "already lowering");
-        assert_eq!(platform.tick(T0 + PLATFORM_TRAVEL - Duration::from_millis(1)), None);
-        assert_eq!(platform.tick(T0 + PLATFORM_TRAVEL), Some(PlatformState::OpenIdle));
-        assert!(platform.request_close(T0 + PLATFORM_TRAVEL));
+        assert_eq!(platform.tick(T0 + PLATFORM_OPEN_TIME - Duration::from_millis(1)), None);
+        assert_eq!(platform.tick(T0 + PLATFORM_OPEN_TIME), Some(PlatformState::OpenIdle));
+        assert!(platform.request_close(T0 + PLATFORM_OPEN_TIME));
         assert_eq!(platform.state(), PlatformState::RaisingPlatform);
-        assert_eq!(platform.tick(T0 + PLATFORM_TRAVEL * 2), Some(PlatformState::ClosedIdle));
+        assert_eq!(platform.tick(T0 + PLATFORM_OPEN_TIME + PLATFORM_CLOSE_TIME), Some(PlatformState::ClosedIdle));
     }
 
     #[test]
@@ -416,11 +476,11 @@ mod tests {
         assert_eq!(kiosk.platform.state(), PlatformState::LoweringPlatform);
         assert_eq!(kiosk.retrieve(1, 3, T0, 0).await.unwrap_err().code(), tonic::Code::FailedPrecondition, "one at a time");
         assert!(kiosk.tick(T0 + Duration::from_secs(1)).is_empty());
-        assert_eq!(kiosk.tick(T0 + PLATFORM_TRAVEL), [Action::SpawnShip { geid: 1 }]);
-        let raising = kiosk.spawned(true, T0 + PLATFORM_TRAVEL, 0, 4).await;
+        assert_eq!(kiosk.tick(T0 + PLATFORM_OPEN_TIME), [Action::SpawnShip { geid: 1 }]);
+        let raising = kiosk.spawned(true, T0 + PLATFORM_OPEN_TIME, 0, 4).await;
         assert_eq!(raising, [Action::RaisePlatform]);
         assert_eq!(kiosk.platform.state(), PlatformState::RaisingPlatform);
-        assert_eq!(kiosk.tick(T0 + PLATFORM_TRAVEL * 2), [Action::ShipReady { geid: 1 }]);
+        assert_eq!(kiosk.tick(T0 + PLATFORM_OPEN_TIME + PLATFORM_CLOSE_TIME), [Action::ShipReady { geid: 1 }]);
         assert_eq!(fake.ships.lock().unwrap()[0].state(), ShipState::Deployed);
         assert_eq!(kiosk.platform.state(), PlatformState::ClosedIdle);
     }
@@ -430,11 +490,58 @@ mod tests {
         let fake = Fake::with(vec![(1, PadSize::Xsmall, ShipState::Stored)]);
         let mut kiosk = Kiosk::new(&fake, 7, 9, "Hangar_SmallFront_Orison", false);
         kiosk.retrieve(1, 1, T0, 0).await.unwrap();
-        kiosk.tick(T0 + PLATFORM_TRAVEL);
-        let actions = kiosk.spawned(false, T0 + PLATFORM_TRAVEL, 0, 2).await;
+        kiosk.tick(T0 + PLATFORM_OPEN_TIME);
+        let actions = kiosk.spawned(false, T0 + PLATFORM_OPEN_TIME, 0, 2).await;
         assert_eq!(actions, [Action::ReleaseShip { geid: 1 }]);
         assert_eq!(fake.ships.lock().unwrap()[0].state(), ShipState::Stored);
-        assert!(kiosk.platform.request_close(T0 + PLATFORM_TRAVEL) || kiosk.platform.state() == PlatformState::RaisingPlatform);
+        assert!(kiosk.platform.request_close(T0 + PLATFORM_OPEN_TIME) || kiosk.platform.state() == PlatformState::RaisingPlatform);
+    }
+
+    fn linked(fake: &Fake) -> (Kiosk<&Fake>, tokio::sync::mpsc::UnboundedReceiver<crate::outbox::Sent>) {
+        use crate::platform::{Indices, PlatformIds};
+        let outbox = crate::outbox::Outbox::default();
+        let receiver = outbox.subscribe((1, 1));
+        let link = PlatformLink::new(outbox, (1, 1), PlatformIds { manager: 80, platform: 84 }).with_indices(Indices { current: Some(1), planned: Some(2), door: Some(3) });
+        (Kiosk::new(fake, 7, 9, "Hangar_SmallFront_Orison", false).with_link(link), receiver)
+    }
+
+    fn drain(receiver: &mut tokio::sync::mpsc::UnboundedReceiver<crate::outbox::Sent>) -> Vec<(u64, u32, u8)> {
+        use sc_api::internal::session_update::Update;
+        let mut sent = Vec::new();
+        while let Ok(Ok(update)) = receiver.try_recv() {
+            let Some(Update::Variables(variables)) = update.update else { panic!("not a variable update") };
+            sent.push((variables.entity_id, variables.variables[0].index, variables.variables[0].value[0]));
+        }
+        sent
+    }
+
+    #[tokio::test]
+    async fn a_retrieval_sends_the_platforms_door_and_manager_states_in_order() {
+        let fake = Fake::with(vec![(1, PadSize::Xsmall, ShipState::Stored)]);
+        let (mut kiosk, mut receiver) = linked(&fake);
+        kiosk.retrieve(1, 1, T0, 0).await.unwrap();
+        assert_eq!(drain(&mut receiver), [(84, 3, 5), (80, 1, 2), (80, 2, 3)], "door opening, manager 2 -> 3");
+        assert!(kiosk.tick(T0 + PLATFORM_OPEN_TIME - Duration::from_millis(1)).is_empty());
+        assert!(drain(&mut receiver).is_empty(), "nothing before the measured time");
+        kiosk.tick(T0 + PLATFORM_OPEN_TIME);
+        assert_eq!(drain(&mut receiver), [(84, 3, 3), (80, 1, 3)], "door opened, manager OpenIdle");
+        kiosk.spawned(true, T0 + PLATFORM_OPEN_TIME, 0, 2).await;
+        assert_eq!(drain(&mut receiver), [(84, 3, 2), (80, 1, 6), (80, 2, 7)], "door closing, manager 6 -> 7");
+        kiosk.tick(T0 + PLATFORM_OPEN_TIME + PLATFORM_CLOSE_TIME);
+        assert_eq!(drain(&mut receiver), [(84, 3, 0), (80, 1, 7)], "door closed, manager ClosedIdle");
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_mid_retrieval_stores_the_ship_again_and_rests_the_platform() {
+        let fake = Fake::with(vec![(1, PadSize::Xsmall, ShipState::Stored)]);
+        let (mut kiosk, _receiver) = linked(&fake);
+        assert!(!kiosk.abort(0, 1).await, "nothing to abandon");
+        kiosk.retrieve(1, 1, T0, 0).await.unwrap();
+        assert_eq!(fake.ships.lock().unwrap()[0].state(), ShipState::Deployed);
+        assert!(kiosk.abort(0, 2).await);
+        assert_eq!(fake.ships.lock().unwrap()[0].state(), ShipState::Stored);
+        assert_eq!(kiosk.platform.state(), PlatformState::ClosedIdle);
+        kiosk.retrieve(1, 3, T0, 0).await.expect("a new retrieval may start");
     }
 
     #[tokio::test]

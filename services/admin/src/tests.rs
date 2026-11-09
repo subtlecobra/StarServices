@@ -11,7 +11,7 @@ use axum::{
     Router,
 };
 use http_body_util::BodyExt;
-use sc_api::internal::{ AccountSummary, GameBadge, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipPort, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminWornItem, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
+use sc_api::internal::{ AcquireShipRequest, AcquireShipResponse, ListShipsResponse, PadSize, ReportShipRequest, ReportShipResponse, ShipClaim, ShipInsurance, ShipPolicy, ShipRecord, ShipState, ShipView, AccountSummary, GameBadge, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipPort, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminWornItem, AdminAddItemResponse, AdminEntityClass, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, ExtendRentalRequest, ExtendRentalResponse, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerOperation, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionResponse, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter, EntitlementStatus},
@@ -36,6 +36,9 @@ const PLAYER_GEID: u64 = 300_000_000_002;
 const MEDPEN_GUID: &str = "0a0b0c0d-0000-0000-0000-000000000002";
 /// An account sc-identity knows no player for.
 const NO_PLAYER: u32 = 1_000_003;
+/// A ship class (the fake gives it for the vehicle filter), with an `<` in its name to see it escaped.
+const SHIP_GUID: &str = "5a1b0000-0000-0000-0000-000000000001";
+const ORISON: u32 = 2_026_442_305;
 const CSRF: &str = "c5rf-token-value";
 const RID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -50,9 +53,23 @@ struct Fake {
     pushes: Mutex<u32>,
     /// Applied inventory commands, as sc-entitygraph keeps them: a command id applies once.
     inventory_commands: Mutex<HashMap<String, u64>>,
+    /// The ships sc-entitygraph keeps, and the commands it applied.
+    ships: Mutex<Vec<ShipRecord>>,
+    ship_commands: Mutex<HashMap<String, u64>>,
+    /// How long every read of an owner takes, to show the pages ask the owners together.
+    latency: Mutex<std::time::Duration>,
+    /// Extra items in the item bank's inventory, to page.
+    extra_items: Mutex<u32>,
 }
 
 impl Fake {
+    async fn wait(&self) {
+        let latency = *self.latency.lock().unwrap();
+        if !latency.is_zero() {
+            tokio::time::sleep(latency).await;
+        }
+    }
+
     fn called(&self, what: impl Into<String>) {
         self.calls.lock().unwrap().push(what.into());
     }
@@ -142,6 +159,10 @@ fn fake_tree() -> Vec<AdminInventory> {
         ..Default::default()
     }];
     crate_inventory.item_count = 1;
+    if let Some(properties) = crate_inventory.inventory.as_mut() {
+        use sc_proto::services::entitygraph::v1::{inventory_configuration::Configuration, InventoryConfiguration, PhysicalInventoryConfiguration};
+        properties.configuration = Some(InventoryConfiguration { configuration: Some(Configuration::Physical(PhysicalInventoryConfiguration { capacity: 2_000_000, occupancy: 500_000 })) });
+    }
     let mut hold = inventory("900:Container:0", "Container", 0, "", 0);
     hold.live = true;
     hold.items = vec![AdminInventoryItem { geid: 901, class_name: "spaceship_cargo".into(), inventory_id: "900:Container:0".into(), ..Default::default() }];
@@ -177,6 +198,7 @@ impl Owners for Fake {
     }
 
     async fn entitlements(&self, _: u32, geid: u64, _: EntitlementFilter) -> Result<Vec<Entitlement>, Status> {
+        self.wait().await;
         Ok(vec![Entitlement {
             urn: "urn:e:1".into(),
             entity_class_guid: "abc".into(),
@@ -206,6 +228,7 @@ impl Owners for Fake {
     }
 
     async fn rentals(&self, _: u64) -> Result<Vec<Rental>, Status> {
+        self.wait().await;
         Ok(self.rentals.lock().unwrap().clone())
     }
 
@@ -225,6 +248,7 @@ impl Owners for Fake {
     }
 
     async fn documents(&self, entity_id: u64, classes: Vec<String>) -> Result<Vec<StoredEntityDocument>, Status> {
+        self.wait().await;
         let documents = self.documents.lock().unwrap();
         Ok(classes
             .iter()
@@ -261,17 +285,27 @@ impl Owners for Fake {
     }
 
     async fn player_shard(&self, _: u64) -> Result<Option<PlayerShard>, Status> {
+        self.wait().await;
         let on = *self.on_shard.lock().unwrap();
         Ok(on.then(|| PlayerShard { shard_id: "usa-crimson-falcon".into(), location_id: 2_026_442_305, ..Default::default() }))
     }
 
     async fn presence(&self, _: u32) -> Result<Option<PlayerPresence>, Status> {
+        self.wait().await;
         Ok(None)
     }
 
     async fn inventory_tree(&self, geid: u64) -> Result<Vec<AdminInventory>, Status> {
+        self.wait().await;
         assert_eq!(geid, PLAYER_GEID, "the GEID comes from the account summary");
-        Ok(fake_tree())
+        let mut tree = fake_tree();
+        let extra = *self.extra_items.lock().unwrap();
+        let bank = tree[1].inventory.as_ref().unwrap().id.clone();
+        for at in 0..extra {
+            tree[1].items.push(AdminInventoryItem { geid: 410_000_000_000 + u64::from(at), class_name: format!("pile{at:03}"), stack_size: 1, owner_id: PLAYER_GEID, inventory_id: bank.clone(), ..Default::default() });
+        }
+        tree[1].item_count += extra;
+        Ok(tree)
     }
 
     async fn move_item(&self, request: AdminMoveItemRequest) -> Result<AdminMoveItemResponse, Status> {
@@ -303,6 +337,7 @@ impl Owners for Fake {
     }
 
     async fn equipment(&self, geid: u64) -> Result<AdminEquipmentResponse, Status> {
+        self.wait().await;
         assert_eq!(geid, PLAYER_GEID);
         let worn = |geid: u64, name: &str, kind: &str, parent: u64, port: &str, depth: u32, removable: bool| AdminWornItem {
             geid,
@@ -345,6 +380,7 @@ impl Owners for Fake {
     }
 
     async fn search_classes(&self, search: ClassSearch) -> Result<Vec<AdminEntityClass>, Status> {
+        self.wait().await;
         let pairs = |list: &[(String, Vec<String>)]| list.iter().map(|(item_type, subs)| if subs.is_empty() { item_type.clone() } else { format!("{item_type}:{}", subs.join("|")) }).collect::<Vec<_>>().join("+");
         self.called(format!("classes {} {} {} {} {}", search.query, pairs(&search.any_of), pairs(&search.none_of), search.item_sub_types.join("+"), search.named_only));
         if search.query.starts_with(MEDPEN_GUID) {
@@ -361,6 +397,15 @@ impl Owners for Fake {
         if search.query.starts_with("dead") {
             return Ok(Vec::new());
         }
+        if search.query.starts_with(SHIP_GUID) || search.any_of.iter().any(|(item_type, _)| item_type == "NOITEM_Vehicle") {
+            return Ok(vec![AdminEntityClass {
+                guid: SHIP_GUID.into(),
+                class_name: "AEGS_Avenger_Titan".into(),
+                display_name: "Avenger <Titan>".into(),
+                item_type: "NOITEM_Vehicle".into(),
+                ..Default::default()
+            }]);
+        }
         Ok(vec![AdminEntityClass {
             guid: "c0ffee00-0000-0000-0000-000000000001".into(),
             class_name: "crate<1>".into(),
@@ -372,6 +417,52 @@ impl Owners for Fake {
         }])
     }
 
+    async fn list_ships(&self, geid: u64) -> Result<ListShipsResponse, Status> {
+        self.wait().await;
+        assert_eq!(geid, PLAYER_GEID);
+        let ships = self.ships.lock().unwrap().iter().map(|ship| ShipView { ship: Some(ship.clone()), ..Default::default() }).collect();
+        Ok(ListShipsResponse { ships, repaired: 2, orphans: 1 })
+    }
+
+    async fn acquire_ship(&self, request: AcquireShipRequest) -> Result<AcquireShipResponse, Status> {
+        let insurance = request.insurance.clone().unwrap_or_default();
+        self.called(format!(
+            "acquire {} {} {} at {} policy {} expires {} pad {}",
+            request.command_id, request.owner_id, request.entity_class_guid, request.location_id, insurance.policy, insurance.expires_at_ms, request.pad_size
+        ));
+        let mut applied = self.ship_commands.lock().unwrap();
+        let replayed = applied.contains_key(&request.command_id);
+        let geid = 500_000_000_000 + applied.len() as u64;
+        let geid = *applied.entry(request.command_id.clone()).or_insert(geid);
+        let record = ShipRecord {
+            ship_uid: format!("ship:{}", request.command_id),
+            owner_id: request.owner_id,
+            entity_class_guid: request.entity_class_guid,
+            state: ShipState::Stored as i32,
+            insurance: Some(insurance),
+            pad_size: request.pad_size,
+            location_id: request.location_id,
+            geid,
+            graph_synced: true,
+            ..Default::default()
+        };
+        if !replayed {
+            self.ships.lock().unwrap().push(record.clone());
+        }
+        Ok(AcquireShipResponse { ship: Some(ShipView { ship: Some(record), ..Default::default() }), replayed, graph_synced: true })
+    }
+
+    async fn report_ship(&self, request: ReportShipRequest) -> Result<ReportShipResponse, Status> {
+        self.called(format!("report {} {} {} {} at {}", request.command_id, request.owner_id, request.geid, request.state, request.location_id));
+        let mut ships = self.ships.lock().unwrap();
+        let ship = ships.iter_mut().find(|ship| ship.geid == request.geid).ok_or_else(|| Status::not_found("ship"))?;
+        if ship.state != ShipState::Deployed as i32 {
+            return Err(Status::failed_precondition("the ship is not deployed"));
+        }
+        ship.state = request.state;
+        Ok(ReportShipResponse { ship: Some(ShipView { ship: Some(ship.clone()), ..Default::default() }), replayed: false })
+    }
+
     async fn funds_changed(&self, _: u32, _: u64, _: &str, _: i64, _: u64) {
         *self.pushes.lock().unwrap() += 1;
     }
@@ -381,6 +472,7 @@ struct Site {
     router: Router,
     fake: Arc<Fake>,
     audit: Arc<MemoryAudit>,
+    app: Arc<App>,
 }
 
 fn site_with(audit: MemoryAudit) -> Site {
@@ -393,8 +485,10 @@ fn site_with(audit: MemoryAudit) -> Site {
         prefix: "/admin".into(),
         login: "/login".into(),
         secure_cookies: false,
+        flashes: Default::default(),
+        class_names: Default::default(),
     });
-    Site { router: router(app), fake, audit }
+    Site { router: router(app.clone()), fake, audit, app }
 }
 
 fn site() -> Site {
@@ -406,17 +500,29 @@ struct Reply {
     location: String,
     cookies: Vec<String>,
     body: String,
+    /// The notice an action left for the admin's next page read, as that read's query.
+    flash: String,
+}
+
+impl Reply {
+    /// Whether the action's notice is an error.
+    fn flagged(&self) -> bool {
+        self.flash.ends_with("&error=1")
+    }
 }
 
 impl Site {
     async fn send(&self, request: Request<Body>) -> Reply {
+        let changes = request.method() != axum::http::Method::GET;
         let response = self.router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let location = response.headers().get(header::LOCATION).map_or(String::new(), |v| v.to_str().unwrap().to_string());
-        let cookies = response.headers().get_all(header::SET_COOKIE).iter().map(|v| v.to_str().unwrap().to_string()).collect();
+        let cookies: Vec<String> = response.headers().get_all(header::SET_COOKIE).iter().map(|v| v.to_str().unwrap().to_string()).collect();
         let body = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
-        Reply { status, location, cookies, body }
+        let flash = if changes { self.app.flashes.lock().unwrap().values().map(|(_, text)| text.clone()).next().unwrap_or_default() } else { String::new() };
+        Reply { status, location, cookies, body, flash }
     }
+
 
     async fn get(&self, path: &str, session: Option<&str>) -> Reply {
         let mut request = Request::get(path);
@@ -445,7 +551,7 @@ impl Site {
 }
 
 fn notice(reply: &Reply) -> String {
-    let query = reply.location.split_once('?').map_or("", |(_, query)| query);
+    let query = reply.flash.as_str();
     form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == "notice").map(|(_, value)| value.into_owned()).unwrap_or_default()
 }
 
@@ -479,11 +585,15 @@ async fn pages_render_with_values_escaped() {
     assert_eq!(reply.status, StatusCode::OK);
     assert!(reply.body.contains("pilot&lt;script&gt;"));
     assert!(!reply.body.contains("pilot<script>"));
-    for tab in ["", "/money", "/assets", "/ships", "/location", "/inventory", "/audit"] {
+    for tab in ["", "/badges", "/money", "/assets", "/ships", "/location", "/inventory", "/audit"] {
         let reply = site.get(&format!("/admin/accounts/{PLAYER}{tab}"), Some("admin")).await;
         assert_eq!(reply.status, StatusCode::OK, "{tab}");
-        assert!(reply.body.contains(&format!(r#"value="{CSRF}""#)) || ["/ships", "/inventory", "/audit"].contains(&tab), "{tab}");
+        assert!(reply.body.contains(&format!(r#"value="{CSRF}""#)) || ["/ships", "/inventory", "/audit"].contains(&tab) || tab == "/badges", "{tab}");
+        assert!(!reply.body.contains("/hangar"), "{tab}: the Hangar tab is part of Ships now");
     }
+    // The old Hangar address leads to Ships, with its query.
+    let moved = site.get(&format!("/admin/accounts/{PLAYER}/hangar?q=aven"), Some("admin")).await;
+    assert_eq!((moved.status, moved.location.as_str()), (StatusCode::SEE_OTHER, format!("/admin/accounts/{PLAYER}/ships?q=aven").as_str()));
     let missing = site.get("/admin/accounts/42", Some("admin")).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     let css = site.get("/admin/static/admin.css", None).await;
@@ -544,17 +654,17 @@ async fn a_debit_beyond_the_balance_is_refused_and_recorded() {
     let site = site();
     let path = format!("/admin/accounts/{PLAYER}/money");
     let reply = site.act(&path, &[("ledger", "AUEC_LEDGER"), ("direction", "debit"), ("amount", "5000"), ("reason", "r")]).await;
-    assert!(reply.location.contains("error=1"));
+    assert!(reply.flagged());
     assert!(notice(&reply).contains("insufficient funds"));
     let records = site.audit.list(None, 10).await.unwrap();
     assert!(records[0].outcome.starts_with("error"));
     for bad in [[("amount", "0")], [("amount", "-3")], [("amount", "x")]] {
         let mut fields = vec![("ledger", "AUEC_LEDGER"), ("direction", "credit"), ("reason", "r")];
         fields.extend_from_slice(&bad);
-        assert!(site.act(&path, &fields).await.location.contains("error=1"));
+        assert!(site.act(&path, &fields).await.flagged());
     }
     let no_reason = site.act(&path, &[("ledger", "AUEC_LEDGER"), ("direction", "credit"), ("amount", "1")]).await;
-    assert!(no_reason.location.contains("error=1"));
+    assert!(no_reason.flagged());
     assert_eq!(site.fake.calls().len(), 1, "only the first reached the ledger");
 }
 
@@ -574,14 +684,14 @@ async fn a_rental_grant_is_granted_and_rented_with_one_key() {
     let path = format!("/admin/accounts/{PLAYER}/assets/grant");
     let fields = [("class_guid", "ABCDEF01-0000-0000-0000-000000000001"), ("source", "rental"), ("days", "3"), ("reason", "event")];
     let reply = site.act(&path, &fields).await;
-    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    assert!(!reply.flagged(), "{}", notice(&reply));
     let calls = site.fake.calls();
     assert_eq!(calls[0], format!("grant admin:{RID} 4 abcdef01-0000-0000-0000-000000000001"));
     assert_eq!(calls[1], format!("rent admin:{RID} urn:e:new 3"));
     let refused = site.act(&path, &[("class_guid", "x y"), ("source", "platform"), ("reason", "r")]).await;
-    assert!(refused.location.contains("error=1"));
+    assert!(refused.flagged());
     let no_days = site.act(&path, &[("class_guid", "ab"), ("source", "rental"), ("reason", "r")]).await;
-    assert!(no_days.location.contains("error=1"));
+    assert!(no_days.flagged());
 }
 
 #[tokio::test]
@@ -631,19 +741,20 @@ async fn locations_change_only_while_the_player_is_off_a_shard() {
         .await;
     assert!(notice(&stale).contains("changed meanwhile"));
     let unknown = site.act(&path, &[("location", "12345"), ("revision", "1"), ("reason", "r")]).await;
-    assert!(unknown.location.contains("error=1"));
+    assert!(unknown.flagged());
 }
 
 /// The account page offers every badge, marks the developer ones, and a change sends the ticked ones as a set.
 #[tokio::test]
 async fn an_admin_sets_an_accounts_in_game_badges() {
     let site = site();
-    let page = site.get(&format!("/admin/accounts/{PLAYER}"), Some("admin")).await;
-    assert!(page.body.contains(r#"name="badge_103""#) && page.body.contains("RSI_STAFF (developer)") && page.body.contains("SUBSCRIBER"));
-    assert!(!page.body.contains("QA (developer)"));
+    let page = site.get(&format!("/admin/accounts/{PLAYER}/badges"), Some("admin")).await;
+    assert!(page.body.contains(r#"name="badge_103""#) && page.body.contains("STAFF") && page.body.contains("SUBSCRIBER"));
+    assert!(page.body.contains(r#"class="tag heavy">developer"#), "the developer ones are marked");
+    assert!(!site.get(&format!("/admin/accounts/{PLAYER}"), Some("admin")).await.body.contains("badge_103"), "not on the overview");
     let path = format!("/admin/accounts/{PLAYER}/state");
     let done = site.act(&path, &[("op", "badges"), ("badge_1", "1"), ("badge_103", "1"), ("badge_104", "1"), ("badge_66", "1")]).await;
-    assert!(!done.location.contains("error=1"));
+    assert!(!done.flagged());
     assert_eq!(site.fake.calls()[0], "badges [1, 103, 104]", "only known badges, in the catalog's order");
     let records = site.audit.list(Some(PLAYER), 10).await.unwrap();
     assert!(records[0].entry.detail.to_string().contains("QA"));
@@ -653,11 +764,11 @@ async fn an_admin_sets_an_accounts_in_game_badges() {
 async fn an_admin_cannot_lock_themselves_out() {
     let site = site();
     let path = format!("/admin/accounts/{ADMIN}/state");
-    assert!(site.act(&path, &[("op", "disable")]).await.location.contains("error=1"));
-    assert!(site.act(&path, &[("op", "roles"), ("roles", "moderator")]).await.location.contains("error=1"));
+    assert!(site.act(&path, &[("op", "disable")]).await.flagged());
+    assert!(site.act(&path, &[("op", "roles"), ("roles", "moderator")]).await.flagged());
     assert!(site.fake.calls().is_empty());
     let other = site.act(&format!("/admin/accounts/{PLAYER}/state"), &[("op", "password"), ("new_password", "correct horse battery")]).await;
-    assert!(!other.location.contains("error=1"));
+    assert!(!other.flagged());
     let records = site.audit.list(Some(PLAYER), 10).await.unwrap();
     assert!(!records[0].entry.detail.to_string().contains("horse"), "the password stays out of the audit");
 }
@@ -738,11 +849,11 @@ async fn a_batch_gives_every_item_under_one_reason_and_only_stackable_ones_take_
     ] {
         let fields = [("inventory", bank.as_str()), ("items", items.as_str()), ("reason", "r")];
         let reply = refused.act(&path, &fields).await;
-        assert!(reply.location.contains("error=1") && notice(&reply).contains(expected), "{items}: {}", notice(&reply));
+        assert!(reply.flagged() && notice(&reply).contains(expected), "{items}: {}", notice(&reply));
     }
     assert!(refused.fake.calls().iter().all(|call| !call.starts_with("add ")), "nothing was added");
     let no_reason = [("inventory", bank.as_str()), ("items", crate_guid), ("reason", "")];
-    assert!(refused.act(&path, &no_reason).await.location.contains("error=1"));
+    assert!(refused.act(&path, &no_reason).await.flagged());
 }
 
 #[tokio::test]
@@ -753,22 +864,38 @@ async fn the_inventory_page_shows_the_tree_with_its_forms() {
     let body = &reply.body;
     assert!(body.contains("Personal inventory"));
     assert!(body.contains("Item bank at RR_P6_LEO"), "a location bank is named by its place");
-    assert!(body.contains(r#"class="inventory depth-1" id="inv-400000000001:Container:0""#), "the crate's inventory nests");
+    let personal_id = format!("{PLAYER_GEID}:PlayerInventory:0");
+    assert!(body.contains(&format!(r#"id="inv-{personal_id}" open"#)), "the personal inventory is open");
+    assert!(body.contains(r#"<details class="node inventory" id="inv-400000000001:Container:0">"#), "the crate's inventory is collapsed");
+    assert!(body.contains(r#"<details class="node inventory" id="inv-"#) && !body.contains(r#"id="inv-2026442305"#));
+    let (holder, nested) = (body.find(r#"id="item-400000000001""#).unwrap(), body.find(r#"id="inv-400000000001:Container:0""#).unwrap());
+    assert!(holder < nested && body[holder..nested].contains("<summary>"), "the crate's inventory is nested under the crate");
+    assert!(body.contains(r#"<details class="node item-node" id="item-400000000001">"#), "a crate with an inventory is a collapsed branch");
+    assert!(body.contains(r#"<details class="node character" id="character" open>"#) && body.contains("Character & storage".replace('&', "&amp;").as_str()));
+    assert!(body.contains(r#"<span class="count">"#), "counts in the headings");
+    assert!(body.contains("<meter ") || !body.contains("capacity"), "occupancy is a bar");
     assert!(body.contains(r#"data-label="crate&lt;1&gt;""#), "a container is named by the item that holds it, not by a GEID");
-    assert!(body.contains(r##"title="400000000001:Container:0">crate&lt;1&gt;</a>"##), "what an item holds is named too");
+    assert!(body.contains(r#"<span class="name" title="c0ffee00-0000-0000-0000-000000000001">crate&lt;1&gt;</span>"#), "an item is named, with its class GUID on hover");
     assert!(body.contains(r#"<select name="inventory" data-tree>"#) && body.contains(r#"data-parent="400000000001:Location:2026442305""#.replace("400000000001", &PLAYER_GEID.to_string()).as_str()), "the picker is a tree: a container knows its parent");
     assert!(body.contains(r#"<script src="/admin/static/tree.js" defer></script>"#));
-    assert!(body.contains("<h3>RR_P6_LEO (Pyro, 2026442305) › Item bank › crate&lt;1&gt;"), "a heading is the path from the top");
+    assert!(body.contains(r#"<summary title="RR_P6_LEO (Pyro, 2026442305) › Item bank › crate&lt;1&gt;">"#), "a branch says its path from the top");
     assert!(body.contains(r#"data-path="RR_P6_LEO (Pyro, 2026442305) › Item bank""#), "the picker knows each path");
-    assert!(body.contains(r#"<span class="muted where">In: "#), "an item says where it is, in words");
     assert!(body.contains("› crate&lt;1&gt;"), "a container's path ends with its own name, escaped");
-    assert!(body.contains(r#"<form method="post" action="/admin/accounts/1000002/inventory/move" class="stacked">"#));
-    let tree_js = site.get("/admin/static/tree.js", None).await;
+    assert!(body.contains(r#"href="/admin/accounts/1000002/inventory/item?geid=400000000002">Move…</a>"#), "Move is on the item's page: no row carries every inventory");
+    assert!(!body.contains(r#"action="/admin/accounts/1000002/inventory/move""#), "so the page stays small");
+    assert!(body.contains(r#"<details class="actions"><summary>Actions</summary>"#) && body.contains(r#"action="/admin/accounts/1000002/inventory/remove""#));
+    let item = site.get(&format!("/admin/accounts/{PLAYER}/inventory/item?geid=400000000002"), Some("admin")).await;
+    assert_eq!(item.status, StatusCode::OK);
+    assert!(item.body.contains(r#"<form method="post" action="/admin/accounts/1000002/inventory/move" class="stacked">"#) && item.body.contains(r#"<select name="to" data-tree>"#));
+    assert!(item.body.contains(r#"name="from" value="400000000001:Container:0""#) && item.body.contains("Ammo box"));
+    assert!(item.body.contains(r#"action="/admin/accounts/1000002/inventory/equip""#) && item.body.contains(r#"action="/admin/accounts/1000002/inventory/remove""#));
+    assert!(item.body.contains(r#"<script src="/admin/static/tree.js" defer></script>"#));
+    let missing = site.get(&format!("/admin/accounts/{PLAYER}/inventory/item?geid=42"), Some("admin")).await;
+    assert!(missing.body.contains("has no item 42"));    let tree_js = site.get("/admin/static/tree.js", None).await;
     assert_eq!(tree_js.status, StatusCode::OK);
     assert!(tree_js.body.contains("createTextNode") && !tree_js.body.contains("innerHTML"), "built from text nodes");
     assert!(!body.contains("crate<1>"), "values are escaped");
     assert!(body.contains("Ammo box"));
-    assert!(body.contains(r##"href="#inv-400000000001:Container:0""##), "an item links the inventory it holds");
     assert!(body.contains(r#"name="geid" value="400000000002""#), "a stowed item can be moved and removed");
     assert!(body.contains("Held by something live on a shard"));
     assert!(!body.contains(r#"name="geid" value="901""#), "nothing in a live hold is changed");
@@ -807,7 +934,7 @@ async fn a_split_move_applies_once_and_is_audited_with_before_and_after() {
         ("reason", "stuck item"),
     ];
     let reply = site.act(&path, &fields).await;
-    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    assert!(!reply.flagged(), "{}", notice(&reply));
     assert!(notice(&reply).contains("Moved 2 of 400000000002 as 400000000009"), "{}", notice(&reply));
     let again = site.act(&path, &fields).await;
     assert!(notice(&again).contains("already applied"));
@@ -854,7 +981,7 @@ async fn an_owners_refusal_is_shown_and_recorded() {
     let site = site();
     let add = [("inventory", "900:Container:0"), ("class_guid", "c0ffee00"), ("stack", "1"), ("reason", "r")];
     let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/add"), &add).await;
-    assert!(reply.location.contains("error=1"));
+    assert!(reply.flagged());
     assert!(notice(&reply).contains("live on a shard"), "{}", notice(&reply));
     let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
     assert!(record.outcome.starts_with("error"), "{}", record.outcome);
@@ -865,8 +992,13 @@ async fn the_page_lists_what_is_worn_and_offers_only_fitting_free_ports() {
     let site = site();
     let page = site.get(&format!("/admin/accounts/{PLAYER}/inventory"), Some("admin")).await;
     let body = &page.body;
-    assert!(body.contains(r#"<h2 id="worn">Worn</h2>"#) && body.contains("UNDERSUIT › wep_sidearm"), "worn items say what they hang from");
+    assert!(body.contains(r#"id="character" open"#) && body.contains("3 worn items"), "the character is at the top, with its gear");
+    let (body_at, suit_at, pistol_at) = (body.find("BODY").unwrap(), body.find("UNDERSUIT").unwrap(), body.find("PISTOL").unwrap());
+    let storage_at = body.find(r#"class="storage""#).unwrap();
+    assert!(body_at < suit_at && suit_at < pistol_at && pistol_at < storage_at, "worn gear nests under what it hangs from, above the storage");
+    assert!(body.contains("wep_sidearm · WeaponPersonal"), "a worn item says its port and type");
     assert!(body.contains(r#"action="/admin/accounts/1000002/inventory/unequip""#));
+    assert!(body.contains(&format!(r#"name="to" value="{PLAYER_GEID}:PlayerInventory:0""#)), "taken off into the personal inventory by default");
     assert!(!body.contains(r#"name="geid" value="700""#), "the body is the character: no way to take it off");
     assert!(body.contains(r#"name="geid" value="702""#), "the pistol can come off");
     // The ammo box fits the free medpen port, not the taken sidearm port.
@@ -874,11 +1006,13 @@ async fn the_page_lists_what_is_worn_and_offers_only_fitting_free_ports() {
     assert!(!body.contains(r#"<option value="701:wep_sidearm">"#), "a taken port is not offered");
     assert_eq!(body.matches(r#"inventory/equip""#).count(), 1, "one item fits somewhere");
     assert!(body.contains("</select></div><input name=\"reason\""), "the chooser sits above the reason");
+    assert!(!body.contains("<h2 id=\"worn\">"), "worn and inventories are one view");
     assert!(!body.contains("<script>"));
 
     let fields = [("geid", "400000000002"), ("port", "701:medPen_attach_1"), ("reason", "off duty")];
     let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/equip"), &fields).await;
-    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    assert!(!reply.flagged(), "{}", notice(&reply));
+    assert!(reply.location.ends_with("#character"), "{}", reply.location);
     let calls = site.fake.calls();
     assert!(calls.iter().any(|call| call.starts_with("equip admin:") && call.ends_with(&format!("{PLAYER_GEID} 400000000002 701 medPen_attach_1"))), "{calls:?}");
     let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
@@ -887,15 +1021,15 @@ async fn the_page_lists_what_is_worn_and_offers_only_fitting_free_ports() {
     let bank = format!("{PLAYER_GEID}:Location:2026442305");
     let off = [("geid", "702"), ("to", bank.as_str()), ("reason", "stash")];
     let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/unequip"), &off).await;
-    assert!(!reply.location.contains("error=1"), "{}", notice(&reply));
+    assert!(!reply.flagged(), "{}", notice(&reply));
     assert!(site.fake.calls().iter().any(|call| call.ends_with(&format!("{PLAYER_GEID} 702 -> {bank}"))));
     // A port name with anything but letters, digits and _ is no port.
     for port in ["701:", "x:wep", "701:a b", "701:../x", ""] {
         let reply = site.act(&format!("/admin/accounts/{PLAYER}/inventory/equip"), &[("geid", "400000000002"), ("port", port), ("reason", "r")]).await;
-        assert!(reply.location.contains("error=1"), "{port}");
+        assert!(reply.flagged(), "{port}");
     }
     let no_reason = site.act(&format!("/admin/accounts/{PLAYER}/inventory/unequip"), &[("geid", "702"), ("to", bank.as_str()), ("reason", "")]).await;
-    assert!(no_reason.location.contains("error=1"));
+    assert!(no_reason.flagged());
 }
 
 #[tokio::test]
@@ -941,7 +1075,7 @@ async fn bad_inventory_forms_are_refused_before_anything_is_asked() {
     ];
     for (path, fields) in &refused {
         let reply = site.act(path, fields).await;
-        assert!(reply.location.contains("error=1"), "{path} {fields:?}");
+        assert!(reply.flagged(), "{path} {fields:?}");
     }
     assert!(site.fake.calls().is_empty());
     let no_csrf = site.post(&path("remove"), "admin", &[("request_id", RID), ("geid", "400000000002"), ("reason", "r")]).await;
@@ -958,4 +1092,236 @@ async fn the_player_is_the_one_sc_identity_names() {
     let overview = site.get(&format!("/admin/accounts/{PLAYER}"), Some("admin")).await;
     assert!(overview.body.contains(&format!("player <span class=\"mono\">{PLAYER_GEID}</span>")));
     assert!(site.fake.calls().is_empty());
+}
+
+fn deployed_ship(geid: u64) -> ShipRecord {
+    ShipRecord {
+        owner_id: PLAYER_GEID,
+        entity_class_guid: SHIP_GUID.into(),
+        state: ShipState::Deployed as i32,
+        pad_size: PadSize::Xsmall as i32,
+        location_id: ORISON,
+        geid,
+        insurance: Some(ShipInsurance { policy: ShipPolicy::Lifetime as i32, ..Default::default() }),
+        claim: Some(ShipClaim { ready_at_ms: 1_794_052_800_000, cost_auec: 1234, ..Default::default() }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn the_ships_page_has_the_hangar_the_grant_the_entitlements_and_the_rentals() {
+    let site = site();
+    site.fake.ships.lock().unwrap().push(deployed_ship(500_000_000_100));
+    let page = site.get(&format!("/admin/accounts/{PLAYER}/ships"), Some("admin")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = &page.body;
+    assert!(body.contains("Avenger &lt;Titan&gt;") && !body.contains("Avenger <Titan>"), "the English name, escaped");
+    assert!(body.contains("deployed") && body.contains("XSmall") && body.contains("lifetime"));
+    assert!(body.contains("RR_P6_LEO (Pyro, 2026442305)"), "the place by name");
+    assert!(body.contains("ready 2026-11-07 12:00:00, cost 1,234 aUEC"));
+    assert!(body.contains("repaired 2 ships") && body.contains("1 orphan "), "{body}");
+    assert!(body.contains(&format!(r#"action="/admin/accounts/{PLAYER}/ships/grant""#)) && body.contains(&format!(r#"value="{CSRF}""#)));
+    assert!(body.contains(r#"name="location""#) && body.contains(r#"name="insurance""#) && body.contains(r#"name="pad""#) && body.contains("not re-seeded"));
+    assert!(body.contains(r#"action="/admin/accounts/1000002/ships/report""#), "a deployed ship can be put away");
+    assert!(!body.contains("<script>"), "no inline script");
+    assert!(body.contains(r#"<script src="/admin/static/details.js" defer></script>"#));
+    // One page: the hangar ships, the grant, the entitlements and the rentals are sections of it.
+    for section in ["hangar", "grant", "entitlements", "rentals"] {
+        assert!(body.contains(&format!(r#"<details class="section" id="{section}""#)), "{section}");
+    }
+    assert!(body.contains(r#"id="hangar" open"#), "the hangar ships are open");
+    assert!(!body.contains(r#"id="grant" open"#), "the grant form is collapsed until used");
+    assert!(body.contains("Ship entitlements") && body.contains("Rentals"));
+
+    // The search asks for vehicles, and a link adds the class to the cart.
+    let found = site.get(&format!("/admin/accounts/{PLAYER}/ships?q=aven"), Some("admin")).await;
+    assert_eq!(site.fake.calls().last().unwrap(), "classes aven NOITEM_Vehicle   true");
+    assert!(found.body.contains(&format!("cart={SHIP_GUID}%3A1#grant")), "the Add link");
+    assert!(found.body.contains(r#"id="grant" open"#), "a search opens the grant section");
+    let carted = site.get(&format!("/admin/accounts/{PLAYER}/ships?cart={SHIP_GUID}:2,bad%3C%3E"), Some("admin")).await;
+    assert!(carted.body.contains("2 x Avenger &lt;Titan&gt;") && !carted.body.contains("bad<>"));
+    assert!(carted.body.contains(&format!(r#"name="ships" value="{SHIP_GUID}:2""#)));
+    let all = site.get(&format!("/admin/accounts/{PLAYER}/ships?q=aven&all=1"), Some("admin")).await;
+    assert!(all.body.contains("checked") && site.fake.calls().last().unwrap() == "classes aven    true");
+}
+
+#[tokio::test]
+async fn a_grant_acquires_every_ship_with_a_stable_command_id() {
+    let site = site();
+    let path = format!("/admin/accounts/{PLAYER}/ships/grant");
+    let location = ORISON.to_string();
+    let ships = format!("{SHIP_GUID}:2");
+    let fields = [("ships", ships.as_str()), ("location", location.as_str()), ("insurance", "lifetime"), ("pad", "3"), ("reason", "testing")];
+    let reply = site.act(&path, &fields).await;
+    assert!(notice(&reply).starts_with("Granted 2 ships at RR_P6_LEO (Pyro, 2026442305): 2x Avenger <Titan>."), "{}", notice(&reply));
+    let calls = site.fake.calls();
+    let acquires: Vec<&String> = calls.iter().filter(|call| call.starts_with("acquire ")).collect();
+    assert_eq!(acquires.len(), 2);
+    assert_eq!(acquires[0], &format!("acquire admin:{RID}:0 {PLAYER_GEID} {SHIP_GUID} at {ORISON} policy 1 expires 0 pad 3"));
+    assert!(acquires[1].starts_with(&format!("acquire admin:{RID}:1 ")));
+    let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
+    assert_eq!((record.entry.action.as_str(), record.outcome.as_str()), ("ship.grant", "ok"));
+    assert_eq!(record.after.unwrap()["ships"].as_array().unwrap().len(), 2);
+    assert_eq!(record.entry.detail["reason"], "testing");
+
+    // The same form again (the same request id) grants nothing new.
+    let again = site.act(&path, &fields).await;
+    assert!(notice(&again).contains("already") || site.fake.ships.lock().unwrap().len() == 2, "{}", notice(&again));
+    assert_eq!(site.fake.ships.lock().unwrap().len(), 2, "a repeat of the command makes no third ship");
+
+    // A duration is days from now; a class with no size and no pad chosen is told.
+    let other = site_with(MemoryAudit::default());
+    let fields = [("ships", ships.as_str()), ("location", location.as_str()), ("insurance", "duration"), ("days", "10"), ("reason", "r")];
+    let reply = other.act(&path, &fields).await;
+    assert!(notice(&reply).contains("have no pad size"), "{}", notice(&reply));
+    let call = other.fake.calls().remove(1);
+    let expires: i64 = call.split("expires ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    assert!(call.contains("policy 2") && call.ends_with("pad 0") && expires > 9 * 86_400_000, "{call}");
+}
+
+#[tokio::test]
+async fn a_bad_grant_is_refused_before_anything_is_asked() {
+    let site = site();
+    let path = format!("/admin/accounts/{PLAYER}/ships/grant");
+    let location = ORISON.to_string();
+    let ships = format!("{SHIP_GUID}:1");
+    let good = [("ships", ships.as_str()), ("location", location.as_str()), ("insurance", "none"), ("reason", "r")];
+    let with = |name: &str, value: &'static str| -> Vec<(&str, &str)> {
+        let mut fields: Vec<(&str, &str)> = good.iter().copied().filter(|(key, _)| *key != name).collect();
+        fields.push((Box::leak(name.to_string().into_boxed_str()), value));
+        fields
+    };
+    for (fields, expected) in [
+        (with("ships", ""), "Add some ships"),
+        (with("ships", "not-a-guid!"), "a class GUID"),
+        (with("ships", "5a1b0000-0000-0000-0000-000000000001:11"), "from 1 to"),
+        (with("reason", ""), "reason"),
+        (with("location", "7"), "home hangar"),
+        (with("pad", "9"), "pad size"),
+        (with("insurance", "duration"), "days"),
+        (with("insurance", "forever"), "insurance"),
+        (with("ships", "dead0000-0000-0000-0000-000000000000"), "No class"),
+    ] {
+        let reply = site.act(&path, &fields).await;
+        assert!(notice(&reply).contains(expected), "{expected}: {}", notice(&reply));
+    }
+    assert!(site.fake.calls().iter().all(|call| !call.starts_with("acquire")));
+    assert!(site.audit.records.lock().unwrap().is_empty());
+    assert!(site.fake.ships.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ships_are_not_granted_or_changed_while_the_player_is_on_a_shard() {
+    let site = site();
+    site.fake.ships.lock().unwrap().push(deployed_ship(500_000_000_100));
+    *site.fake.on_shard.lock().unwrap() = true;
+    let page = site.get(&format!("/admin/accounts/{PLAYER}/ships"), Some("admin")).await;
+    assert!(page.body.contains("changes are refused") && !page.body.contains("Grant ships") && !page.body.contains("ships/report"));
+    assert!(page.body.contains("Avenger &lt;Titan&gt;"), "the list is still shown");
+    let location = ORISON.to_string();
+    let ships = format!("{SHIP_GUID}:1");
+    let grant = site.act(&format!("/admin/accounts/{PLAYER}/ships/grant"), &[("ships", ships.as_str()), ("location", location.as_str()), ("reason", "r")]).await;
+    assert!(notice(&grant).contains("on a shard"), "{}", notice(&grant));
+    let report = site.act(&format!("/admin/accounts/{PLAYER}/ships/report"), &[("geid", "500000000100"), ("to", "stored"), ("reason", "r")]).await;
+    assert!(notice(&report).contains("on a shard"), "{}", notice(&report));
+    assert!(site.fake.calls().iter().all(|call| !call.starts_with("acquire") && !call.starts_with("report")));
+    assert!(site.audit.records.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_deployed_ship_left_behind_is_put_away_where_it_belongs() {
+    let site = site();
+    site.fake.ships.lock().unwrap().push(deployed_ship(500_000_000_100));
+    let path = format!("/admin/accounts/{PLAYER}/ships/report");
+    let refused = site.act(&path, &[("geid", "500000000100"), ("to", "flying"), ("reason", "r")]).await;
+    assert!(notice(&refused).contains("put away or marked destroyed"));
+    let missing = site.act(&path, &[("geid", "42"), ("to", "stored"), ("reason", "r")]).await;
+    assert!(notice(&missing).contains("no ship 42"), "{}", notice(&missing));
+    let done = site.act(&path, &[("geid", "500000000100"), ("to", "stored"), ("reason", "crashed shard")]).await;
+    assert!(notice(&done).contains("is stored"), "{}", notice(&done));
+    assert!(site.fake.calls().contains(&format!("report admin:{RID} {PLAYER_GEID} 500000000100 {} at {ORISON}", ShipState::Stored as i32)));
+    let record = site.audit.list(Some(PLAYER), 1).await.unwrap().remove(0);
+    assert_eq!((record.entry.action.as_str(), record.outcome.as_str()), ("ship.store", "ok"));
+}
+
+#[tokio::test]
+async fn items_are_paged_per_inventory_and_a_redirect_opens_the_inventory_worked_on() {
+    let site = site();
+    *site.fake.extra_items.lock().unwrap() = 60;
+    let bank = format!("{PLAYER_GEID}:Location:2026442305");
+    let path = format!("/admin/accounts/{PLAYER}/inventory");
+    let first = site.get(&path, Some("admin")).await;
+    // 61 items in the bank: 25 on the first page, with the links to the others and to the second page.
+    let items_in_bank = |body: &str| body.matches(r#"<div class="item" id="item-41"#).count();
+    assert_eq!(items_in_bank(&first.body), 24, "25 per page, the crate being the first and a branch of its own");
+    assert!(first.body.contains("Showing 1-25 of 61"));
+    assert!(first.body.contains(&format!("pg%3A{}=2", bank.replace(':', "%3A"))), "{}", first.body.matches("pager").count());
+    let second = site.get(&format!("{path}?pg%3A{}=3", bank.replace(':', "%3A")), Some("admin")).await;
+    assert!(second.body.contains("Showing 51-61 of 61"));
+    assert_eq!(items_in_bank(&second.body), 11);
+    assert!(second.body.contains("pile059") && !second.body.contains("pile000"));
+    assert!(second.body.contains("Previous"), "and back");
+    // Every page of the page is small: no row carries a list of the inventories.
+    assert!(first.body.len() < 120_000, "{}", first.body.len());
+
+    let script = site.get("/admin/static/details.js", None).await;
+    assert!(script.status == StatusCode::OK && script.body.contains("createTextNode") && !script.body.contains("innerHTML"), "built from text nodes");
+
+    // A move or a remove returns to the inventory it touched, open, scrolled to.
+    let moved = site
+        .act(&format!("{path}/move"), &[("geid", "400000000002"), ("from", "400000000001:Container:0"), ("to", bank.as_str()), ("reason", "r")])
+        .await;
+    assert!(moved.location.contains(&format!("open={}", query_value_for_test(&format!("{bank},400000000001:Container:0")))), "{}", moved.location);
+    assert!(moved.location.ends_with(&format!("#inv-{}", query_value_for_test(&bank))), "{}", moved.location);
+    let back = site.get(&moved.location.replace("/admin", "/admin"), Some("admin")).await;
+    assert!(back.body.contains(&format!(r#"id="inv-{bank}" open"#)) && back.body.contains(r#"id="inv-400000000001:Container:0" open"#), "the way to what was worked on is open");
+    assert!(back.body.contains(r#"id="item-400000000001" open"#), "and the branch of the crate holding it");
+}
+
+fn query_value_for_test(text: &str) -> String {
+    form_urlencoded::byte_serialize(text.as_bytes()).collect()
+}
+
+#[tokio::test]
+async fn the_ships_page_asks_the_owners_together_and_names_each_class_once() {
+    let site = site();
+    {
+        let mut ships = site.fake.ships.lock().unwrap();
+        for at in 0..4 {
+            ships.push(deployed_ship(500_000_000_100 + at));
+        }
+    }
+    let path = format!("/admin/accounts/{PLAYER}/ships");
+    let classes = || site.fake.calls().iter().filter(|call| call.starts_with("classes ")).count();
+    let first = site.get(&path, Some("admin")).await;
+    assert_eq!(first.status, StatusCode::OK);
+    assert_eq!(classes(), 1, "four ships of one class are named by one lookup, not four");
+    assert!(first.body.matches("Avenger &lt;Titan&gt;").count() >= 4);
+    site.get(&path, Some("admin")).await;
+    assert_eq!(classes(), 1, "a class's name is remembered");
+
+    // Every owner takes 100 ms: asked in turn the page would take over a second.
+    *site.fake.latency.lock().unwrap() = std::time::Duration::from_millis(100);
+    let other = site_with(MemoryAudit::default());
+    *other.fake.latency.lock().unwrap() = std::time::Duration::from_millis(100);
+    other.fake.ships.lock().unwrap().push(deployed_ship(500_000_000_100));
+    let started = std::time::Instant::now();
+    let page = other.get(&path, Some("admin")).await;
+    let took = started.elapsed();
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(took < std::time::Duration::from_millis(450), "the owners are asked together: {took:?}");
+}
+
+#[tokio::test]
+async fn an_action_notice_is_kept_in_memory_and_shown_once() {
+    let site = site();
+    let reply = site.act("/admin/accounts/1000002/money", &[("amount", "250"), ("reason", "test")]).await;
+    assert!(!reply.location.contains("notice"), "{}", reply.location);
+    assert!(reply.cookies.iter().all(|c| !c.contains("flash")), "no cookie carries it");
+    assert!(!notice(&reply).is_empty());
+    let shown = site.get("/admin/accounts/1000002/money", Some("admin")).await;
+    assert!(shown.body.contains("class=\"notice"), "the next read shows it");
+    site.app.flashes.lock().unwrap().clear();
+    let again = site.get("/admin/accounts/1000002/money", Some("admin")).await;
+    assert!(!again.body.contains("class=\"notice"), "and a refresh does not");
 }

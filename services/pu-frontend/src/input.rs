@@ -217,6 +217,37 @@ pub fn remote_method_message(entity: u64, method: u32, args: &[u8]) -> Vec<u8> {
     message
 }
 
+/// `EntityTokenRequest`, `[u64 entity][varint token][varint request][u8 flags]` from a client: the token is an index into the
+/// entity's serialized components, the request is the client's own number for it. `flags` was 0xce for the tokens a client
+/// asks for as an entity binds and 0xcf for the inventory container's user token.
+pub const MESSAGE_ENTITY_TOKEN_REQUEST: usize = 21;
+/// `EntityTokenEvent`, `[u64 entity][varint token][varint request][u8 type]` to a client.
+const MESSAGE_ENTITY_TOKEN_EVENT: u8 = 23;
+/// The `EntityTokenEvent` type that denies a request, and the one that grants it.
+const TOKEN_DENIED: u8 = 0;
+const TOKEN_GRANTED: u8 = 1;
+
+/// `(entity, token, request, flags)` of an `EntityTokenRequest` payload.
+pub fn token_request(payload: &[u8]) -> Option<(u64, u32, u32, u8)> {
+    let entity = u64_at(payload, 0)?;
+    let mut offset = 8;
+    let token = u32::try_from(read_varint(payload, &mut offset)?).ok()?;
+    let request = u32::try_from(read_varint(payload, &mut offset)?).ok()?;
+    let flags = *payload.get(offset)?;
+    (payload.len() == offset + 1).then_some((entity, token, request, flags))
+}
+
+/// An `EntityTokenEvent` that grants or denies a client's request, framed.
+pub fn token_event_message(entity: u64, token: u32, request: u32, granted: bool) -> Vec<u8> {
+    let mut payload = entity.to_le_bytes().to_vec();
+    varint(token as usize, &mut payload);
+    varint(request as usize, &mut payload);
+    payload.push(if granted { TOKEN_GRANTED } else { TOKEN_DENIED });
+    let mut message = Vec::new();
+    crate::channel::message(MESSAGE_ENTITY_TOKEN_EVENT, &payload, &mut message);
+    message
+}
+
 /// The frame layout, after the method's length:
 /// `[u64 time][u8 1][u64 entity][u64 time][8 bytes][u8 actions][u64 entity][actions][u64 time]`. Every frame seen has the
 /// same eight bytes, `14 16 05 00 00 00 00 00`, which are not read. An action is `[u8 type][data]`.
@@ -682,5 +713,23 @@ mod tests {
         let message = movement_update(&turned, Some(&movement()), false).unwrap();
         let value = &message[3 + 8 + 2 + 3..][..16];
         assert_eq!(value, [0f32, 0.0, 0.5, 0.5].iter().flat_map(|part| part.to_le_bytes()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_real_token_request_is_read() {
+        // The access token of the worn core's container (token 2, request 1), and an arbitrated token (0) of the same
+        // entity, from the 2026-11-09 session.
+        assert_eq!(token_request(&hex("1ca0db215d0000000201cf")), Some((400_000_000_028, 2, 1, 0xcf)));
+        assert_eq!(token_request(&hex("1ca0db215d0000000001ce")), Some((400_000_000_028, 0, 1, 0xce)));
+        assert_eq!(token_request(&hex("1da0db215d0000000009ce")), Some((400_000_000_029, 0, 9, 0xce)));
+        assert_eq!(token_request(&hex("1ca0db215d00000002")), None, "cut short");
+        assert_eq!(token_request(&hex("1ca0db215d0000000201cf00")), None, "longer than a request");
+    }
+
+    #[test]
+    fn a_token_event_names_the_request_and_the_decision() {
+        // Message 23, length 11 (low byte, then the high bits): the entity, token 2, request 1, granted.
+        assert_eq!(token_event_message(400_000_000_028, 2, 1, true), hex("170b001ca0db215d000000020101"));
+        assert_eq!(token_event_message(400_000_000_028, 2, 1, false), hex("170b001ca0db215d000000020100"));
     }
 }

@@ -9,7 +9,7 @@ use std::{
 };
 
 use sc_api::internal::{
-    dgs_control_server::DgsControl, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, EntityMethodResponse,
+    dgs_control_server::DgsControl, session_update::Update, EntityBinds, EntityUnbinds, DgsStatusRequest, DgsStatusResponse, EntityBind, EntityMethodCall, EntityMethodRequest, EntityMethodResponse,
     InputFrame, JoinPlayerRequest, JoinPlayerResponse, SessionUpdatesRequest,
     LeavePlayerRequest, LeavePlayerResponse, LocateHomeRequest, LocateHomeResponse, PlayerInputRequest, PlayerInputResponse, PlayerMovement,
     Rotation, ShardEntitiesRequest, ShardEntitiesResponse,
@@ -29,6 +29,7 @@ use crate::{
     frames::FrameMeter,
     holdings::Holdings,
     interaction::{Interaction, CALL_ELEVATOR, PANEL_ON_INTERACT, PANEL_REQUEST_INTERACT},
+    equip::{self, GraphItems, Origin},
     inventory::{completed_args, Request as InventoryRequest, COMPLETED_AFTER_PROCESS},
     location::{fallback_placement, governed_place, planets, player_home, CallPanel, Governed, HomeHangar},
     movement::{Bounds, ClientPosition, Input, Movement, Movements, SMALL_FRONT_HANGAR_GRID},
@@ -38,6 +39,7 @@ use crate::{
     player::{badges_snapshot, player_geid, player_index, player_record},
     solar_system::{planet_id, quantum_grid_bind, solar_system_bind, SOLAR_SYSTEMS},
     universe::first_binds,
+    worn::Worn,
 };
 
 /// What this DGS is, from the operator and its area.
@@ -130,7 +132,11 @@ pub fn player_entities_wearing(account: u64, location: Option<u32>, planet_zone:
         movement,
         planet: home.as_ref().and_then(|home| home.planet_bind()),
         hangar: home.as_ref().map(|home| home.bind()),
-        hangar_content: home.as_ref().map(|home| home.content_binds()).unwrap_or_default(),
+        hangar_content: home.as_ref().map(|home| {
+            let mut binds = home.content_binds();
+            binds.extend(crate::atc::binds(home));
+            binds
+        }).unwrap_or_default(),
         call_panels: home.as_ref().map(|home| home.call_panels()).unwrap_or_default(),
         player,
         items,
@@ -167,6 +173,14 @@ pub struct Control {
     identity: Option<IdentityInternalClient<Channel>>,
     /// `sc-entitygraph`, which owns the items players wear. With none, or while it is away, they wear ids made up here.
     graph: Option<EntityGraphInternalClient<Channel>>,
+    /// What the players held wear, by player entity, with the session holding it. A client's inventory requests change it.
+    worn: Mutex<HashMap<u64, HeldWorn>>,
+}
+
+struct HeldWorn {
+    replicant: u64,
+    session: u64,
+    worn: Worn,
 }
 
 struct HeldPanel {
@@ -221,7 +235,10 @@ impl Control {
     /// method indices are not known yet, so the first press's are logged), and answered with the next method, which is
     /// `ClOnInteract` for `SvRequestInteract`.
     fn cab_panel_method(&self, request: EntityMethodRequest) -> Result<Response<EntityMethodResponse>, Status> {
-        info!(entity = request.entity_id, method = request.method, args = request.args.len(), "a call on an entity that is not a call panel, read as a cab panel press");
+        info!(
+            entity = request.entity_id, method = request.method, player = request.player_id, args = request.args.len(), args_hex = %crate::atc::hex(&request.args),
+            "a call on an entity that is not a call panel (an ASOP kiosk or ATC when its id is one the join bound), read as a cab panel press",
+        );
         let Some(interaction) = Interaction::parse(&request.args).filter(|interaction| interaction.user == request.player_id && interaction.interactable == request.entity_id) else {
             return Err(Status::not_found(format!("{} holds no panel {} for this session", self.settings.name, request.entity_id)));
         };
@@ -233,16 +250,55 @@ impl Control {
         Ok(Response::new(EntityMethodResponse { to_caller: vec![answer] }))
     }
 
-    /// A call on the client's own player other than its action frames: an inventory request is completed, so that the
-    /// client goes on to the next one. Anything else gets no answer.
-    fn player_method(&self, request: &EntityMethodRequest) -> EntityMethodResponse {
+    /// A call on the client's own player other than its action frames: an inventory request is applied (an equip attaches
+    /// the item to its port and has the client shown it, a store takes it off, a move changes its inventory, see `equip`)
+    /// and completed with the result, so that the client goes on to the next one, whatever happened to this. Anything
+    /// else gets no answer.
+    async fn player_method(&self, request: &EntityMethodRequest) -> EntityMethodResponse {
         let Some(inventory) = InventoryRequest::parse(&request.args, request.player_id) else {
-            info!(player = request.player_id, method = request.method, args = request.args.len(), "a call on the player that is not an inventory request");
+            info!(player = request.player_id, method = request.method, args = request.args.len(), args_hex = %crate::atc::hex(&request.args), "a call on the player that is not an inventory request");
             return EntityMethodResponse::default();
         };
-        let result = inventory.succeeds();
-        info!(player = request.player_id, method = request.method, request_id = inventory.request_id, kind = inventory.kind, result, "inventory request completed");
-        let answer = EntityMethodCall { entity_id: request.entity_id, method: request.method + COMPLETED_AFTER_PROCESS, args: completed_args(result, inventory.request_id, 0) };
+        info!(
+            player = request.player_id, method = request.method, request_id = inventory.request_id, kind = inventory.kind,
+            source = ?inventory.source.id(), target = ?inventory.target.id(), detail = ?inventory.detail, "inventory request",
+        );
+        let session = (request.replicant, request.session);
+        let held = self.worn.lock().unwrap().get(&request.player_id).filter(|held| (held.replicant, held.session) == session).map(|held| held.worn.clone());
+        let outcome = match held {
+            Some(worn) => {
+                let spot = self.movements.lock().unwrap().get(request.player_id).map(|movement| equip::Spot {
+                    zone: movement.parent,
+                    position: movement.position,
+                    rotation: movement.base_rotation(),
+                });
+                let origin = Origin { replicant: request.replicant, session: request.session, shard: &self.settings.shard_id, spot };
+                equip::apply(&GraphItems(self.graph.clone()), &worn, origin, &inventory).await
+            }
+            None => {
+                warn!(player = request.player_id, "an inventory request of a player this DGS does not hold for the session, failed");
+                equip::Outcome::default()
+            }
+        };
+        if let Some(worn) = outcome.worn {
+            if let Some(held) = self.worn.lock().unwrap().get_mut(&request.player_id).filter(|held| (held.replicant, held.session) == session) {
+                held.worn = worn;
+            }
+        }
+        if !outcome.unbinds.is_empty() {
+            self.outbox.send(session, Update::Unbinds(EntityUnbinds { entity_ids: outcome.unbinds.clone() }));
+        }
+        if !outcome.binds.is_empty() {
+            let key = format!("equip-{}", inventory.request_id);
+            let bound: Vec<(u64, u64, u32)> = outcome.binds.iter().map(|bind| (bind.entity_id, bind.parent_id, bind.parent_attach_id)).collect();
+            info!(player = request.player_id, request_id = inventory.request_id, ?bound, "binding the equipped item (entity, parent, port key)");
+            self.outbox.send(session, Update::Binds(EntityBinds { key, binds: outcome.binds.into_iter().map(EntityBind::from).collect() }));
+        }
+        info!(
+            player = request.player_id, request_id = inventory.request_id, kind = inventory.kind, result = outcome.result, item = outcome.item,
+            unbound = ?outcome.unbinds, "inventory request completed",
+        );
+        let answer = EntityMethodCall { entity_id: request.entity_id, method: request.method + COMPLETED_AFTER_PROCESS, args: completed_args(outcome.result, inventory.request_id, outcome.item) };
         EntityMethodResponse { to_caller: vec![answer] }
     }
 
@@ -269,6 +325,7 @@ impl Control {
             customizer: None,
             identity: None,
             graph: None,
+            worn: Mutex::default(),
         }
     }
 
@@ -425,6 +482,10 @@ impl DgsControl for Control {
             entities.player.snapshots.push(badges_snapshot(&badges));
         }
         let held = entities.held();
+        self.worn.lock().unwrap().insert(
+            entities.player.entity_id,
+            HeldWorn { replicant: request.replicant, session: request.session, worn: Worn::from_binds(entities.player.entity_id, &entities.items) },
+        );
         info!(
             account = request.account_id, session = request.session, root = %place.root(), customized = appearance.is_some(), ?held,
             "holding a player's entities",
@@ -462,6 +523,7 @@ impl DgsControl for Control {
         self.forget_movements(&holdings);
         drop(holdings);
         self.panels.lock().unwrap().retain(|_, held| (held.replicant, held.session) != (request.replicant, request.session));
+        self.worn.lock().unwrap().retain(|_, held| (held.replicant, held.session) != (request.replicant, request.session));
         let mut elevators = self.elevators.lock().unwrap();
         if let Some(owner) = elevators.owner_of((request.replicant, request.session)) {
             elevators.close_hangar(owner);
@@ -493,12 +555,22 @@ impl DgsControl for Control {
         Ok(Response::new(PlayerInputResponse { movement: Some(player_movement(request.entity_id, movement)) }))
     }
 
+    /// A client's request for a token of one of its entities: the access token of an inventory container is granted for
+    /// the player's own items and denied for another's (see `token`). Anything else stays unanswered.
+    async fn entity_token(&self, request: Request<sc_api::internal::EntityTokenRequest>) -> Result<Response<sc_api::internal::EntityTokenResponse>, Status> {
+        let request = request.into_inner();
+        let session = (request.replicant, request.session);
+        let worn = self.worn.lock().unwrap().get(&request.player_id).filter(|held| (held.replicant, held.session) == session).map(|held| held.worn.clone());
+        let decision = crate::token::decide(&crate::token::GraphOwners(self.graph.clone()), worn.as_ref(), &request).await;
+        Ok(Response::new(sc_api::internal::EntityTokenResponse { decision: decision as i32 }))
+    }
+
     /// A press of a call panel: "Call elevator" by the panel's own player is taken, and answered with `ClOnInteract` so
     /// that the client runs the panel's side of it. Anything else on a panel is refused, with no answer, as the game does.
     async fn entity_method(&self, request: Request<EntityMethodRequest>) -> Result<Response<EntityMethodResponse>, Status> {
         let request = request.into_inner();
         if request.entity_id == request.player_id {
-            return Ok(Response::new(self.player_method(&request)));
+            return Ok(Response::new(self.player_method(&request).await));
         }
         let panels = self.panels.lock().unwrap();
         let Some(held) = panels.get(&request.entity_id).filter(|held| (held.replicant, held.session) == (request.replicant, request.session)) else {
@@ -553,20 +625,55 @@ mod tests {
         Request::new(LeavePlayerRequest { replicant: 1, session, ..Default::default() })
     }
 
-    #[tokio::test]
-    async fn an_inventory_request_of_the_player_is_completed_ten_methods_on() {
-        let player = 300_000_100_001u64;
+    fn inventory_call(player: u64, kind: u8, session: u64) -> EntityMethodRequest {
         let mut args = 5u32.to_le_bytes().to_vec();
-        args.push(7);
+        args.push(kind);
         args.extend(player.to_le_bytes());
         args.extend([0u8; 40]);
-        let call = EntityMethodRequest { replicant: 1, session: 1, player_id: player, entity_id: player, method: 40, args };
-        let reply = pyro_1().entity_method(Request::new(call)).await.unwrap().into_inner();
+        EntityMethodRequest { replicant: 1, session, player_id: player, entity_id: player, method: 40, args }
+    }
+
+    #[tokio::test]
+    async fn an_inventory_request_of_the_player_is_completed_ten_methods_on() {
+        let dgs = pyro_1();
+        dgs.join_player(join(1_000_001, Some(ORBITUARY), 7)).await.unwrap();
+        let player = player_geid(1_000_001).unwrap();
+        // A sort changes nothing: completed.
+        let reply = dgs.entity_method(Request::new(inventory_call(player, 3, 7))).await.unwrap().into_inner();
         assert_eq!(reply.to_caller.len(), 1);
         assert_eq!((reply.to_caller[0].entity_id, reply.to_caller[0].method), (player, 50));
         assert_eq!(reply.to_caller[0].args, completed_args(true, 5, 0));
-        let other = EntityMethodRequest { replicant: 1, session: 1, player_id: player, entity_id: player, method: 40, args: vec![1, 2, 3] };
-        assert!(pyro_1().entity_method(Request::new(other)).await.unwrap().into_inner().to_caller.is_empty());
+        // A store with nobody to keep the item fails, but is answered, so the client is not left waiting.
+        let reply = dgs.entity_method(Request::new(inventory_call(player, 7, 7))).await.unwrap().into_inner();
+        assert_eq!(reply.to_caller[0].args, completed_args(false, 5, 0));
+        // A call that is not an inventory request is not answered.
+        let other = EntityMethodRequest { replicant: 1, session: 7, player_id: player, entity_id: player, method: 40, args: vec![1, 2, 3] };
+        assert!(dgs.entity_method(Request::new(other)).await.unwrap().into_inner().to_caller.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_inventory_request_of_a_player_not_held_for_the_session_fails_but_is_answered() {
+        let dgs = pyro_1();
+        let player = player_geid(1_000_001).unwrap();
+        let reply = dgs.entity_method(Request::new(inventory_call(player, 3, 7))).await.unwrap().into_inner();
+        assert_eq!(reply.to_caller[0].args, completed_args(false, 5, 0));
+        dgs.join_player(join(1_000_001, Some(ORBITUARY), 7)).await.unwrap();
+        let reply = dgs.entity_method(Request::new(inventory_call(player, 3, 8))).await.unwrap().into_inner();
+        assert_eq!(reply.to_caller[0].args, completed_args(false, 5, 0), "another session does not hold it");
+        dgs.leave_player(leave(7)).await.unwrap();
+        let reply = dgs.entity_method(Request::new(inventory_call(player, 3, 7))).await.unwrap().into_inner();
+        assert_eq!(reply.to_caller[0].args, completed_args(false, 5, 0), "a player that left wears nothing here");
+    }
+
+    #[tokio::test]
+    async fn a_player_holds_its_loadout_as_a_tree_for_the_session() {
+        let dgs = pyro_1();
+        dgs.join_player(join(1_000_001, Some(ORBITUARY), 7)).await.unwrap();
+        let player = player_geid(1_000_001).unwrap();
+        let held = dgs.worn.lock().unwrap();
+        let worn = &held.get(&player).unwrap().worn;
+        assert_eq!(worn.len(), 23);
+        assert!(worn.resolve("Body_ItemPort:Armor_Undersuit:Armor_Helmet").is_ok());
     }
 
     #[tokio::test]

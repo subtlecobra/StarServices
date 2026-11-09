@@ -749,3 +749,26 @@ async fn a_call_panel_press_comes_back_answered() {
     fleet.wait(&mut peers, |peers| peers[&from].pending.contains(&answer) && carriage_batch(&peers[&from])).await;
 
 }
+
+/// The client's request for the access token of an inventory container of an item it wears is decided by the DGS and comes back
+/// as an `EntityTokenEvent` naming the same token and request; a request for an arbitrated token (`0xce`) is left unanswered.
+#[tokio::test]
+async fn an_inventory_access_token_request_is_granted() {
+    let mut fleet = Fleet::running(AREAS, true).await;
+    let mut peers = HashMap::new();
+    let from = fleet.join(&mut peers, "hub-1000001", 1).await;
+    let peer = peers.get_mut(&from).unwrap();
+    peer.stage = Stage::InGame;
+    let item = peer.joined().unwrap().player_items.first().expect("the loadout items").entity_id;
+    let request = |token: u8, flags: u8| {
+        let mut payload = item.to_le_bytes().to_vec();
+        payload.extend([token, 1, flags]);
+        payload
+    };
+    peer.receive_token_request(&request(0, 0xce));
+    peer.receive_token_request(&request(2, 0xcf));
+    peer.forward_methods(&fleet.link, from);
+    let granted = crate::input::token_event_message(item, 2, 1, true);
+    fleet.wait(&mut peers, |peers| peers[&from].pending.contains(&granted)).await;
+    assert_eq!(peers[&from].pending.iter().filter(|messages| messages[0] == 23).count(), 1, "the arbitrated token got no answer");
+}

@@ -120,7 +120,7 @@ pub(crate) async fn allocate_geids(db: &Arango, count: u64) -> Result<u64, Statu
     Err(internal(format!("item GEID: {last}")))
 }
 
-async fn entity(db: &Arango, geid: u64) -> Result<Value, Status> {
+pub(crate) async fn entity(db: &Arango, geid: u64) -> Result<Value, Status> {
     let query = "FOR e IN entities FILTER e._key == @key RETURN e";
     let rows = db.aql(query, json!({ "key": geid.to_string() })).await.map_err(internal)?;
     rows.into_iter().next().ok_or_else(|| Status::not_found(format!("no entity {geid}")))
@@ -160,7 +160,7 @@ pub(crate) fn need_target(plan: &mut Plan, inventory_id: &str) {
     );
 }
 
-fn entity_properties(row: &Value) -> EntityNodeProperties {
+pub(crate) fn entity_properties(row: &Value) -> EntityNodeProperties {
     match doc::entity_node(row).properties.and_then(|properties| properties.properties) {
         Some(node_properties::Properties::EntityProperties(entity)) => entity,
         _ => EntityNodeProperties::default(),

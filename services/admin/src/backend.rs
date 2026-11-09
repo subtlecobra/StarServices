@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures_util::TryStreamExt;
 use sc_economy::command::Push;
-use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_document_internal_client::EntityDocumentInternalClient, hub_internal_client::HubInternalClient, entity_graph_internal_client::EntityGraphInternalClient, identity_internal_client::IdentityInternalClient, ledger_internal_client::LedgerInternalClient, presence_internal_client::PresenceInternalClient, rental_internal_client::RentalInternalClient, AccountSummary, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminInventory, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, EntitlementHistoryRequest, ExtendRentalRequest, ExtendRentalResponse, GameBadge, GameBadgesRequest, GetAccountRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPresencesRequest, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerBalancesRequest, LedgerOperation, LedgerOperationsRequest, ListRentalsRequest, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, QueryEntitlementsRequest, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionRequest, VerifyWebSessionResponse, };
+use sc_api::internal::{ entitlement_internal_client::EntitlementInternalClient, entity_document_internal_client::EntityDocumentInternalClient, hub_internal_client::HubInternalClient, entity_graph_internal_client::EntityGraphInternalClient, identity_internal_client::IdentityInternalClient, ledger_internal_client::LedgerInternalClient, presence_internal_client::PresenceInternalClient, rental_internal_client::RentalInternalClient, AccountSummary, AcquireShipRequest, AcquireShipResponse, ListShipsRequest, ListShipsResponse, ReportShipRequest, ReportShipResponse, ships_internal_client::ShipsInternalClient, AdminAddItemRequest, AdminAddItemResponse, AdminEntityClass, AdminEquipItemRequest, AdminEquipItemResponse, AdminEquipmentRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminUnequipItemResponse, AdminInventory, AdminInventoryTreeRequest, AdminMoveItemRequest, AdminMoveItemResponse, AdminRemoveItemRequest, AdminRemoveItemResponse, AdminSearchEntityClassesRequest, CreateRentalRequest, EndRentalRequest, EndRentalResponse, EntitlementHistoryEntry, EntitlementHistoryRequest, ExtendRentalRequest, ExtendRentalResponse, GameBadge, GameBadgesRequest, GetAccountRequest, GetEntityDocumentsRequest, GetPlayerShardRequest, GetPresencesRequest, GrantPurchaseRequest, LedgerAdjustRequest, LedgerAdjustResponse, LedgerBalance, LedgerBalancesRequest, LedgerOperation, LedgerOperationsRequest, ListRentalsRequest, PlayerPresence, PlayerShard, PutEntityDocumentRequest, PutEntityDocumentResponse, QueryEntitlementsRequest, RevokeEntitlementRequest, RevokeEntitlementResponse, SearchAccountsRequest, SearchAccountsResponse, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, VerifyWebSessionRequest, VerifyWebSessionResponse, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter},
@@ -90,6 +90,11 @@ pub trait Owners: Send + Sync {
     async fn equip_item(&self, request: AdminEquipItemRequest) -> Result<AdminEquipItemResponse, Status>;
     async fn unequip_item(&self, request: AdminUnequipItemRequest) -> Result<AdminUnequipItemResponse, Status>;
     async fn search_classes(&self, search: ClassSearch) -> Result<Vec<AdminEntityClass>, Status>;
+    // sc-entitygraph, `ShipsInternal`: the ships a player keeps in hangars.
+    /// Every ship of the player, at every location.
+    async fn list_ships(&self, geid: u64) -> Result<ListShipsResponse, Status>;
+    async fn acquire_ship(&self, request: AcquireShipRequest) -> Result<AcquireShipResponse, Status>;
+    async fn report_ship(&self, request: ReportShipRequest) -> Result<ReportShipResponse, Status>;
     /// Tells a playing client its balance changed, through sc-push. Best effort.
     async fn funds_changed(&self, account_id: u32, geid: u64, ledger_name: &str, delta: i64, version: u64);
 }
@@ -120,6 +125,7 @@ pub struct Grpc {
     hub: HubInternalClient<Channel>,
     presence: PresenceInternalClient<Channel>,
     graph: EntityGraphInternalClient<Channel>,
+    ships: ShipsInternalClient<Channel>,
     push: Push,
 }
 
@@ -137,6 +143,7 @@ impl Grpc {
             presence: PresenceInternalClient::new(channel("presence", &addresses.presence)?),
             graph: EntityGraphInternalClient::new(channel("entitygraph", &addresses.entitygraph)?)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES),
+            ships: ShipsInternalClient::new(channel("entitygraph", &addresses.entitygraph)?).max_decoding_message_size(MAX_MESSAGE_BYTES),
             push: Push::connect(&addresses.push)?,
         })
     }
@@ -293,6 +300,19 @@ impl Owners for Grpc {
             named_only: search.named_only,
         };
         Ok(self.graph.clone().admin_search_entity_classes(request).await?.into_inner().classes)
+    }
+
+    async fn list_ships(&self, geid: u64) -> Result<ListShipsResponse, Status> {
+        let request = ListShipsRequest { owner_id: geid, location_id: 0, hangar_size: 0, exact_size: false, now_ms: 0 };
+        Ok(self.ships.clone().list_ships(request).await?.into_inner())
+    }
+
+    async fn acquire_ship(&self, request: AcquireShipRequest) -> Result<AcquireShipResponse, Status> {
+        Ok(self.ships.clone().acquire_ship(request).await?.into_inner())
+    }
+
+    async fn report_ship(&self, request: ReportShipRequest) -> Result<ReportShipResponse, Status> {
+        Ok(self.ships.clone().report_ship(request).await?.into_inner())
     }
 
     /// As sc-eatransaction tells a buyer: topics under `player/<geid>/` reach the ledger subscription.

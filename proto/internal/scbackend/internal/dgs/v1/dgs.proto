@@ -225,6 +225,34 @@ message EntityMethodResponse {
   repeated EntityMethodCall to_caller = 1;
 }
 
+// A client's request for a token of an entity (`EntityTokenRequest`), such as the access token of an inventory container
+// (`CInventoryContainerComponent::m_userToken`) it asks for before it uses a nested inventory.
+message EntityTokenRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The caller's player entity.
+  fixed64 player_id = 3;
+  fixed64 entity_id = 4;
+  // The token's index in the entity's serialized component list, as the client names it.
+  uint32 token = 5;
+  // The client's request number for that token, as it sent it. The answer names the same.
+  uint32 request = 6;
+  // The byte after the request in the client's message: 0xce for the arbitrated tokens a client asks for as an entity
+  // binds, 0xcf for a user token such as an inventory's.
+  uint32 flags = 7;
+}
+
+// What the DGS decided for an `EntityTokenRequest`, to be sent to the client as `EntityTokenEvent`.
+message EntityTokenResponse {
+  enum Decision {
+    // No answer: the DGS does not take this request, which the client keeps waiting on.
+    DECISION_UNSPECIFIED = 0;
+    DECISION_GRANTED = 1;
+    DECISION_DENIED = 2;
+  }
+  Decision decision = 1;
+}
+
 message SessionUpdatesRequest {
   uint64 replicant = 1;
   uint64 session = 2;
@@ -283,6 +311,9 @@ service DgsControl {
   // A client's call of a method of an entity this DGS holds for that client's session, such as an interaction with its
   // hangar's elevator call panel. NOT_FOUND for an entity it does not hold for that session.
   rpc EntityMethod(EntityMethodRequest) returns (EntityMethodResponse);
+  // A client's request for a token of an entity this DGS has authority over for that client's session, such as the access
+  // token of an inventory it uses. The DGS decides; the replicant relays the decision as the client's `EntityTokenEvent`.
+  rpc EntityToken(EntityTokenRequest) returns (EntityTokenResponse);
   // What this DGS has for a session's client from now on, in order, for as long as the session is held. A later call
   // for the same session takes over from an earlier one, whose stream ends.
   rpc SessionUpdates(SessionUpdatesRequest) returns (stream SessionUpdate);

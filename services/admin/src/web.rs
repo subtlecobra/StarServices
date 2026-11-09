@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     fmt::Write,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -25,7 +25,7 @@ use axum::{
 };
 use ring::rand::{SecureRandom, SystemRandom};
 use sc_economy::ledger::{AUEC_LEDGER, REC_LEDGER};
-use sc_api::internal::{ AccountSummary, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminRemoveItemRequest, CreateRentalRequest, EndRentalRequest, ExtendRentalRequest, GrantPurchaseRequest, LedgerAdjustRequest, PutEntityDocumentRequest, RevokeEntitlementRequest, SearchAccountsRequest, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, };
+use sc_api::internal::{ ShipView, AccountSummary, AdminAddItemRequest, AdminEquipItemRequest, AdminEquipmentResponse, AdminUnequipItemRequest, AdminInventory, AdminInventoryItem, AdminMoveItemRequest, AdminRemoveItemRequest, CreateRentalRequest, EndRentalRequest, ExtendRentalRequest, GrantPurchaseRequest, LedgerAdjustRequest, PutEntityDocumentRequest, RevokeEntitlementRequest, SearchAccountsRequest, SetAccountStateRequest, SetRentalExpiryRequest, StoredEntityDocument, };
 use sc_proto::{
     services::{
     entitlement::v2::{Entitlement, EntitlementFilter, EntitlementLogAction, EntitlementSourceType, EntitlementStatus},
@@ -46,12 +46,15 @@ use tracing::warn;
 use crate::{
     audit::{AuditLog, Entry, OK},
     backend::{ClassSearch, Identity, Owners},
-    html::{account_tabs, amount, escape, notice, query_value, table, time, Frame, CSS},
+    html::{account_tabs, amount, escape, notice, query_value, section_open, table, time, Frame, CSS},
     places::places,
 };
 
 pub const SESSION_COOKIE: &str = "sc_session";
 pub const CSRF_COOKIE: &str = "sc_csrf";
+mod ships;
+mod storage;
+
 pub const CSRF_FIELD: &str = "x-csrf-token";
 pub const ADMIN_ROLE: &str = "admin";
 /// The game client's developer badges, ids 1, 14 and 126: any of them makes the account a developer one in game's
@@ -82,6 +85,11 @@ pub struct App {
     /// The portal's login page.
     pub login: String,
     pub secure_cookies: bool,
+    /// Class names by GUID, remembered by the ships page (a class's name does not change).
+    pub class_names: std::sync::Mutex<HashMap<String, String>>,
+    /// The outcome of an admin's last change, shown once on their next page read and then gone (kept here, in memory:
+    /// neither in the address nor in a cookie).
+    pub flashes: std::sync::Mutex<HashMap<u32, (std::time::Instant, String)>>,
 }
 
 type Shared = Arc<App>;
@@ -196,6 +204,24 @@ async fn guard(State(app): State<Shared>, mut request: Request, next: Next) -> R
         }
         request.extensions_mut().insert(Form(form));
     }
+    let flash = if matches!(*request.method(), Method::GET) {
+        let taken = app.flashes.lock().unwrap().remove(&session.account_id);
+        taken.filter(|(at, _)| at.elapsed() < FLASH_LIFETIME).map(|(_, text)| text)
+    } else {
+        None
+    };
+    if let Some(flash) = &flash {
+        // The page reads its notice from the query; the browser never sees it there.
+        let uri = request.uri().clone();
+        let joined = match uri.query() {
+            Some(query) => format!("{}?{query}&{flash}", uri.path()),
+            None => format!("{}?{flash}", uri.path()),
+        };
+        if let Ok(uri) = joined.parse() {
+            *request.uri_mut() = uri;
+        }
+    }
+    let account_id = session.account_id;
     let csrf = existing.clone().unwrap_or_else(|| hex(&random::<32>()));
     request.extensions_mut().insert(Admin { account_id: session.account_id, handle: session.handle, csrf: csrf.clone() });
     let mut response = next.run(request).await;
@@ -204,6 +230,11 @@ async fn guard(State(app): State<Shared>, mut request: Request, next: Next) -> R
         let value = format!("{CSRF_COOKIE}={csrf}; Path=/; SameSite=Strict{secure}");
         if let Ok(value) = HeaderValue::from_str(&value) {
             response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
+    if let Some(text) = response.headers_mut().remove(FLASH_HEADER) {
+        if let Ok(text) = text.to_str() {
+            app.flashes.lock().unwrap().insert(account_id, (Instant::now(), text.to_string()));
         }
     }
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -220,6 +251,10 @@ async fn inventory_script() -> Response {
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("inventory.js")).into_response()
 }
 
+async fn details_script() -> Response {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("details.js")).into_response()
+}
+
 async fn tree_script() -> Response {
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("tree.js")).into_response()
 }
@@ -232,11 +267,14 @@ pub fn router(app: Shared) -> Router {
         .route(&format!("{p}/audit"), get(audit_all))
         .route(&format!("{p}/accounts/{{id}}"), get(overview))
         .route(&format!("{p}/accounts/{{id}}/state"), axum::routing::post(account_state))
+        .route(&format!("{p}/accounts/{{id}}/badges"), get(badges))
         .route(&format!("{p}/accounts/{{id}}/money"), get(money).post(money_adjust))
         .route(&format!("{p}/accounts/{{id}}/assets"), get(assets))
         .route(&format!("{p}/accounts/{{id}}/assets/grant"), axum::routing::post(asset_grant))
         .route(&format!("{p}/accounts/{{id}}/assets/revoke"), axum::routing::post(asset_revoke))
-        .route(&format!("{p}/accounts/{{id}}/ships"), get(ships))
+        .route(&format!("{p}/accounts/{{id}}/ships"), get(ships::ships))
+        .route(&format!("{p}/accounts/{{id}}/ships/grant"), axum::routing::post(ships::grant))
+        .route(&format!("{p}/accounts/{{id}}/ships/report"), axum::routing::post(ships::report))
         .route(&format!("{p}/accounts/{{id}}/ships/end"), axum::routing::post(rental_end))
         .route(&format!("{p}/accounts/{{id}}/ships/extend"), axum::routing::post(rental_extend))
         .route(&format!("{p}/accounts/{{id}}/location"), get(location))
@@ -244,18 +282,24 @@ pub fn router(app: Shared) -> Router {
         .route(&format!("{p}/accounts/{{id}}/location/spawn"), axum::routing::post(set_spawn))
         .route(&format!("{p}/accounts/{{id}}/inventory"), get(inventory))
         .route(&format!("{p}/accounts/{{id}}/inventory/classes"), get(inventory_classes))
+        .route(&format!("{p}/accounts/{{id}}/inventory/item"), get(storage::item_page))
         .route(&format!("{p}/accounts/{{id}}/inventory/move"), axum::routing::post(item_move))
         .route(&format!("{p}/accounts/{{id}}/inventory/add"), axum::routing::post(item_add))
         .route(&format!("{p}/accounts/{{id}}/inventory/add-batch"), axum::routing::post(item_add_batch))
         .route(&format!("{p}/accounts/{{id}}/inventory/remove"), axum::routing::post(item_remove))
         .route(&format!("{p}/accounts/{{id}}/inventory/equip"), axum::routing::post(item_equip))
         .route(&format!("{p}/accounts/{{id}}/inventory/unequip"), axum::routing::post(item_unequip))
+        // The Hangar tab was merged into Ships: its address leads there, and its forms still post.
+        .route(&format!("{p}/accounts/{{id}}/hangar"), get(ships::hangar_moved))
+        .route(&format!("{p}/accounts/{{id}}/hangar/grant"), axum::routing::post(ships::grant))
+        .route(&format!("{p}/accounts/{{id}}/hangar/report"), axum::routing::post(ships::report))
         .route(&format!("{p}/accounts/{{id}}/audit"), get(audit_account))
         .layer(middleware::from_fn_with_state(app.clone(), guard));
     Router::new()
         .route(&format!("{p}/static/admin.css"), get(stylesheet))
         .route(&format!("{p}/static/inventory.js"), get(inventory_script))
         .route(&format!("{p}/static/tree.js"), get(tree_script))
+        .route(&format!("{p}/static/details.js"), get(details_script))
         .merge(guarded)
         .with_state(app)
 }
@@ -343,13 +387,22 @@ enum Playing {
     Unknown(String),
 }
 
-async fn playing(app: &App, account_id: u32, geid: u64) -> Playing {
+/// Whether sc-hub has the player on a shard: all that decides whether a change is allowed.
+async fn on_shard(app: &App, geid: u64) -> Option<Playing> {
     match app.owners.player_shard(geid).await {
-        Ok(Some(shard)) => return Playing::Yes { shard: shard.shard_id, location: shard.location_id },
-        Ok(None) => {}
-        Err(status) => return Playing::Unknown(status.message().to_string()),
+        Ok(Some(shard)) => Some(Playing::Yes { shard: shard.shard_id, location: shard.location_id }),
+        Ok(None) => None,
+        Err(status) => Some(Playing::Unknown(status.message().to_string())),
     }
-    let menu = match app.owners.presence(account_id).await {
+}
+
+/// The hub and presence are asked together (presence only adds whether the client is in the menu).
+async fn playing(app: &App, account_id: u32, geid: u64) -> Playing {
+    let (shard, presence) = tokio::join!(on_shard(app, geid), app.owners.presence(account_id));
+    if let Some(playing) = shard {
+        return playing;
+    }
+    let menu = match presence {
         Ok(Some(presence)) => presence.presence.is_some_and(|presence| {
             !matches!(
                 PresenceStatus::try_from(presence.status),
@@ -376,12 +429,45 @@ fn playing_text(playing: &Playing) -> String {
 
 /// The redirect after an action, back to `page` with the outcome.
 fn back(app: &App, account_id: u32, page: &str, result: Result<String, String>) -> Response {
+    back_at(app, account_id, page, "", result)
+}
+
+/// The same, to the section `anchor` of the page (none when empty).
+fn back_at(app: &App, account_id: u32, page: &str, anchor: &str, result: Result<String, String>) -> Response {
+    let anchor = if anchor.is_empty() { String::new() } else { format!("#{anchor}") };
+    let to = format!("{}/accounts/{account_id}{page}{anchor}", app.prefix);
+    with_flash(app, Redirect::to(&to).into_response(), &result)
+}
+
+/// Back to the inventory page with the inventories worked on open: `open` lists their ids, and the page scrolls to the
+/// first (`#inv-<id>`, or `#character`).
+fn back_open(app: &App, account_id: u32, open: &[&str], result: Result<String, String>) -> Response {
+    let list: Vec<&str> = open.iter().copied().filter(|id| *id == "character" || valid_inventory_id(id)).collect();
+    let anchor = match list.first() {
+        Some(first) if *first == "character" => "#character".to_string(),
+        Some(first) => format!("#inv-{}", query_value(first)),
+        None => String::new(),
+    };
+    let open = if list.is_empty() { String::new() } else { format!("&open={}", query_value(&list.join(","))) };
+    let open = open.replacen('&', "?", 1);
+    let to = format!("{}/accounts/{account_id}{INVENTORY_PAGE}{open}{anchor}", app.prefix);
+    with_flash(app, Redirect::to(&to).into_response(), &result)
+}
+
+/// What an action's response tells `guard` to keep for the admin's next page read (internal; never leaves the portal).
+const FLASH_HEADER: &str = "x-sc-flash";
+const FLASH_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Marks the redirect with the outcome of an action. `guard` takes it off and keeps it in memory for the next read.
+fn with_flash(_app: &App, mut response: Response, result: &Result<String, String>) -> Response {
     let (text, error) = match result {
         Ok(text) => (text, ""),
         Err(text) => (text, "&error=1"),
     };
-    let to = format!("{}/accounts/{account_id}{page}?notice={}{error}", app.prefix, query_value(&text));
-    Redirect::to(&to).into_response()
+    if let Ok(value) = HeaderValue::from_str(&format!("notice={}{error}", query_value(text))) {
+        response.headers_mut().insert(FLASH_HEADER, value);
+    }
+    response
 }
 
 /// What an owner said, before and after, for the audit.
@@ -492,12 +578,13 @@ async fn overview(
     };
     let _ = write!(
         body,
-        "<dl><dt>Handle</dt><dd>{}</dd><dt>Email</dt><dd>{}</dd><dt>Roles</dt><dd>{}</dd><dt>In-game badges</dt><dd>{}</dd>\
+        "<dl><dt>Handle</dt><dd>{}</dd><dt>Email</dt><dd>{}</dd><dt>Roles</dt><dd>{}</dd><dt>In-game badges</dt><dd>{} <a href=\"{}/accounts/{id}/badges\">Manage</a></dd>\
          <dt>Created</dt><dd>{}</dd><dt>State</dt><dd>{}</dd><dt>Now</dt><dd>{status}</dd></dl>",
         escape(&account.handle),
         escape(&account.email),
         escape(&account.roles.join(", ")),
         escape(&badge_names(account)),
+        app.prefix,
         time(account.created_at),
         if account.disabled { "disabled" } else { "enabled" },
     );
@@ -517,29 +604,6 @@ async fn overview(
         ),
         "Set roles",
     ));
-    body.push_str("</fieldset><fieldset><legend>In-game badges</legend>");
-    match app.identity.game_badges().await {
-        Ok(badges) => {
-            let mut boxes = String::from(r#"<input type="hidden" name="op" value="badges">"#);
-            for badge in &badges {
-                let checked = if account.game_badges.iter().any(|held| held.id == badge.id) { " checked" } else { "" };
-                let developer = if DEVELOPER_BADGES.contains(&badge.id) { " (developer)" } else { "" };
-                let _ = write!(
-                    boxes,
-                    r#"<label><input type="checkbox" name="badge_{}" value="1"{checked}> {}{developer}</label> "#,
-                    badge.id,
-                    escape(&badge.name),
-                );
-            }
-            body.push_str(&frame.form(&format!("/accounts/{id}/state"), &boxes, "Set badges"));
-            body.push_str(
-                r#"<p class="muted">Sent to the game client at the account's next login. The developer ones each unlock the console's restricted commands and cvars.</p>"#,
-            );
-        }
-        Err(status) => {
-            let _ = write!(body, r#"<p class="muted">Badges unavailable: {}</p>"#, escape(status.message()));
-        }
-    }
     body.push_str("</fieldset><fieldset><legend>Password reset</legend>");
     body.push_str(&frame.form(
         &format!("/accounts/{id}/state"),
@@ -618,7 +682,65 @@ async fn account_state(
         Ok(("Account updated.".to_string(), (before.as_ref().map(summary), Some(summary(&after)))))
     })
     .await;
-    back(&app, id, "", result)
+    back(&app, id, if form.get("op") == "badges" { "/badges" } else { "" }, result)
+}
+
+/// What a badge is, for the page that gives them: the name without the client's `RSI_` prefix, and a line about it.
+fn badge_info(id: u32, name: &str) -> (String, &'static str) {
+    let about = match id {
+        14 => "Quality assurance staff.",
+        1 => "Staff of the company.",
+        126 => "Game master.",
+        5 => "A subscriber.",
+        9 => "A concierge-tier subscriber.",
+        123 => "MMHC.",
+        4 => "A backer of the game.",
+        _ => "",
+    };
+    (name.strip_prefix("RSI_").unwrap_or(name).to_string(), about)
+}
+
+/// The badges tab: every badge the game has as a card to switch on or off, and one button to save the set.
+async fn badges(
+    State(app): State<Shared>,
+    Extension(admin): Extension<Admin>,
+    Path(id): Path<u32>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let target = match target(&app, &admin, id).await {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let frame = frame(&app, &admin);
+    let account = &target.account;
+    let mut body = flash(&query(raw)) + &account_header(&app, &target, "/badges");
+    body.push_str("<h2>In-game badges</h2>");
+    match app.identity.game_badges().await {
+        Ok(known) => {
+            let held = known.iter().filter(|badge| account.game_badges.iter().any(|h| h.id == badge.id)).count();
+            let _ = write!(body, r#"<p class="muted">{held} of {} badges on this account. Click a card to switch it, then save.</p>"#, known.len());
+            let mut cards = String::from(r#"<input type="hidden" name="op" value="badges"><div class="badges">"#);
+            for badge in &known {
+                let checked = if account.game_badges.iter().any(|h| h.id == badge.id) { " checked" } else { "" };
+                let (label, about) = badge_info(badge.id, &badge.name);
+                let developer = if DEVELOPER_BADGES.contains(&badge.id) { r#"<span class="tag heavy">developer</span>"# } else { "" };
+                let _ = write!(
+                    cards,
+                    r#"<label class="badge"><input type="checkbox" name="badge_{}" value="1"{checked}><span class="badge-name">{}</span>{developer}<span class="badge-about muted">{}</span></label>"#,
+                    badge.id,
+                    escape(&label),
+                    escape(about),
+                );
+            }
+            cards.push_str("</div>");
+            body.push_str(&frame.form_class("badge-form", &format!("/accounts/{id}/state"), &cards, "Save badges"));
+            body.push_str(
+                r#"<p class="muted">Sent to the game client at the account's next login. The <span class="tag heavy">developer</span> ones each unlock the console's restricted commands and cvars.</p>"#,
+            );
+        }
+        Err(status) => body.push_str(&failed("sc-identity", &status)),
+    }
+    html(frame.page(&format!("Badges of {}", account.handle), &body))
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1067,69 +1189,6 @@ fn rental_rows(frame: &Frame, id: u32, rentals: &[Rental]) -> Vec<Vec<String>> {
         .collect()
 }
 
-async fn ships(
-    State(app): State<Shared>,
-    Extension(admin): Extension<Admin>,
-    Path(id): Path<u32>,
-    RawQuery(raw): RawQuery,
-) -> Response {
-    let target = match target(&app, &admin, id).await {
-        Ok(target) => target,
-        Err(response) => return response,
-    };
-    let frame = frame(&app, &admin);
-    let mut body = flash(&query(raw)) + &account_header(&app, &target, "/ships");
-    let Some(geid) = target.geid else { return html(frame.page("Ships", &(body + &no_player()))) };
-    body.push_str("<h2>Rentals</h2>");
-    match app.owners.rentals(geid).await {
-        Ok(rentals) => body.push_str(&table(
-            &["Class", "Status", "Began", "Expires", "Days", "Renewals", "Rental", ""],
-            &rental_rows(&frame, id, &rentals),
-        )),
-        Err(status) => body.push_str(&failed("sc-rental", &status)),
-    }
-    body.push_str(r#"<p class="muted">Ending a rental makes it expire now: sc-rental revokes its entitlement, then finishes it. Extending is a renewal without the charge.</p>"#);
-    body.push_str("<h2>Owned ships</h2>");
-    let filter = EntitlementFilter { item_type: Some(VEHICLE_ITEM_TYPE.into()), include_revoked: Some(true), ..Default::default() };
-    let rented = EntitlementFilter {
-        source_type: vec![EntitlementSourceType::Rental as i32],
-        include_revoked: Some(true),
-        ..Default::default()
-    };
-    match (app.owners.entitlements(id, geid, filter).await, app.owners.entitlements(id, geid, rented).await) {
-        (Ok(mut owned), Ok(rented)) => {
-            for entitlement in rented {
-                if !owned.iter().any(|known| known.urn == entitlement.urn) {
-                    owned.push(entitlement);
-                }
-            }
-            let mut rows = entitlement_rows(&frame, id, &owned, false);
-            let mut states = 0;
-            for (row, entitlement) in rows.iter_mut().zip(&owned) {
-                let state = match entitlement.entity_geid {
-                    Some(entity) if states < VEHICLE_STATES_SHOWN => {
-                        states += 1;
-                        match app.owners.documents(entity, vec!["vehicle_state".into()]).await {
-                            Ok(documents) if documents.is_empty() => "no saved state".into(),
-                            Ok(documents) => documents.iter().map(document_summary).collect::<Vec<_>>().join("<br>"),
-                            Err(status) => format!("sc-entity-document: {}", escape(status.message())),
-                        }
-                    }
-                    Some(_) => "-".into(),
-                    None => "no entity yet".into(),
-                };
-                row.push(state);
-            }
-            let mut headers = ENTITLEMENT_HEADERS.to_vec();
-            headers.push("Saved state");
-            body.push_str(&table(&headers, &rows));
-        }
-        (Err(status), _) | (_, Err(status)) => body.push_str(&failed("sc-entitlement", &status)),
-    }
-    body.push_str(r#"<p class="muted">Ships are the vehicle entitlements and every rental. Where a ship is in the world is the DGS's while it is spawned, and is not stored yet.</p>"#);
-    html(frame.page("Ships", &body))
-}
-
 async fn rental_end(
     State(app): State<Shared>,
     Extension(admin): Extension<Admin>,
@@ -1556,137 +1615,6 @@ fn target_options(tree: &[AdminInventory], item: &AdminInventoryItem) -> String 
     inventory_options(tree, &keep, None, true)
 }
 
-fn item_name(item: &AdminInventoryItem) -> String {
-    match (item.display_name.is_empty(), item.class_name.is_empty()) {
-        (_, true) => format!(r#"<span class="muted">class {:#010x}, not seeded</span>"#, item.class_guid_crc),
-        (true, false) => escape(&item.class_name),
-        (false, false) => format!("{}<br><span class=\"muted\">{}</span>", escape(&item.display_name), escape(&item.class_name)),
-    }
-}
-
-fn item_rows(frame: &Frame, id: u32, tree: &[AdminInventory], inventory: &AdminInventory, editable: bool, equipment: Option<&AdminEquipmentResponse>) -> Vec<Vec<String>> {
-    let here = inventory_path(tree, inventory);
-    inventory
-        .items
-        .iter()
-        .map(|item| {
-            let holds = item.held_inventory_ids.iter().fold(String::new(), |mut out, held| {
-                let name = tree.iter().find(|other| inventory_id(other) == held).map_or_else(|| held.clone(), |other| inventory_label(tree, other));
-                let _ = write!(out, r##"<a href="#inv-{0}" title="{0}">{1}</a> "##, escape(held), escape(&name));
-                out
-            });
-            let actions = if item.on_shard {
-                format!(r#"<span class="warn">on shard <code>{}</code></span>"#, escape(&item.shard_id))
-            } else if editable {
-                let hidden = format!(
-                    r#"<input type="hidden" name="geid" value="{}"><input type="hidden" name="from" value="{}">"#,
-                    item.geid,
-                    escape(&item.inventory_id)
-                );
-                let options = target_options(tree, item);
-                let mover = if options.is_empty() {
-                    String::new()
-                } else {
-                    frame.form_class(
-                        "stacked",
-                        &format!("/accounts/{id}/inventory/move"),
-                        &format!(
-                            r#"{hidden}<div class="wide"><span class="muted">Move to</span><select name="to" data-tree>{options}</select></div><input name="quantity" type="number" min="0" max="{}" placeholder="All" class="narrow" aria-label="Quantity"><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
-                            item.stack_size.max(1)
-                        ),
-                        "Move",
-                    )
-                };
-                mover
-                    + &equip_form(frame, id, item, equipment)
-                    + &frame.form(
-                        &format!("/accounts/{id}/inventory/remove"),
-                        &format!(r#"{hidden}<input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason">"#),
-                        "Remove",
-                    )
-            } else {
-                String::new()
-            };
-            vec![
-                item.geid.to_string(),
-                format!("{}<br><span class=\"muted where\">In: {}</span>", item_name(item), escape(&here)),
-                format!("<code>{}</code>", escape(&item.class_guid)),
-                item.stack_size.to_string(),
-                item.owner_id.to_string(),
-                holds,
-                actions,
-            ]
-        })
-        .collect()
-}
-
-/// The free ports of what the player wears that `item` fits, as a form to equip it; nothing when there are none.
-fn equip_form(frame: &Frame, id: u32, item: &AdminInventoryItem, equipment: Option<&AdminEquipmentResponse>) -> String {
-    let Some(equipment) = equipment else { return String::new() };
-    let options: String = equipment
-        .ports
-        .iter()
-        .filter(|port| port.occupant_geid == 0 && port.candidates.contains(&item.geid))
-        .fold(String::new(), |mut out, port| {
-            let _ = write!(out, r#"<option value="{}:{}">{} › {}</option>"#, port.parent_geid, escape(&port.port), escape(&port.parent_name), escape(&port.port));
-            out
-        });
-    if options.is_empty() {
-        return String::new();
-    }
-    frame.form_class(
-        "stacked",
-        &format!("/accounts/{id}/inventory/equip"),
-        &format!(
-            r#"<input type="hidden" name="geid" value="{}"><div class="wide"><span class="muted">Equip on</span><select name="port">{options}</select></div><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
-            item.geid
-        ),
-        "Equip",
-    )
-}
-
-/// What the player wears, one row each under what it hangs from, with a form to take it off into an inventory.
-fn worn_table(frame: &Frame, id: u32, tree: &[AdminInventory], equipment: &AdminEquipmentResponse, editable: bool) -> String {
-    if equipment.worn.is_empty() {
-        return r#"<p class="muted">Nothing is worn yet: the loadout is made when the player first joins a shard.</p>"#.to_string();
-    }
-    let by_geid: HashMap<u64, &sc_api::internal::AdminWornItem> = equipment.worn.iter().map(|item| (item.geid, item)).collect();
-    let rows: Vec<Vec<String>> = equipment
-        .worn
-        .iter()
-        .map(|item| {
-            let name = if item.display_name.is_empty() { item.class_name.as_str() } else { item.display_name.as_str() };
-            let on = by_geid.get(&item.parent_geid).map_or_else(
-                || "the player".to_string(),
-                |parent| format!("{} › {}", if parent.display_name.is_empty() { &parent.class_name } else { &parent.display_name }, item.port),
-            );
-            let action = if !editable || !item.removable {
-                String::new()
-            } else {
-                let keep = |inventory: &AdminInventory| !inventory.live;
-                frame.form_class(
-                    "stacked",
-                    &format!("/accounts/{id}/inventory/unequip"),
-                    &format!(
-                        r#"<input type="hidden" name="geid" value="{}"><div class="wide"><span class="muted">Put it in</span><select name="to" data-tree>{}</select></div><input name="reason" required maxlength="{MAX_REASON}" placeholder="Reason" aria-label="Reason">"#,
-                        item.geid,
-                        inventory_options(tree, &keep, None, true)
-                    ),
-                    "Take off",
-                )
-            };
-            vec![
-                format!("{}{}", "\u{2003}".repeat(item.depth.saturating_sub(1) as usize), escape(name)),
-                item.geid.to_string(),
-                format!("{} {}", escape(&item.item_type), escape(&item.item_sub_type)),
-                escape(&on),
-                action,
-            ]
-        })
-        .collect();
-    table(&["Item", "Entity", "Type", "On", ""], &rows)
-}
-
 /// The classes found for `query`, each with a link that puts its GUID in the add form.
 async fn class_search(app: &App, id: u32, query: &str) -> String {
     let mut out = String::new();
@@ -1802,7 +1730,8 @@ async fn inventory(
     if locked.is_none() {
         let class = query.get("class").map_or("", |class| class.trim());
         let guid = query.get("guid").map_or("", |guid| guid.trim());
-        body.push_str(r#"<h2 id="add">Add an item</h2><fieldset>"#);
+        let adding = !class.is_empty() || !guid.is_empty();
+        let _ = write!(body, r#"<details class="section" id="add"{}><summary><h2>Add an item</h2></summary><fieldset>"#, if adding { " open" } else { "" });
         // With the script the catalog filters as you type; without it the classic search below still works.
         let _ = write!(
             body,
@@ -1840,58 +1769,23 @@ async fn inventory(
             ),
             "Give the items",
         ));
-        body.push_str(r#"<p class="muted">Each item is new, with a GEID from sc-entitygraph, owned by the player: add as many as you like with the +, then give them all with one reason. A crate, a backpack or any class with an inventory container gets its own inventory with it.</p></fieldset>"#);
+        body.push_str(r#"<p class="muted">Each item is new, with a GEID from sc-entitygraph, owned by the player: add as many as you like with the +, then give them all with one reason. A crate, a backpack or any class with an inventory container gets its own inventory with it.</p></fieldset></details>"#);
     }
     let _ = write!(body, r#"<script src="{}/static/tree.js" defer></script>"#, app.prefix);
-    body.push_str(r#"<h2 id="worn">Worn</h2>"#);
-    match &equipment {
-        Ok(equipment) => {
-            body.push_str(&worn_table(&frame, id, &tree, equipment, locked.is_none()));
-            body.push_str(r#"<p class="muted">Equipping moves a stowed item to a port of something worn, if its type, size and tags fit; taking off stows it, with what hangs from it. Offline only: the player's client sees the change on its next join.</p>"#);
-        }
-        Err(status) => body.push_str(&failed("sc-entitygraph", status)),
+    body.push_str(r#"<h2 id="storage">Character &amp; storage</h2>"#);
+    if let Err(status) = &equipment {
+        body.push_str(&failed("sc-entitygraph", status));
     }
-    body.push_str("<h2>Inventories</h2>");
-    for inventory in &tree {
-        let Some(properties) = inventory.inventory.as_ref() else { continue };
-        let depth = inventory.depth.min(6);
-        let _ = write!(
-            body,
-            r#"<section class="inventory depth-{depth}" id="inv-{id_attr}"><h3>{path} <code>{id_text}</code></h3><p class="muted">{capacity} · {count} item{s}{parent}{shared}</p>"#,
-            id_attr = escape(&properties.id),
-            path = escape(&inventory_path(&tree, inventory)),
-            id_text = escape(&properties.id),
-            capacity = capacity_text(properties),
-            count = inventory.item_count,
-            s = if inventory.item_count == 1 { "" } else { "s" },
-            parent = if inventory.parent_inventory_id.is_empty() {
-                String::new()
-            } else {
-                format!(r##" · in <a href="#inv-{0}"><code>{0}</code></a>"##, escape(&inventory.parent_inventory_id))
-            },
-            shared = if properties.shared { " · shared" } else { "" },
-        );
-        if inventory.live {
-            body.push_str(r#"<p class="warn">Held by something live on a shard: the DGS has it, so it is not changed here.</p>"#);
-        }
-        let editable = locked.is_none() && !inventory.live;
-        body.push_str(&table(
-            &["Entity", "Class", "Class GUID", "Stack", "Owner", "Holds", ""],
-            &item_rows(&frame, id, &tree, inventory, editable, equipment.as_ref().ok()),
-        ));
-        if inventory.item_count as usize > inventory.items.len() {
-            let _ = write!(body, r#"<p class="muted">Only the first {} of {} items are shown.</p>"#, inventory.items.len(), inventory.item_count);
-        }
-        body.push_str("</section>");
-    }
-    body.push_str(r#"<p class="muted">The player's own inventories (personal, item banks, ...), the containers of what it owns (a ship's holds, crates, backpacks) and everything nested in them, parents before children. Moving part of a stack splits it into a new item; removing an item erases everything it holds.</p>"#);
+    let panel = storage::Panel { app: &app, frame: &frame, id, tree: &tree, equipment: equipment.as_ref().ok(), editable: locked.is_none(), query: &query };
+    body.push_str(&panel.render());
+    body.push_str(r#"<p class="muted">The character at the top, with what it wears under what it hangs from; below it the player's own inventories (personal, item banks, ...) and the containers of what it owns (a ship's holds, crates, backpacks), each under the item that holds it. Branches open on demand, items are paged per inventory. Equipping moves a stowed item to a port of something worn, if its type, size and tags fit; taking off stows it, with what hangs from it. Moving part of a stack splits it into a new item; removing an item erases everything it holds. Offline only: the player's client sees the changes on its next join.</p>"#);
     html(frame.page("Inventory", &body))
 }
 
 /// The player of an account, when it may be changed now: not on a shard, as far as sc-hub knows.
 async fn offline_player(app: &App, id: u32) -> Result<u64, String> {
     let Some(geid) = player(app, id).await else { return Err("No player for this account.".into()) };
-    match playing(app, id, geid).await {
+    match on_shard(app, geid).await.unwrap_or(Playing::No { menu: false }) {
         Playing::No { .. } => Ok(geid),
         Playing::Yes { .. } => Err("The player is on a shard: nothing was changed.".into()),
         Playing::Unknown(error) => Err(format!("sc-hub did not answer ({error}): nothing was changed.")),
@@ -1983,7 +1877,7 @@ async fn item_move(
         Ok((text, (before, Some(after))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &[&to, &from], result)
 }
 
 /// Equips a stowed item of the offline player to a free port of something it wears: `port` is `<worn item>:<port name>`, as
@@ -2027,7 +1921,7 @@ async fn item_equip(
         Ok((text, (before, Some(json!({ "worn_by": parent, "port": port })))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &["character"], result)
 }
 
 /// Takes a worn item of the offline player off, into the inventory picked.
@@ -2068,7 +1962,7 @@ async fn item_unequip(
         Ok((text, (Some(json!({ "worn": true })), Some(json!({ "inventory": to })))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &[&to], result)
 }
 
 /// The most lines, copies of one line, and items a batch may hold.
@@ -2184,7 +2078,7 @@ async fn item_add_batch(
         Ok((format!("Added {done} item{} to {inventory}: {summary}.", if done == 1 { "" } else { "s" }), (None, Some(json!({ "inventory": inventory, "items": added })))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &[&inventory], result)
 }
 
 async fn item_add(
@@ -2240,7 +2134,7 @@ async fn item_add(
         Ok((text, (None, Some(after))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &[&inventory], result)
 }
 
 async fn item_remove(
@@ -2282,7 +2176,7 @@ async fn item_remove(
         Ok((text, (before, Some(json!({ "removed": done.removed, "erased": done.erased })))))
     })
     .await;
-    back(&app, id, INVENTORY_PAGE, result)
+    back_open(&app, id, &[form.get("from")], result)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

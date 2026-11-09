@@ -220,6 +220,9 @@ impl EntityGraphInternal for Owned {
     async fn admin_unequip_item(&self, _: Request<AdminUnequipItemRequest>) -> Result<Response<AdminUnequipItemResponse>, Status> {
         Err(Status::unimplemented("not a seed"))
     }
+    async fn inventory_operation(&self, _: Request<sc_api::internal::InventoryOperationRequest>) -> Result<Response<sc_api::internal::InventoryOperationResponse>, Status> {
+        Err(Status::unimplemented("not a seed"))
+    }
 }
 
 impl Owned {

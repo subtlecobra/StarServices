@@ -96,6 +96,7 @@ mod live {
             db: open(&url).await.unwrap(),
             push: PushPublisherClient::new(endpoint.connect_lazy()),
             known_players: Mutex::default(),
+            ships: None,
         };
         // The state hands out the same first GEIDs in every run, and those would meet old documents.
         let stale = "FOR e IN entities FILTER e._key IN @keys REMOVE e IN entities";
@@ -745,6 +746,160 @@ mod live {
         assert_eq!(row, [json!({ "stowed": true, "inv": personal })], "the old undersuit is gone, the pistol is in the personal inventory");
     }
 
+    /// The operations of a live player: stacks, splits, swaps, repools, drops and pickups, each once per command id.
+    #[tokio::test]
+    #[ignore]
+    async fn inventory_operations_of_a_live_player() {
+        use sc_api::internal::{
+            inventory_operation_request::Operation, AdminAddItemRequest, DropOperation, EnsureLoadoutRequest, InventoryOperationRequest,
+            LoadoutItem, PickupOperation, RepoolAmmoOperation, SplitOperation, StackAllOperation, StackOperation, SwapOperation,
+        };
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let base = fresh();
+        let crc = |n: u64| ((base + n) % 0xffff_fff0) as u32 + 1;
+        let (body, suit, helmet, visor, medpen, magazine) = (crc(41), crc(42), crc(43), crc(44), crc(45), crc(46));
+        let guid = |name: &str| format!("{name}{base}");
+        let port = |name: &str, kind: &str| {
+            json!({ "name": name, "minSize": 1, "maxSize": 1, "types": [{ "itemType": kind, "itemSubTypes": [] }],
+                    "requiredPortTags": "", "portTags": "", "flags": "" })
+        };
+        let classes = json!([
+            { "_key": guid("body"), "guid": guid("body"), "guidHashCrc": body, "className": "Body", "itemType": "Char_Body",
+              "ports": [port("Armor_Undersuit", "Char_Armor_Undersuit")] },
+            { "_key": guid("suit"), "guid": guid("suit"), "guidHashCrc": suit, "className": "Suit", "itemType": "Char_Armor_Undersuit",
+              "ports": [port("Armor_Helmet", "Char_Armor_Helmet"), port("Armor_Torso", "Char_Armor_Torso")] },
+            { "_key": guid("helmet"), "guid": guid("helmet"), "guidHashCrc": helmet, "className": "Helmet", "itemType": "Char_Armor_Helmet", "attachSize": 1 },
+            { "_key": guid("visor"), "guid": guid("visor"), "guidHashCrc": visor, "className": "Visor", "itemType": "Char_Armor_Helmet", "attachSize": 1 },
+            { "_key": guid("medpen"), "guid": guid("medpen"), "guidHashCrc": medpen, "className": "Medpen", "itemType": "FPS_Consumable", "stackable": true },
+            { "_key": guid("mag"), "guid": guid("mag"), "guidHashCrc": magazine, "className": "Mag", "itemType": "WeaponAttachment", "ammoCapacity": 30 },
+        ]);
+        graph.db.aql("FOR c IN @classes INSERT c INTO entity_classes", json!({ "classes": classes })).await.unwrap();
+        let old = json!({ "me": me.to_string() });
+        graph.db.aql("FOR x IN entity_edges FILTER x.startId IN (FOR e IN entities FILTER e.ownerId == @me AND e._key != @me RETURN e._key) REMOVE x IN entity_edges", old.clone()).await.unwrap();
+        graph.db.aql("FOR e IN entities FILTER e.ownerId == @me AND e._key != @me REMOVE e IN entities", old.clone()).await.unwrap();
+        graph.db.aql("UPSERT { _key: @me } INSERT { _key: @me, geid: @me, ownerId: @me } UPDATE {} IN entities", old).await.unwrap();
+        let loadout = vec![
+            LoadoutItem { class_crc: body, port_crc: 0xab63_41ac, parent: -1 },
+            LoadoutItem { class_crc: suit, port_crc: crate::equip::port_crc("Armor_Undersuit"), parent: 0 },
+        ];
+        let made = EntityGraphInternal::ensure_loadout(&**graph, Request::new(EnsureLoadoutRequest { command_id: format!("loadout:{me}:{base}"), player_id: me, items: loadout }))
+            .await
+            .unwrap()
+            .into_inner();
+        let suit_geid = made.geids[1];
+        let personal = format!("{me}:PlayerInventory:0");
+        let bank = format!("{me}:Location:{base}");
+        let add = |n: u32, class: &str, stack: u32, inventory: &str| AdminAddItemRequest {
+            command_id: format!("admin:ops-{base}-{n}"),
+            owner_id: me,
+            inventory_id: inventory.into(),
+            entity_class_guid: class.into(),
+            stack_size: stack,
+            actor: "admin:1:root".into(),
+            reason: "test".into(),
+        };
+        let added = |n: u32, class: &str, stack: u32, inventory: &str| {
+            let request = add(n, &guid(class), stack, inventory);
+            async move { EntityGraphInternal::admin_add_item(&**graph, Request::new(request)).await.unwrap().into_inner().geid }
+        };
+        let (a, b, c) = (added(1, "medpen", 60, &personal).await, added(2, "medpen", 50, &personal).await, added(3, "medpen", 5, &personal).await);
+        let op = |n: u32, operation: Operation| InventoryOperationRequest {
+            command_id: format!("live:ops-{base}-{n}"),
+            owner_id: me,
+            actor: "dgs".into(),
+            reason: "test".into(),
+            operation: Some(operation),
+        };
+        let run = |request: InventoryOperationRequest| async { EntityGraphInternal::inventory_operation(&**graph, Request::new(request)).await };
+        let row = |geid: u64| async move { graph.db.aql("FOR e IN entities FILTER e._key == @k RETURN e", json!({ "k": geid.to_string() })).await.unwrap().into_iter().next() };
+        let stack_of = |geid: u64| async move { row(geid).await.map(|row| row["stackSize"].as_u64().unwrap()) };
+
+        // Stack: 5 go onto the fullest stack with room (60); the emptied one is erased; a repeat does nothing twice.
+        let stacked = run(op(1, Operation::Stack(StackOperation { geid: c, inventory_id: String::new(), amount: 0 }))).await.unwrap().into_inner();
+        assert_eq!((stacked.geid, stacked.erased.clone(), stacked.class_crc, stacked.replayed), (a, vec![c], medpen, false));
+        assert_eq!((stack_of(a).await, stack_of(c).await), (Some(65), None));
+        let again = run(op(1, Operation::Stack(StackOperation { geid: c, inventory_id: String::new(), amount: 0 }))).await.unwrap().into_inner();
+        assert!(again.replayed && again.geid == a && again.erased == vec![c]);
+        assert_eq!(stack_of(a).await, Some(65));
+        // A stack of one cannot stack onto nothing, and something that does not stack is refused.
+        let lone = added(4, "helmet", 0, &personal).await;
+        assert_eq!(run(op(2, Operation::Stack(StackOperation { geid: lone, inventory_id: String::new(), amount: 0 }))).await.unwrap_err().code(), tonic::Code::FailedPrecondition);
+
+        // Stack all: 65 and 50 become 99 and 16, and the limit holds.
+        let all = run(op(3, Operation::StackAll(StackAllOperation { inventory_id: personal.clone(), class_crc: medpen }))).await.unwrap().into_inner();
+        assert!(all.erased.is_empty());
+        assert_eq!((stack_of(a).await, stack_of(b).await), (Some(99), Some(16)));
+        let nothing = run(op(4, Operation::StackAll(StackAllOperation { inventory_id: personal.clone(), class_crc: 0 }))).await.unwrap().into_inner();
+        assert!(nothing.erased.is_empty());
+
+        // Split: 10 from the 99 into the bank; the new item has a new GEID, the owner and the class.
+        let split = run(op(5, Operation::Split(SplitOperation { geid: a, amount: 10, to_inventory_id: bank.clone() }))).await.unwrap().into_inner();
+        assert!(split.geid > c && split.class_crc == medpen);
+        let new = row(split.geid).await.unwrap();
+        assert_eq!((new["stackSize"].as_u64(), new["inventoryId"].as_str(), new["ownerId"].as_str(), new["stowed"].as_bool()), (Some(10), Some(bank.as_str()), Some(me.to_string().as_str()), Some(true)));
+        assert_eq!(stack_of(a).await, Some(89));
+        assert_eq!(run(op(6, Operation::Split(SplitOperation { geid: a, amount: 89, to_inventory_id: String::new() }))).await.unwrap_err().code(), tonic::Code::FailedPrecondition, "a split leaves something");
+        // In the same inventory too.
+        let in_place = run(op(7, Operation::Split(SplitOperation { geid: a, amount: 9, to_inventory_id: String::new() }))).await.unwrap().into_inner();
+        assert_eq!((row(in_place.geid).await.unwrap()["inventoryId"].as_str().map(str::to_string), stack_of(a).await), (Some(personal.clone()), Some(80)));
+
+        // Swap: a helmet on the suit changes places with a stowed one; what comes off goes where the other was.
+        let (h1, h2) = (added(8, "helmet", 0, &personal).await, added(9, "visor", 0, &bank).await);
+        EntityGraphInternal::admin_equip_item(&**graph, Request::new(sc_api::internal::AdminEquipItemRequest {
+            command_id: format!("admin:ops-{base}-e1"), owner_id: me, geid: h1, parent_geid: suit_geid, port: "Armor_Helmet".into(), actor: "t".into(), reason: "t".into(),
+        })).await.unwrap();
+        let swapped = run(op(10, Operation::Swap(SwapOperation { geid: h2, other_geid: h1 }))).await.unwrap().into_inner();
+        assert_eq!(swapped.placed.iter().map(|item| (item.geid, item.parent_geid, item.port_crc)).collect::<Vec<_>>(), [(h2, suit_geid, crate::equip::port_crc("Armor_Helmet"))]);
+        let (worn_now, off) = (row(h2).await.unwrap(), row(h1).await.unwrap());
+        assert_eq!((worn_now["stowed"].as_bool(), off["stowed"].as_bool(), off["inventoryId"].as_str()), (Some(false), Some(true), Some(bank.as_str())));
+        // Two stowed items trade inventories.
+        let swapped = run(op(11, Operation::Swap(SwapOperation { geid: h1, other_geid: a }))).await.unwrap().into_inner();
+        assert!(swapped.placed.is_empty());
+        assert_eq!((row(h1).await.unwrap()["inventoryId"].as_str().map(str::to_string), row(a).await.unwrap()["inventoryId"].as_str().map(str::to_string)), (Some(personal.clone()), Some(bank.clone())));
+        // A helmet does not go in a torso port: swapping a worn item with one that does not fit it fails and changes nothing.
+        let medpen_one = added(12, "medpen", 0, &personal).await;
+        assert_eq!(run(op(12, Operation::Swap(SwapOperation { geid: medpen_one, other_geid: h2 }))).await.unwrap_err().code(), tonic::Code::FailedPrecondition);
+        assert_eq!(row(h2).await.unwrap()["stowed"].as_bool(), Some(false));
+
+        // Ammo: magazines of 20, 15 and 5 rounds become 30, 10 and 0.
+        let mags = [added(13, "mag", 0, &personal).await, added(14, "mag", 0, &personal).await, added(15, "mag", 0, &personal).await];
+        for (geid, rounds) in mags.iter().zip([20, 15, 5]) {
+            graph.db.aql("UPDATE { _key: @k } WITH { ammoCount: @r } IN entities", json!({ "k": geid.to_string(), "r": rounds })).await.unwrap();
+        }
+        let repooled = run(op(13, Operation::RepoolAmmo(RepoolAmmoOperation { inventory_id: personal.clone(), class_crc: magazine }))).await.unwrap().into_inner();
+        assert_eq!(repooled.geid, mags[0]);
+        let mut rounds = Vec::new();
+        for geid in mags {
+            rounds.push(row(geid).await.unwrap()["ammoCount"].as_u64().unwrap());
+        }
+        assert_eq!(rounds, [30, 10, 0]);
+
+        // Drop: part of a stack and a whole item lie in the world of the shard, owned by no one; the player's tree no longer
+        // has them. Another player cannot pick them up; the owner can, and gets them back stowed.
+        let place = |geid: u64, amount: u32| DropOperation { geid, amount, shard_id: "shard-a".into(), zone_id: 77, x: 1.0, y: 2.0, z: 3.0, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0 };
+        let dropped = run(op(14, Operation::Drop(place(b, 6)))).await.unwrap().into_inner();
+        assert_eq!(stack_of(b).await, Some(10));
+        let world = row(dropped.geid).await.unwrap();
+        assert_eq!((world["stackSize"].as_u64(), world["stowed"].as_bool(), world["shardId"].as_str(), world["ownerId"].as_str(), world["zoneId"].as_str()), (Some(6), Some(false), Some("shard-a"), Some("0"), Some("77")));
+        assert_eq!([world["position"]["x"].as_f64(), world["position"]["y"].as_f64(), world["position"]["z"].as_f64()], [Some(1.0), Some(2.0), Some(3.0)]);
+        let whole = run(op(15, Operation::Drop(place(medpen_one, 0)))).await.unwrap().into_inner();
+        assert_eq!(whole.geid, medpen_one);
+        let lying = row(medpen_one).await.unwrap();
+        assert_eq!((lying["stowed"].as_bool(), lying["inventoryId"].is_null(), lying["ownerId"].as_str()), (Some(false), true, Some("0")));
+        assert_eq!(run(op(16, Operation::Pickup(PickupOperation { geid: a, shard_id: "shard-a".into(), to_inventory_id: String::new() }))).await.unwrap_err().code(), tonic::Code::NotFound, "a stowed item is not lying in the world");
+        assert_eq!(run(op(17, Operation::Pickup(PickupOperation { geid: medpen_one, shard_id: "shard-b".into(), to_inventory_id: String::new() }))).await.unwrap_err().code(), tonic::Code::NotFound, "another shard's");
+        let picked = run(op(18, Operation::Pickup(PickupOperation { geid: medpen_one, shard_id: "shard-a".into(), to_inventory_id: String::new() }))).await.unwrap().into_inner();
+        assert_eq!(picked.geid, medpen_one);
+        let back = row(medpen_one).await.unwrap();
+        assert_eq!((back["stowed"].as_bool(), back["inventoryId"].as_str(), back["ownerId"].as_str()), (Some(true), Some(personal.as_str()), Some(me.to_string().as_str())));
+        // Someone else's item is not touched.
+        let other = fixture.other_token.clone();
+        let _ = other;
+        let theirs = InventoryOperationRequest { owner_id: me + 1, ..op(19, Operation::Split(SplitOperation { geid: b, amount: 1, to_inventory_id: String::new() })) };
+        assert_eq!(run(theirs).await.unwrap_err().code(), tonic::Code::PermissionDenied);
+    }
+
     /// Location, ship and container inventories: created when first needed, sized by class, nested, guarded
     /// against loops, over-filling and other players.
     #[tokio::test]
@@ -1353,6 +1508,175 @@ mod live {
         let reply = client.get_database_version(version).await.unwrap().into_inner();
         assert_eq!(reply.body.unwrap().version, DATABASE_VERSION);
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn an_item_found_in_a_tree_query_comes_with_its_stowed_edge() {
+        use sc_proto::services::entitygraph::v1::{EdgeFilter, EntityCompositeFilter, LogicalOperator};
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let item = fresh();
+        let location = format!("{me}:Location:1105811199");
+        let mut node = entity_node(item, me);
+        if let Some(NodeProperties { properties: Some(node_properties::Properties::EntityProperties(entity)) }) = node.properties.as_mut() {
+            entity.class_guid_crc = 1228305652;
+        }
+        let seed = EntityGraph { nodes: vec![node], edges: vec![stowed(item, &location, 1)] };
+        let command = Params::Create(CreateCommand { creates: vec![create_command::Body { graphs: Some(seed) }], inventory_id: location.clone() });
+        graph.mutate_entities(signed(&fixture.token, mutate(vec![command]))).await.unwrap();
+        let wrap = |filter_type| EntityFilter { filter_type: Some(filter_type) };
+        let in_inventory = || {
+            wrap(entity_filter::FilterType::EdgeFilter(EdgeFilter {
+                edge_type: "STOWED_IN".into(),
+                values: vec![ScalarValue { scalar_type: Some(scalar_value::ScalarType::StringValue(location.clone())) }],
+            }))
+        };
+        let of_class = || {
+            wrap(entity_filter::FilterType::PropertyFilter(PropertyFilter {
+                property: "classGuidCrc".into(),
+                operator: ComparisonOperator::In as i32,
+                values: vec![ScalarValue { scalar_type: Some(scalar_value::ScalarType::UnsignedIntegerValue(1228305652)) }],
+            }))
+        };
+        // The client looks an item up by class in its inventory with a tree projection and the edges it leaves by,
+        // either with the class as the root filter or as the filter of the tree.
+        let at_the_root = wrap(entity_filter::FilterType::CompositeFilter(EntityCompositeFilter {
+            operator: LogicalOperator::And as i32,
+            filters: vec![in_inventory(), of_class()],
+        }));
+        let tree = |filter| EntityTreeProjection { enabled: true, filter, ..Default::default() };
+        let queries = [
+            (Some(at_the_root), tree(None)),
+            (Some(in_inventory()), tree(Some(of_class()))),
+        ];
+        for (filter, tree) in queries {
+            let projection = EntityProjection { tree: Some(tree), outgoing_edges: true, ..Default::default() };
+            let query = EntityGraphQuery { filter, inventory_id: location.clone(), projection: Some(projection), ..Default::default() };
+            let reply = graph.entity_query(signed(&fixture.token, entity_body(query))).await.unwrap().into_inner().body.unwrap();
+            let results = reply.results.unwrap();
+            assert!(geids(&results).contains(&item));
+            let edge = results.edges.iter().find(|edge| {
+                edge.r#type == EntityEdgeType::StowedIn as i32
+                    && matches!(edge.start.as_ref().and_then(|start| start.id.as_ref()), Some(entity_edge_vertex::Id::EntityId(id)) if *id == item)
+            });
+            let end = edge.and_then(|edge| edge.end.as_ref()).and_then(|end| end.id.as_ref());
+            assert_eq!(end, Some(&entity_edge_vertex::Id::InventoryId(location.clone())));
+        }
+        // Without the projection of edges the tree stays as it was.
+        let tree = EntityProjection { tree: Some(tree(None)), ..Default::default() };
+        let query = EntityGraphQuery { inventory_id: location.clone(), projection: Some(tree), ..Default::default() };
+        let reply = graph.entity_query(signed(&fixture.token, entity_body(query))).await.unwrap().into_inner().body.unwrap();
+        assert!(reply.results.unwrap().edges.is_empty());
+    }
+
+    /// The ASOP's ship list: the client asks for its own `Location` (kind 3) and `Hangar` (kind 8) inventory at the
+    /// location id it computes, before anything was ever stowed there.
+    #[tokio::test]
+    #[ignore]
+    async fn the_ship_list_inventories_are_made_on_the_first_query() {
+        use sc_proto::services::entitygraph::v1::{EdgeFilter, EntityEdgeType};
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let location = (fresh() % 4_000_000_000) as u32;
+        let (at_location, hangar) = (format!("{me}:Location:{location}"), format!("{me}:Hangar:{location}"));
+        let theirs = format!("{}:Hangar:{location}", me + 1);
+        let escrow = format!("{me}:PlayerEscrowInventory:{location}");
+        let rows = |id: String| async move {
+            graph.db.aql("FOR i IN inventories FILTER i.id == @id RETURN i", json!({ "id": id })).await.unwrap()
+        };
+        let ask = |id: String| EntityGraphQuery { inventory_id: id, ..Default::default() };
+        for id in [&at_location, &hangar, &theirs, &escrow] {
+            assert!(rows(id.clone()).await.is_empty());
+            graph.entity_query(signed(&fixture.token, entity_body(ask(id.clone())))).await.unwrap();
+        }
+        // The player's own two exist now: infinite, owned by the player, held by the player.
+        for id in [&at_location, &hangar] {
+            let made = rows(id.clone()).await;
+            assert_eq!(made.len(), 1, "{id}");
+            assert_eq!((made[0]["ownerId"].as_str(), made[0]["inventoryType"].as_i64()), (Some(me.to_string().as_str()), Some(InventoryType::Infinite as i64)));
+            let holder = "FOR x IN entity_edges FILTER x.startId == @id AND x.type == 1 RETURN x.endId";
+            assert_eq!(graph.db.aql(holder, json!({ "id": id })).await.unwrap(), [json!(me.to_string())]);
+        }
+        // Nobody else's, and no other context, is made by asking.
+        assert!(rows(theirs).await.is_empty() && rows(escrow).await.is_empty());
+        // Asking again changes nothing, and a ship stowed in the hangar is what the query finds there.
+        let ship = fresh();
+        let mut node = entity_node(ship, me);
+        if let Some(NodeProperties { properties: Some(node_properties::Properties::EntityProperties(entity)) }) = node.properties.as_mut() {
+            entity.class_guid_crc = 1234;
+        }
+        let seed = EntityGraph { nodes: vec![node], edges: vec![stowed(ship, &hangar, 1)] };
+        let command = Params::Create(CreateCommand { creates: vec![create_command::Body { graphs: Some(seed) }], inventory_id: hangar.clone() });
+        graph.mutate_entities(signed(&fixture.token, mutate(vec![command]))).await.unwrap();
+        assert_eq!(rows(hangar.clone()).await.len(), 1);
+        let in_hangar = EntityFilter {
+            filter_type: Some(entity_filter::FilterType::EdgeFilter(EdgeFilter {
+                edge_type: "STOWED_IN".into(),
+                values: vec![ScalarValue { scalar_type: Some(scalar_value::ScalarType::StringValue(hangar.clone())) }],
+            })),
+        };
+        let projection = EntityProjection { tree: Some(EntityTreeProjection { enabled: true, ..Default::default() }), outgoing_edges: true, ..Default::default() };
+        let query = EntityGraphQuery { filter: Some(in_hangar), inventory_id: hangar.clone(), projection: Some(projection), ..Default::default() };
+        let reply = graph.entity_query(signed(&fixture.token, entity_body(query))).await.unwrap().into_inner().body.unwrap();
+        let results = reply.results.unwrap();
+        assert!(geids(&results).contains(&ship));
+        assert!(results.edges.iter().any(|edge| edge.r#type == EntityEdgeType::StowedIn as i32));
+        // A call without a token makes nothing (the token decides whose inventory it is).
+        let nobody = format!("{me}:Hangar:{}", location + 1);
+        graph.entity_query(Request::new(entity_body(ask(nobody.clone())))).await.unwrap();
+        assert!(rows(nobody).await.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn an_old_item_gets_its_container_and_item_types_from_its_class() {
+        let fixture = fixture().await;
+        let (graph, me) = (&fixture.graph, fixture.geid);
+        let (item, plain) = (fresh(), fresh() + 1);
+        let crc = (fresh() % 4_000_000_000) as u32;
+        let class = json!({
+            "_key": format!("test-class-{crc}"), "guid": format!("test-class-{crc}"), "guidHashCrc": crc,
+            "itemTypeEnum": 24, "itemSubTypeEnum": 71, "inventory": { "capacityMicroScu": 77 },
+        });
+        graph.db.aql("UPSERT { _key: @doc._key } INSERT @doc UPDATE @doc IN entity_classes", json!({ "doc": class })).await.unwrap();
+        let mut nodes = Vec::new();
+        for geid in [item, plain] {
+            let mut node = entity_node(geid, me);
+            if let Some(NodeProperties { properties: Some(node_properties::Properties::EntityProperties(entity)) }) = node.properties.as_mut() {
+                entity.class_guid_crc = if geid == item { crc } else { 0 };
+            }
+            nodes.push(node);
+        }
+        // Made while the class was unknown: no container, no item type.
+        graph.mutate_entities(signed(&fixture.token, mutate(vec![create(EntityGraph { nodes, edges: vec![] })]))).await.unwrap();
+        let container = format!("{item}:Container:0");
+        let count = |id: String| async move {
+            let rows = graph.db.aql("FOR i IN inventories FILTER i.id == @id RETURN i", json!({ "id": id })).await.unwrap();
+            rows.len()
+        };
+        let _ = graph.db.aql("FOR i IN inventories FILTER i.id == @id REMOVE i IN inventories", json!({ "id": container })).await;
+        assert_eq!(count(container.clone()).await, 0);
+
+        let ask = |id: String| EntityGraphQuery { inventory_id: id, ..Default::default() };
+        graph.entity_query(signed(&fixture.token, entity_body(ask(container.clone())))).await.unwrap();
+        assert_eq!(count(container.clone()).await, 1);
+        let capacity = "FOR i IN inventories FILTER i.id == @id RETURN i.configuration.physical.capacity";
+        assert_eq!(graph.db.aql(capacity, json!({ "id": container })).await.unwrap(), [json!(77)]);
+        let holder = "FOR x IN entity_edges FILTER x.startId == @id AND x.type == 1 RETURN x.endId";
+        assert_eq!(graph.db.aql(holder, json!({ "id": container })).await.unwrap(), [json!(item.to_string())]);
+        // Asking again changes nothing, and an item without a container class gets none.
+        graph.entity_query(signed(&fixture.token, entity_body(ask(container.clone())))).await.unwrap();
+        assert_eq!(count(container).await, 1);
+        let none = format!("{plain}:Container:0");
+        graph.entity_query(signed(&fixture.token, entity_body(ask(none.clone())))).await.unwrap();
+        assert_eq!(count(none).await, 0);
+
+        let types = "FOR e IN entities FILTER e._key == @key RETURN [e.itemTypeEnum, e.itemSubTypeEnum]";
+        graph.db.aql("FOR e IN entities FILTER e._key == @key UPDATE e WITH { itemTypeEnum: 0, itemSubTypeEnum: 0 } IN entities", json!({ "key": item.to_string() })).await.unwrap();
+        assert_eq!(seed::repair_item_types(&graph.db).await.unwrap() >= 1, true);
+        assert_eq!(graph.db.aql(types, json!({ "key": item.to_string() })).await.unwrap(), [json!([24, 71])]);
+        assert_eq!(seed::repair_item_types(&graph.db).await.unwrap(), 0);
+    }
 }
 
 #[test]
@@ -1380,6 +1704,7 @@ async fn the_internal_service_shares_the_port_and_refuses_a_bad_prefix() {
         db: Arango::lazy("http://127.0.0.1:1"),
         push: PushPublisherClient::new(Endpoint::from_static("http://127.0.0.1:1").connect_lazy()),
         known_players: Mutex::default(),
+        ships: None,
     });
     let server = Server::builder()
         .add_service(EntityGraphServiceServer::from_arc(graph.clone()))

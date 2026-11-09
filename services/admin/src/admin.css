@@ -105,3 +105,42 @@ form.give { padding: .4em 0; }
 .where { font-size: .85em; }
 section.inventory h3 { overflow-wrap: anywhere; }
 .treepick-label:focus-visible { outline: 2px solid var(--accent); }
+
+/* Collapsible sections and the character & storage tree. */
+details.section { margin: .8em 0; border-top: 1px solid var(--line); padding-top: .2em; }
+details.section > summary { cursor: pointer; list-style-position: outside; }
+details.section > summary h2 { display: inline; margin: 0; }
+.count { display: inline-block; min-width: 1.6em; padding: 0 .5em; margin-left: .3em; border-radius: 999px; background: var(--line); font-size: .8em; text-align: center; font-weight: 600; }
+.tree-panel { margin: .4em 0 1em; }
+.tree-panel details.node { margin: .15em 0; }
+.tree-panel details.node > summary { cursor: pointer; padding: .25em .3em; border-radius: 4px; }
+.tree-panel details.node > summary:hover { background: var(--line); }
+.tree-panel .kids { margin-left: .5em; padding-left: .9em; border-left: 2px solid var(--line); }
+.tree-panel .item { padding: .25em .3em; display: flex; flex-wrap: wrap; gap: .2em .5em; align-items: baseline; }
+.tree-panel .item:hover { background: #8881; }
+.tree-panel details.character > summary { font-size: 1.05em; font-weight: 600; }
+.tree-panel .storage-title { margin: 1em 0 .3em; font-size: 1em; }
+.tree-panel .name { font-weight: 600; }
+.tree-panel .qty { font-weight: 600; color: var(--accent); }
+.tree-panel .meta { opacity: .65; font-size: .92em; }
+.tree-panel .ico { display: inline-block; width: 1.2em; text-align: center; opacity: .7; }
+.tree-panel meter { width: 7em; height: .8em; vertical-align: middle; }
+.tag { padding: 0 .4em; border: 1px solid var(--line); border-radius: 3px; font-size: .8em; }
+.tag.warn-tag { border-color: #d4a017; }
+details.actions { display: inline-block; margin-left: auto; }
+details.actions > summary { cursor: pointer; font-size: .9em; color: var(--accent); }
+details.actions .menu { display: flex; flex-direction: column; gap: .3em; padding: .4em .6em; margin-top: .2em; border: 1px solid var(--line); border-radius: 6px; background: Canvas; position: relative; z-index: 1; min-width: 18em; }
+details.actions .menu form { margin: 0; }
+.small { font-size: .9em; }
+.pager { margin: .4em 0; display: flex; flex-wrap: wrap; gap: .5em; align-items: center; font-size: .92em; }
+.pager strong { padding: 0 .4em; border: 1px solid var(--accent); border-radius: 3px; }
+.tree-tools { display: flex; gap: .5em; margin: .3em 0; }
+
+.badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(15em, 1fr)); gap: .7em; margin: .6em 0 1em; }
+.badge { position: relative; display: flex; flex-direction: column; gap: .25em; padding: .8em .9em .8em 2.6em; border: 2px solid var(--line); border-radius: 10px; cursor: pointer; transition: border-color .15s, background .15s; }
+.badge:hover { border-color: var(--accent); }
+.badge input { position: absolute; left: .9em; top: .95em; width: 1.1em; height: 1.1em; margin: 0; accent-color: var(--accent); }
+.badge:has(input:checked) { border-color: var(--accent); background: #2f6fdf14; }
+.badge-name { font-weight: 600; font-size: 1.05em; }
+.badge-about { font-size: .9em; }
+.badge-form > button { font-size: 1.05em; padding: .5em 1.4em; }
