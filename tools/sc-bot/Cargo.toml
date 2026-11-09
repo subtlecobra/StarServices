@@ -1,0 +1,42 @@
+[package]
+name = "sc-bot"
+version = "0.1.0-rc.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Headless protocol-level test bot: joins a shard as a game client and checks what the server stack sends back"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "sc-bot"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+blake2 = "0.10"
+clap.workspace = true
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode", "std"] }
+num-bigint = "0.4"
+num-traits = "0.2"
+prost.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
+rustls.workspace = true
+sc-api.workspace = true
+sc-proto.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tonic.workspace = true
+
+# The local-stack test runs a real DGS in process and the replicant binary beside it (see tests/local_stack.rs).
+[dev-dependencies]
+sc-dgs = { path = "../../services/dgs", features = ["fixtures"] }
+tokio-stream = { workspace = true, features = ["net"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+
+[[bin]]
+name = "sc-bot-headless"
+path = "src/bin/sc-bot-headless.rs"
