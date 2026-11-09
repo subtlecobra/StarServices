@@ -1434,9 +1434,31 @@ fn inventory_lock(now: &Playing) -> Option<&'static str> {
     }
 }
 
-/// The inventories an item may go to: those not live, but its own and those it holds.
+/// The player whose personal inventory is in the tree, which every other inventory of a player's is named after.
+fn tree_player(tree: &[AdminInventory]) -> Option<u64> {
+    tree.iter().find_map(|inventory| {
+        let id = inventory_id(inventory);
+        let (holder, rest) = id.split_once(':')?;
+        (rest == "PlayerInventory:0").then(|| holder.parse().ok()).flatten()
+    })
+}
+
+/// The item banks of the game's home locations the player has none at yet: sc-entitygraph makes one the first time an
+/// item is stowed or moved into it, so they can be picked before they exist.
+fn new_bank_options(tree: &[AdminInventory], player: Option<u64>) -> String {
+    let Some(player) = player else { return String::new() };
+    places().iter().fold(String::new(), |mut out, place| {
+        let id = format!("{player}:Location:{}", place.id);
+        if !tree.iter().any(|inventory| inventory_id(inventory) == id) {
+            let _ = write!(out, r#"<option value="{}">Item bank at {} (new)</option>"#, escape(&id), escape(&place_name(place.id)));
+        }
+        out
+    })
+}
+
+/// The inventories an item may go to: those not live, but its own and those it holds, and the item banks not made yet.
 fn target_options(tree: &[AdminInventory], item: &AdminInventoryItem) -> String {
-    tree.iter()
+    let existing = tree.iter()
         .filter(|inventory| !inventory.live)
         .filter(|inventory| inventory_id(inventory) != item.inventory_id && !item.held_inventory_ids.iter().any(|held| held == inventory_id(inventory)))
         .fold(String::new(), |mut out, inventory| {
@@ -1448,7 +1470,8 @@ fn target_options(tree: &[AdminInventory], item: &AdminInventoryItem) -> String 
                 escape(&inventory_label(inventory))
             );
             out
-        })
+        });
+    existing + &new_bank_options(tree, tree_player(tree))
 }
 
 fn item_name(item: &AdminInventoryItem) -> String {
@@ -1606,6 +1629,7 @@ async fn inventory(
         } else {
             inventories
         };
+        let inventories = inventories + &new_bank_options(&tree, Some(geid));
         body.push_str(&frame.form(
             &format!("/accounts/{id}/inventory/add"),
             &format!(

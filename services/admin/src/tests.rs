@@ -622,6 +622,13 @@ async fn the_inventory_page_shows_the_tree_with_its_forms() {
     assert!(!body.contains(r#"<option value="900:Container:0">"#), "nor is anything moved or added into it");
     assert!(body.contains(r#"action="/admin/accounts/1000002/inventory/add""#));
     assert!(body.contains(&format!(r#"value="{CSRF}""#)));
+    // The item banks the player has none at yet can be picked: sc-entitygraph makes them on the first item.
+    let places = crate::places::places();
+    let fresh = places.iter().find(|place| place.id != 2_026_442_305).expect("a home location");
+    assert!(body.contains(&format!(r#"<option value="{PLAYER_GEID}:Location:{}">Item bank at "#, fresh.id)), "a new bank is offered");
+    assert!(body.contains("(new)"));
+    let existing = format!(r#"<option value="{PLAYER_GEID}:Location:2026442305">"#);
+    assert!(body.split(&existing).skip(1).all(|rest| !rest.split("</option>").next().unwrap().contains("(new)")), "a bank it has is not new");
 
     let search = site.get(&format!("/admin/accounts/{PLAYER}/inventory?class=crate"), Some("admin")).await;
     assert!(search.body.contains("Cargo crate"));
