@@ -147,6 +147,8 @@ pub fn read(game: &Game, rental_prices: Vec<RentalPrice>) -> Result<Content, Str
                 class_name: class.name.clone(),
                 item_type: class.item_type.clone(),
                 item_sub_type: class.item_sub_type.clone(),
+                item_type_enum: class.item_type_enum,
+                item_sub_type_enum: class.item_sub_type_enum,
                 name,
                 description,
                 occupancy_micro_scu: class.occupancy_micro_scu,

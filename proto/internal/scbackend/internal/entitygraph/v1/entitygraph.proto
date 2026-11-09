@@ -273,6 +273,10 @@ message EntityClassSeed {
   LocalizedText description = 7;
   optional int64 occupancy_micro_scu = 8;  // absent when the class has no inventory occupancy
   EntityClassInventory inventory = 9;      // absent when the class holds no inventory
+  // The DataCore `EItemType` and `EItemSubType` numbers of item_type and item_sub_type, which the client checks an item's
+  // entity against; 0 when the seed carries none.
+  int32 item_type_enum = 10;
+  int32 item_sub_type_enum = 11;
 }
 
 message SeedEntityClassesRequest {

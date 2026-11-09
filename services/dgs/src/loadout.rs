@@ -170,7 +170,8 @@ pub fn request_items(loadout: &[Item]) -> Vec<LoadoutItem> {
 }
 
 /// The command id of a player's loadout: the player and what it wears, so the same loadout is made once and a changed
-/// one (another head) is made anew.
+/// one (another head) is made anew. `v2`: the items made under `loadout:` had no item type numbers, which the client
+/// reports as errors, so they are made anew once.
 pub fn command_id(player_id: u64, loadout: &[Item]) -> String {
     let hash = request_items(loadout).iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, item| {
         [item.class_crc, item.port_crc, item.parent as u32]
@@ -178,7 +179,7 @@ pub fn command_id(player_id: u64, loadout: &[Item]) -> String {
             .flat_map(|word| word.to_le_bytes())
             .fold(hash, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3))
     });
-    format!("loadout:{player_id}:{hash:016x}")
+    format!("loadout:v2:{player_id}:{hash:016x}")
 }
 
 #[cfg(test)]

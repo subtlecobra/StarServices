@@ -49,6 +49,9 @@ pub struct Class {
     pub crc: u32,
     pub item_type: String,
     pub item_sub_type: String,
+    /// The DataCore `EItemType` and `EItemSubType` numbers of those names, 0 for a name the enums do not list.
+    pub item_type_enum: i32,
+    pub item_sub_type_enum: i32,
     name_token: String,
     description_token: String,
     policy: Option<String>,
@@ -226,6 +229,8 @@ fn class_of(name: &str, guid: &str, data: &Value) -> Class {
         crc: class_crc(guid),
         item_type: text(definition, "Type").to_string(),
         item_sub_type: text(definition, "SubType").to_string(),
+        item_type_enum: 0,
+        item_sub_type_enum: 0,
         name_token: text(localization, "Name").to_string(),
         description_token: text(localization, "Description").to_string(),
         policy,
@@ -445,10 +450,28 @@ impl Game {
 
     pub fn classes(&self) -> Result<Vec<Class>, String> {
         let records = self.records("EntityClassDefinition", 1)?;
+        let (types, sub_types) = (self.enum_numbers("EItemType")?, self.enum_numbers("EItemSubType")?);
         records
             .iter()
-            .map(|record| Ok(class_of(&record.name, &record.guid, &record.data)))
+            .map(|record| {
+                let mut class = class_of(&record.name, &record.guid, &record.data);
+                class.item_type_enum = types.get(&class.item_type).copied().unwrap_or(0);
+                class.item_sub_type_enum = sub_types.get(&class.item_sub_type).copied().unwrap_or(0);
+                Ok(class)
+            })
             .collect()
+    }
+
+    /// The numbers of a DataCore enum's options, which are their positions in its definition: the client checks an
+    /// item's `EItemType` and `EItemSubType` against them.
+    pub fn enum_numbers(&self, enum_name: &str) -> Result<HashMap<String, i32>, String> {
+        for index in 0..self.datacore.n_enum {
+            let (name, options) = self.datacore.enum_def(index).map_err(|e| format!("enum {index}: {e}"))?;
+            if name == enum_name {
+                return Ok(options.into_iter().enumerate().map(|(number, option)| (option, number as i32)).collect());
+            }
+        }
+        Err(format!("no enum {enum_name} in the DataCore"))
     }
 
     /// The `InventoryContainer` records by GUID.
@@ -815,3 +838,24 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod enum_tests {
+    use super::*;
+
+    /// With the game archive (`SC_P4K`): the numbers a 4.10.2 client reports for the item types of its worn items.
+    #[test]
+    #[ignore]
+    fn item_enums_numbers_match_what_the_client_reports() {
+        let path = std::env::var("SC_P4K").expect("SC_P4K");
+        let game = Game::open(Path::new(&path)).unwrap();
+        let types = game.enum_numbers("EItemType").unwrap();
+        for (name, number) in [("Char_Body", 27), ("Char_Head", 42), ("MobiGlas", 132), ("Char_Armor_Undersuit", 25), ("Display", 65), ("Char_Armor_Helmet", 22), ("FPS_Consumable", 85)] {
+            assert_eq!(types[name], number, "{name}");
+        }
+        let sub_types = game.enum_numbers("EItemSubType").unwrap();
+        for (name, number) in [("Fluid", 54), ("UNDEFINED", 154), ("Personal", 110), ("Male", 91), ("MedPack", 97), ("Helmet", 70)] {
+            assert_eq!(sub_types[name], number, "{name}");
+        }
+    }
+}

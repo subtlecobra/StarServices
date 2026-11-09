@@ -215,7 +215,7 @@ impl Control {
     /// method indices are not known yet, so the first press's are logged), and answered with the next method, which is
     /// `ClOnInteract` for `SvRequestInteract`.
     fn cab_panel_method(&self, request: EntityMethodRequest) -> Result<Response<EntityMethodResponse>, Status> {
-        info!(entity = request.entity_id, method = request.method, args = request.args.len(), "a call on an entity that is no call panel");
+        info!(entity = request.entity_id, method = request.method, args = request.args.len(), "a call on an entity that is not a call panel, read as a cab panel press");
         let Some(interaction) = Interaction::parse(&request.args).filter(|interaction| interaction.user == request.player_id && interaction.interactable == request.entity_id) else {
             return Err(Status::not_found(format!("{} holds no panel {} for this session", self.settings.name, request.entity_id)));
         };

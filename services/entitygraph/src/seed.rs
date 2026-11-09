@@ -48,6 +48,8 @@ pub fn class_doc(class: &EntityClassSeed) -> Value {
         "className": class.class_name,
         "itemType": class.item_type,
         "itemSubType": class.item_sub_type,
+        "itemTypeEnum": class.item_type_enum,
+        "itemSubTypeEnum": class.item_sub_type_enum,
         "name": text(class.name.as_ref()),
         "description": text(class.description.as_ref()),
     })
@@ -184,6 +186,8 @@ mod tests {
             guid: "g".into(),
             guid_hash_crc: 7,
             class_name: "Crate".into(),
+            item_type_enum: 27,
+            item_sub_type_enum: 154,
             occupancy_micro_scu: None,
             inventory: Some(sc_api::internal::EntityClassInventory { capacity_micro_scu: 5, closed: true, ..Default::default() }),
             ..Default::default()
@@ -191,6 +195,7 @@ mod tests {
         let doc = class_doc(&class);
         assert_eq!(doc["_key"], "g");
         assert_eq!(doc["occupancyMicroScu"], Value::Null);
+        assert_eq!((doc["itemTypeEnum"].as_i64(), doc["itemSubTypeEnum"].as_i64()), (Some(27), Some(154)));
         assert_eq!(doc["inventory"], json!({ "capacityMicroScu": 5, "closed": true, "excluded": [], "only": [] }));
         assert_eq!(doc["name"], json!({ "token": "", "en": "" }));
         let without = class_doc(&EntityClassSeed { guid: "h".into(), occupancy_micro_scu: Some(3), ..Default::default() });
