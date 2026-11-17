@@ -1,0 +1,11 @@
+{{- /* Not ShardTemplate or ShardRegion objects: on the upgrade that brings their CRD, Helm would reject the kind
+       before changing anything. The operator's init container applies these once the CRDs are there. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-templates
+data:
+  templates.yaml: |
+    {{- toYaml .Values.shardTemplates | nindent 4 }}
+  regions.yaml: |
+    {{- include "sc-shard-operator.regions" . | nindent 4 }}

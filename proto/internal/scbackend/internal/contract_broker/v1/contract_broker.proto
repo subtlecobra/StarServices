@@ -1,0 +1,20 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.contract_broker.v1;
+
+import "scbackend/internal/common/v1/common.proto";
+
+message MissionContractSeed {
+  string id = 1;
+  bytes body = 2;  // a MissionContract
+}
+
+message SeedMissionContractsRequest {
+  repeated MissionContractSeed contracts = 1;
+}
+
+// Answered by sc-contract-broker, which owns `mission_contracts`.
+service ContractBrokerInternal {
+  rpc SeedMissionContracts(SeedMissionContractsRequest) returns (common.v1.SeedResponse);
+}

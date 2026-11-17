@@ -1,0 +1,326 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: shardregions.scbackend.io
+spec:
+  group: scbackend.io
+  names:
+    kind: ShardRegion
+    plural: shardregions
+    shortNames:
+    - shr
+    singular: shardregion
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.cache.readyNodes
+      name: Valkey
+      type: integer
+    - jsonPath: .status.readyReplicas
+      name: Ready
+      type: integer
+    - jsonPath: .status.replicas
+      name: Replicas
+      type: integer
+    - jsonPath: .status.entityDb.state
+      name: EntityDB
+      type: string
+    - jsonPath: .status.message
+      name: Message
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ShardRegionSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              A region: its own namespace `scbackend-region-<name>` with the region's game data, a Valkey cluster that holds every
+              listed game build and the stateless `sc-gamedata` in front of it, which loads the builds from the registry and serves
+              them to the DGSs, and the region's entity database with the `sc-entitygraph` that owns it. A shard opens only once
+              its build and the entity database are ready in its region.
+            properties:
+              cache:
+                description: |-
+                  Deprecated: the per-replica volumes of the former `sc-gamedata` StatefulSet. Only `replicas` is read, as
+                  `gamedata.serviceReplicas` when that is not set.
+                nullable: true
+                properties:
+                  replicas:
+                    default: 2
+                    description: Read as `gamedata.serviceReplicas` when that is not set.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  size:
+                    default: 10Gi
+                    description: Ignored.
+                    type: string
+                  storageClass:
+                    description: Ignored.
+                    nullable: true
+                    type: string
+                type: object
+              entityDb:
+                default:
+                  agentSize: 8Gi
+                  agents: 3
+                  clientRoute: false
+                  coordinators: 2
+                  dbServers: 3
+                  mode: Cluster
+                  serviceReplicas: 1
+                  size: 32Gi
+                description: |-
+                  The region's entity database: an ArangoDeployment and the `sc-entitygraph` that owns it, in the region's
+                  namespace. Deleting the region deletes them, and the entities with them.
+                properties:
+                  agentSize:
+                    default: 8Gi
+                    description: Volume of each Agent.
+                    type: string
+                  agents:
+                    default: 3
+                    description: 'Cluster mode: Agents, the Raft quorum. Odd.'
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  clientRoute:
+                    default: false
+                    description: |-
+                      Send the game's `EntityGraphService` calls, which reach the backend through the one gateway, to this region.
+                      One region at a time: until each region has an entry point of its own, the gateway has only one route for it.
+                    type: boolean
+                  coordinators:
+                    default: 2
+                    description: 'Cluster mode: Coordinators, which the `arangodb` Service sends clients to.'
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  dbServers:
+                    default: 3
+                    description: 'Cluster mode: DB-Servers, which hold the shards.'
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  image:
+                    description: 'ArangoDB image. Empty: the operator''s.'
+                    nullable: true
+                    type: string
+                  mode:
+                    default: Cluster
+                    description: 'Fixed once the deployment exists: kube-arangodb does not convert one mode into the other.'
+                    enum:
+                    - Single
+                    - Cluster
+                    type: string
+                  serviceReplicas:
+                    default: 1
+                    description: '`sc-entitygraph` replicas.'
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  size:
+                    default: 32Gi
+                    description: Volume of each DB-Server, or of the single server.
+                    type: string
+                  storageClass:
+                    description: 'StorageClass of the volumes. Empty: the cluster''s default. Fixed once the deployment exists.'
+                    nullable: true
+                    type: string
+                type: object
+              gameBuilds:
+                description: |-
+                  Game builds, by change number such as `12913470`, that the region's game data holds. A build that shards still
+                  run on is kept beside these until they close, so a patch lists only the new one.
+                items:
+                  type: string
+                type: array
+              gamedata:
+                default:
+                  cache:
+                    memory: 512Mi
+                    primaries: 3
+                    replicasPerPrimary: 1
+                    size: 2Gi
+                  workSize: 4Gi
+                description: |-
+                  Where the builds are pulled from (empty fields take the operator's settings), the Valkey cluster that holds them
+                  and the `sc-gamedata` replicas.
+                properties:
+                  cache:
+                    default:
+                      memory: 512Mi
+                      primaries: 3
+                      replicasPerPrimary: 1
+                      size: 2Gi
+                    description: The Valkey cluster that holds the region's game data.
+                    properties:
+                      image:
+                        description: 'Valkey image. Empty: the operator''s.'
+                        nullable: true
+                        type: string
+                      memory:
+                        default: 512Mi
+                        description: |-
+                          Memory of each node, request and limit. Valkey may use three quarters of it for data; the rest is for the
+                          rewrite of its append-only file. A primary holds about (all builds) / primaries.
+                        type: string
+                      primaries:
+                        default: 3
+                        description: At least 3. Raising it adds nodes and moves slots to them; lowering it is refused.
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      replicasPerPrimary:
+                        default: 1
+                        description: Fixed once the cluster is formed.
+                        format: uint32
+                        minimum: 0.0
+                        type: integer
+                      size:
+                        default: 2Gi
+                        description: |-
+                          Size of each node's volume, at least twice its memory for the append-only file and its rewrite. Fixed once
+                          the StatefulSet exists.
+                        type: string
+                      storageClass:
+                        description: 'StorageClass of the volumes. Empty: the cluster''s default. Fixed once the StatefulSet exists.'
+                        nullable: true
+                        type: string
+                    type: object
+                  plainHttp:
+                    description: Plain HTTP instead of HTTPS.
+                    nullable: true
+                    type: boolean
+                  registry:
+                    description: '`host:port` of the OCI registry, as pods reach it.'
+                    nullable: true
+                    type: string
+                  registryIp:
+                    description: Address the registry's host name resolves to in the `sc-gamedata` pods, for a name only the nodes know.
+                    nullable: true
+                    type: string
+                  repository:
+                    description: Builds are pulled as `<registry>/<repository>:<build>`.
+                    nullable: true
+                    type: string
+                  serviceReplicas:
+                    description: '`sc-gamedata` replicas, stateless. Unset: the deprecated `cache.replicas`, else 2.'
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  workSize:
+                    default: 4Gi
+                    description: |-
+                      Scratch space of each `sc-gamedata` replica (an emptyDir), which holds a build's image and files while it is
+                      loaded into Valkey: twice the largest build, about.
+                    type: string
+                type: object
+            required:
+            - gameBuilds
+            type: object
+          status:
+            nullable: true
+            properties:
+              builds:
+                additionalProperties:
+                  enum:
+                  - Pending
+                  - Ready
+                  type: string
+                default: {}
+                description: Every build the region holds or is loading, `gameBuilds` and those kept for running shards.
+                type: object
+              cache:
+                default:
+                  formed: false
+                  nodes: 0
+                  readyNodes: 0
+                description: The Valkey cluster.
+                properties:
+                  formed:
+                    default: false
+                    description: The init Job formed it with this many nodes.
+                    type: boolean
+                  nodes:
+                    default: 0
+                    description: Nodes it is meant to have, primaries and replicas.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  readyNodes:
+                    default: 0
+                    description: Nodes that see the cluster as ok.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                type: object
+              cacheService:
+                default: ''
+                description: The address DGSs reach `sc-gamedata` at.
+                type: string
+              entityDb:
+                default:
+                  database: ''
+                  message: ''
+                  service: ''
+                  state: Pending
+                description: The region's entity database and its `sc-entitygraph`.
+                properties:
+                  database:
+                    default: ''
+                    description: The ArangoDB address, for `sc-entitygraph` and the seed.
+                    type: string
+                  message:
+                    default: ''
+                    description: What it is waiting for.
+                    type: string
+                  service:
+                    default: ''
+                    description: The address `sc-entitygraph` answers at, which DGSs and the other callers use.
+                    type: string
+                  state:
+                    default: Pending
+                    enum:
+                    - Pending
+                    - Ready
+                    type: string
+                type: object
+              message:
+                default: ''
+                description: What the region is waiting for, or why it cannot go on.
+                type: string
+              namespace:
+                default: ''
+                type: string
+              readyReplicas:
+                default: 0
+                format: uint32
+                minimum: 0.0
+                type: integer
+              replicas:
+                default: 0
+                description: '`sc-gamedata` replicas.'
+                format: uint32
+                minimum: 0.0
+                type: integer
+              retainedBuilds:
+                default: []
+                description: Builds kept only because shards still run on them.
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: ShardRegion
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

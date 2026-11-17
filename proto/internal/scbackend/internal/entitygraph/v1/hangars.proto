@@ -1,0 +1,47 @@
+// The hangars a player has, as sc-entitygraph records them: one per (player, location). The DGS opens and owns the live
+// instance; this is only the record of which hangars exist. See docs/HANGARS.md.
+syntax = "proto3";
+
+package scbackend.internal.entitygraph.v1;
+
+import "scbackend/internal/common/v1/ships.proto";
+
+message HangarRecord {
+  uint64 owner_id = 1;
+  uint32 location_id = 2;                 // the class CRC of the location's StarMapObject GUID
+  string hangar_class = 3;                // `Hangar_<Small|Medium|Large|XL><Front|Top>_<place>`
+  common.v1.HangarSize size = 4;          // from the class name when the caller gave none
+  int64 last_used_ms = 5;                 // the last EnsureHangar; 0 never
+  int64 created_at_ms = 6;
+}
+
+message ListHangarsRequest {
+  uint64 owner_id = 1;
+  uint32 location_id = 2;                 // 0 for every location
+}
+
+message ListHangarsResponse {
+  repeated HangarRecord hangars = 1;      // sorted by location, then class
+}
+
+message EnsureHangarRequest {
+  uint64 owner_id = 1;
+  uint32 location_id = 2;
+  // The hangar the location offers the player by default (its first class in the location's hangar list, which only the
+  // caller has: the game data tables). Required when the player has no hangar there yet; ignored when one exists.
+  string hangar_class = 3;
+  common.v1.HangarSize size = 4;          // optional: taken from `hangar_class` when unspecified
+  int64 now_ms = 5;                       // 0 for the service's clock
+}
+
+message EnsureHangarResponse {
+  HangarRecord hangar = 1;
+  bool created = 2;                       // false: the player had it already, and only `last_used_ms` changed
+}
+
+// Answered by sc-entitygraph. Idempotent: a hangar is recorded once per (player, location).
+service HangarsInternal {
+  rpc ListHangars(ListHangarsRequest) returns (ListHangarsResponse);
+  // INVALID_ARGUMENT: no owner or location, or a new hangar without a class that names a size.
+  rpc EnsureHangar(EnsureHangarRequest) returns (EnsureHangarResponse);
+}

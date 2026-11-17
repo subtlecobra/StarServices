@@ -1,0 +1,60 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: shardtemplates.scbackend.io
+spec:
+  group: scbackend.io
+  names:
+    kind: ShardTemplate
+    plural: shardtemplates
+    shortNames:
+    - sht
+    singular: shardtemplate
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ShardTemplateSpec via `CustomResource`
+        properties:
+          spec:
+            description: How a shard divides the universe between its dedicated game servers.
+            properties:
+              systems:
+                items:
+                  properties:
+                    dgs:
+                      items:
+                        properties:
+                          name:
+                            description: Unique in the template, and part of the pod name.
+                            type: string
+                          roots:
+                            description: |-
+                              Containers by name, such as `stanton1`: all of that name in the system. Each takes everything under
+                              it, except what a deeper root claims.
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - name
+                        - roots
+                        type: object
+                      type: array
+                    name:
+                      description: '`stanton`, `pyro` or `nyx`.'
+                      type: string
+                  required:
+                  - dgs
+                  - name
+                  type: object
+                type: array
+            required:
+            - systems
+            type: object
+        required:
+        - spec
+        title: ShardTemplate
+        type: object
+    served: true
+    storage: true

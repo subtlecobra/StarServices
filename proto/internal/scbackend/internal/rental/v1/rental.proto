@@ -1,0 +1,78 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.rental.v1;
+
+import "sc/external/services/rental/v1/types.proto";
+
+message CreateRentalRequest {
+  string id = 1;  // a repeat with the same id creates nothing more
+  uint32 account_id = 2;
+  uint64 player_id = 3;
+  string entitlement_urn = 4;
+  string entity_class_guid = 5;
+  uint32 days = 6;
+  int64 expire_at_ms = 7;
+  string log_message = 8;
+}
+
+message CreateRentalResponse {}
+
+message ExtendRentalRequest {
+  // Idempotency key. Repeating it returns the first expiry and extends nothing more.
+  string key = 1;
+  string id = 2;
+  uint64 player_id = 3;
+  uint32 days = 4;
+  string log_message = 5;
+}
+
+message ExtendRentalResponse {
+  int64 expire_at_ms = 1;
+  string entitlement_urn = 2;
+}
+
+message GetRentalRequest {
+  string id = 1;
+  uint64 player_id = 2;
+}
+
+message GetRentalResponse {
+  string entity_class_guid = 1;
+  string entitlement_urn = 2;
+}
+
+message ListRentalsRequest {
+  uint64 player_id = 1;
+  bool include_finished = 2;
+}
+
+message ListRentalsResponse {
+  // Newest first.
+  repeated sc.external.services.rental.v1.Rental rentals = 1;
+}
+
+message EndRentalRequest {
+  string id = 1;
+  uint64 player_id = 2;
+  string log_message = 3;
+}
+
+message EndRentalResponse {
+  bool ended = 1;  // false when it had already ended, so a repeat changes nothing
+  int64 previous_expire_at_ms = 2;
+}
+
+// Answered by sc-rental, which owns `rentals` and `rental_history`.
+service RentalInternal {
+  rpc CreateRental(CreateRentalRequest) returns (CreateRentalResponse);
+  // NOT_FOUND for a rental the player does not have.
+  rpc ExtendRental(ExtendRentalRequest) returns (ExtendRentalResponse);
+  // NOT_FOUND for a rental the player does not have.
+  rpc GetRental(GetRentalRequest) returns (GetRentalResponse);
+  // For the admin site.
+  rpc ListRentals(ListRentalsRequest) returns (ListRentalsResponse);
+  // Makes an active rental expire now, then ends it as an expiry: the entitlement is revoked first. NOT_FOUND for a
+  // rental the player does not have.
+  rpc EndRental(EndRentalRequest) returns (EndRentalResponse);
+}

@@ -1,0 +1,21 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.notifications.v1;
+
+import "sc/external/services/notifications/v1/types.proto";
+
+// One notification for each of `notification.recipients`, whose `target_urn` is a player urn.
+message CreateNotificationRequest {
+  sc.external.services.notifications.v1.NotificationRequest notification = 1;
+}
+
+message CreateNotificationResponse {
+  repeated string ids = 1;  // in the order of the recipients
+}
+
+// Answered by sc-notifications. It shares that service's port, so no GRPCRoute may list it: the
+// gateway matches by service name, which is what keeps it away from the game client.
+service NotificationsInternal {
+  rpc Create(CreateNotificationRequest) returns (CreateNotificationResponse);
+}

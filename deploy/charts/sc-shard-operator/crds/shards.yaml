@@ -1,0 +1,132 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: shards.scbackend.io
+spec:
+  group: scbackend.io
+  names:
+    kind: Shard
+    plural: shards
+    shortNames:
+    - shd
+    singular: shard
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.id
+      name: Id
+      type: string
+    - jsonPath: .spec.template
+      name: Template
+      type: string
+    - jsonPath: .status.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.players
+      name: Players
+      type: integer
+    - jsonPath: .status.dgsReady
+      name: DGS
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ShardSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              One running shard: its replicant pod, that pod's Service and its DGS pods, all in a namespace of its own. The
+              Shard stays here, holding a finalizer until that namespace is gone.
+            properties:
+              build:
+                default: ''
+                description: |-
+                  The game build it serves, the change number in its id. Empty on a shard from before regions, which reads it
+                  from its id.
+                type: string
+              cluster:
+                description: The ShardCluster this shard belongs to.
+                type: string
+              displayName:
+                description: The name the game and the status show.
+                type: string
+              id:
+                description: '`pub_<shard cluster>_<build>_<shard number>`, the id the game sees.'
+                type: string
+              namespace:
+                default: ''
+                description: |-
+                  Kept here because a change of region must not move a running shard. Empty on a shard from before shards
+                  had namespaces, which runs beside the operator until it empties.
+                type: string
+              region:
+                default: ''
+                description: |-
+                  The ShardRegion its DGSs get their game data from. Empty on a shard from before regions, which takes its
+                  cluster's region.
+                type: string
+              slot:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              template:
+                description: The ShardTemplate this shard's DGSs come from.
+                type: string
+            required:
+            - cluster
+            - displayName
+            - id
+            - slot
+            - template
+            type: object
+          status:
+            nullable: true
+            properties:
+              dgsDesired:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              dgsReady:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              message:
+                default: ''
+                description: What the shard is waiting for, or why it cannot go on.
+                type: string
+              namespace:
+                default: ''
+                description: Where its pods and Service are.
+                type: string
+              opened:
+                default: false
+                description: Its build was ready in its region and its pods were made. Its region keeps the build until it closes.
+                type: boolean
+              phase:
+                enum:
+                - Pending
+                - Running
+                - Degraded
+                - Closing
+                type: string
+              players:
+                format: uint32
+                minimum: 0.0
+                type: integer
+            required:
+            - dgsDesired
+            - dgsReady
+            - phase
+            - players
+            type: object
+        required:
+        - spec
+        title: Shard
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

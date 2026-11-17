@@ -1,0 +1,148 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.reputation.v1;
+
+import "scbackend/internal/common/v1/common.proto";
+
+// Game data. sc-admin reads it from the archive and hands it to the service that owns its table.
+
+message ReputationScope {
+  string scope = 1;
+  string standings_id = 2;
+  string display_name = 3;
+  string description = 4;
+  int32 initial_reputation = 5;
+  int32 ceiling = 6;
+}
+
+message ReputationStanding {
+  string id = 1;
+  string standings_id = 2;
+  string name = 3;
+  string description = 4;
+  int32 min = 5;
+  int64 drift_seconds = 6;
+  int32 drift_amount = 7;
+  bool gated = 8;
+}
+
+message ReputationLadderStanding {
+  string standings_id = 1;
+  string standing_id = 2;
+}
+
+message SeedReputationRequest {
+  repeated ReputationScope scopes = 1;
+  repeated ReputationStanding standings = 2;
+  repeated ReputationLadderStanding ladder = 3;
+}
+
+// A change of one reputation by `delta` points (negative lowers it). The reputation starts at its scope's initial value
+// when it did not exist, and the result stays under the scope's ceiling (when it has one) and inside the reputation's lock.
+message AdjustReputationRequest {
+  // The player urn the reputation belongs to.
+  string subject = 1;
+  // The entity the reputation is with (a faction, a location).
+  string entity = 2;
+  string scope = 3;
+  int32 delta = 4;
+  // Who changed it and why, for the log.
+  string actor = 5;
+  string reason = 6;
+}
+
+message AdjustReputationResponse {
+  // The score after the change.
+  int32 score = 1;
+  // The score before it.
+  int32 previous = 2;
+}
+
+// Every reputation of a player, with the standing its score is in (empty when the scope has no ladder).
+message ListReputationsRequest {
+  // The player urn.
+  string subject = 1;
+}
+
+message ReputationEntry {
+  string entity = 1;
+  string scope = 2;
+  string display_name = 3;
+  int32 score = 4;
+  // The name of the highest standing of the scope's ladder whose minimum the score reaches.
+  string standing = 5;
+  // Set when an admin locked the score inside a range.
+  optional int32 lock_min = 6;
+  optional int32 lock_max = 7;
+}
+
+message ListReputationsResponse {
+  repeated ReputationEntry reputations = 1;
+}
+
+// A scope a reputation can be created in.
+message ScopeSummary {
+  string scope = 1;
+  string display_name = 2;
+  string standings_id = 3;
+  int32 initial_reputation = 4;
+  // 0 for none.
+  int32 ceiling = 5;
+  // The scope's standings from the lowest minimum to the highest.
+  repeated LadderStanding ladder = 6;
+}
+
+// One standing of a scope's ladder: its name (an `@key` of the game's texts) and the least score that reaches it.
+message LadderStanding {
+  string name = 1;
+  int32 min = 2;
+}
+
+message ListReputationScopesRequest {}
+
+message ListReputationScopesResponse {
+  repeated ScopeSummary scopes = 1;
+}
+
+// Locks a reputation's score inside a range (a bound left unset is not locked); both unset removes the lock. The
+// current score is brought inside the range. NOT_FOUND when the player has no such reputation.
+message SetReputationLockRequest {
+  string subject = 1;
+  string entity = 2;
+  string scope = 3;
+  optional int32 lock_min = 4;
+  optional int32 lock_max = 5;
+  string actor = 6;
+  string reason = 7;
+}
+
+message SetReputationLockResponse {
+  // The score after the lock was applied.
+  int32 score = 1;
+}
+
+// Removes a reputation and its score history. The player starts again at the scope's initial value when the game next
+// changes it. NOT_FOUND when the player has no such reputation.
+message DeleteReputationRequest {
+  string subject = 1;
+  string entity = 2;
+  string scope = 3;
+  string actor = 4;
+  string reason = 5;
+}
+
+message DeleteReputationResponse {
+  // The score it had.
+  int32 score = 1;
+}
+
+// Answered by sc-reputation, which owns `reputation_scopes`, `reputation_standings` and `reputation_ladder_standings`.
+service ReputationInternal {
+  rpc SeedReputation(SeedReputationRequest) returns (common.v1.SeedResponse);
+  rpc AdjustReputation(AdjustReputationRequest) returns (AdjustReputationResponse);
+  rpc ListReputations(ListReputationsRequest) returns (ListReputationsResponse);
+  rpc ListReputationScopes(ListReputationScopesRequest) returns (ListReputationScopesResponse);
+  rpc DeleteReputation(DeleteReputationRequest) returns (DeleteReputationResponse);
+  rpc SetReputationLock(SetReputationLockRequest) returns (SetReputationLockResponse);
+}

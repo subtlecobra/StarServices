@@ -1,0 +1,95 @@
+{{- $build := required "build: the game build whose seed bundle to apply" .Values.build | toString }}
+{{- /* A Job's pod template cannot change, so other settings are a new Job too: their hash ends the name. */}}
+{{- $settings := dict "image" (include "sc-seed.image" .) "registry" .Values.registry "repository" .Values.repository "plainHttp" .Values.plainHttp "registryIp" .Values.registryIp "regions" .Values.regions "entitygraph" .Values.entitygraph "owners" .Values.owners "waitSeconds" .Values.waitSeconds "backoffLimit" .Values.backoffLimit "workSize" .Values.workSize "logLevel" .Values.logLevel "resources" .Values.resources }}
+{{- $hash := toJson $settings | sha256sum | trunc 8 }}
+{{- $name := printf "%s-%s" ($build | lower | replace "_" "-" | replace "." "-" | trunc 45 | trimSuffix "-") $hash }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "sc-seed.labels" . | nindent 4 }}
+    scbackend.io/build: {{ $build | quote }}
+spec:
+  backoffLimit: {{ .Values.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "sc-seed.labels" . | nindent 8 }}
+        scbackend.io/build: {{ $build | quote }}
+    spec:
+      restartPolicy: Never
+      {{- if include "sc-seed.discovers" . }}
+      serviceAccountName: {{ .Release.Name }}
+      automountServiceAccountToken: true
+      {{- else }}
+      automountServiceAccountToken: false
+      {{- end }}
+      {{- if .Values.registryIp }}
+      hostAliases:
+        - ip: {{ .Values.registryIp | quote }}
+          hostnames:
+            - {{ regexReplaceAll ":[0-9]+$" .Values.registry "" | quote }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seeder
+          image: {{ include "sc-seed.image" . | quote }}
+          imagePullPolicy: {{ if kindIs "string" .Values.image }}IfNotPresent{{ else }}{{ .Values.image.pullPolicy }}{{ end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            - name: NO_COLOR
+              value: "1"
+            - name: SC_SEED_BUILD
+              value: {{ $build | quote }}
+            - name: SC_SEED_REGISTRY
+              value: {{ .Values.registry | quote }}
+            - name: SC_SEED_REPOSITORY
+              value: {{ .Values.repository | quote }}
+            - name: SC_SEED_PLAIN_HTTP
+              value: {{ .Values.plainHttp | toString | quote }}
+            - name: SC_SEED_WORK_DIR
+              value: /work
+            - name: SC_SEED_WAIT_SECS
+              value: {{ .Values.waitSeconds | toString | quote }}
+            {{- if .Values.entitygraph }}
+            - name: SC_SEED_ENTITYGRAPH
+              value: {{ join "," .Values.entitygraph | quote }}
+            {{- else if .Values.regions }}
+            - name: SC_SEED_REGIONS
+              value: {{ join "," .Values.regions | quote }}
+            {{- end }}
+            - name: SCBACKEND_ENTITLEMENT
+              value: {{ .Values.owners.entitlement | quote }}
+            - name: SCBACKEND_REPUTATION
+              value: {{ .Values.owners.reputation | quote }}
+            - name: SCBACKEND_BLUEPRINT_LIBRARY
+              value: {{ .Values.owners.blueprintLibrary | quote }}
+            - name: SCBACKEND_MISSION_SCENARIO
+              value: {{ .Values.owners.missionScenario | quote }}
+            - name: SCBACKEND_CONTRACT_BROKER
+              value: {{ .Values.owners.contractBroker | quote }}
+            - name: SCBACKEND_SHOP
+              value: {{ .Values.owners.shop | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: {{ .Values.workSize }}

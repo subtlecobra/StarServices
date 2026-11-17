@@ -1,0 +1,69 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.entity_document.v1;
+
+import "sc/external/services/entity_document/v1/documents.proto";
+import "scbackend/internal/common/v1/ships.proto";
+
+message GetEntityDocumentsRequest {
+  uint64 entity_id = 1;
+  repeated string classes = 2;  // field names of EntityDocumentBody's oneof, such as player_home_location; empty for all
+}
+
+message StoredEntityDocument {
+  string class = 1;
+  sc.external.services.entity_document.v1.EntityDocument document = 2;
+  uint64 owner_id = 3;
+  bool prepared = 4;  // a Prepare waits for its Commit
+}
+
+message GetEntityDocumentsResponse {
+  repeated StoredEntityDocument documents = 1;
+}
+
+message PutEntityDocumentRequest {
+  uint64 entity_id = 1;
+  uint64 owner_id = 2;
+  sc.external.services.entity_document.v1.EntityDocumentBody body = 3;
+  // Unset to write whatever is there; 0 when there must be none; otherwise the revision there must be. A mismatch is
+  // ABORTED, and nothing is written.
+  optional uint64 expected_revision = 4;
+}
+
+message PutEntityDocumentResponse {
+  sc.external.services.entity_document.v1.EntityDocument previous = 1;  // unset when there was none
+  uint64 revision = 2;
+}
+
+// Where a character lives: the size of its home hangar. The Hub reads it when the player logs in, and the admin site changes it.
+// Unspecified means none was chosen, and the shard gives the default.
+message GetResidenceRequest {
+  uint64 entity_id = 1;
+}
+
+message GetResidenceResponse {
+  scbackend.internal.common.v1.HangarSize hangar_size = 1;
+  uint64 revision = 2;  // 0 when none is stored
+}
+
+message SetResidenceRequest {
+  uint64 entity_id = 1;
+  scbackend.internal.common.v1.HangarSize hangar_size = 2;
+  // Unset to write whatever is there; 0 when there must be none; otherwise the revision there must be. A mismatch is ABORTED.
+  optional uint64 expected_revision = 3;
+}
+
+message SetResidenceResponse {
+  scbackend.internal.common.v1.HangarSize previous = 1;
+  uint64 revision = 2;
+}
+
+// Answered by sc-entity-document, which owns `entity_documents`, for the admin site. A document is written whole, so a
+// repeat changes nothing but the revision.
+service EntityDocumentInternal {
+  rpc GetDocuments(GetEntityDocumentsRequest) returns (GetEntityDocumentsResponse);
+  rpc PutDocument(PutEntityDocumentRequest) returns (PutEntityDocumentResponse);
+  rpc GetResidence(GetResidenceRequest) returns (GetResidenceResponse);
+  rpc SetResidence(SetResidenceRequest) returns (SetResidenceResponse);
+}

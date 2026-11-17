@@ -1,0 +1,154 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: shardclusters.scbackend.io
+spec:
+  group: scbackend.io
+  names:
+    kind: ShardCluster
+    plural: shardclusters
+    shortNames:
+    - shc
+    singular: shardcluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.region
+      name: Region
+      type: string
+    - jsonPath: .status.readyShards
+      name: Shards
+      type: integer
+    - jsonPath: .status.desiredShards
+      name: Desired
+      type: integer
+    - jsonPath: .status.players
+      name: Players
+      type: integer
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ShardClusterSpec via `CustomResource`
+        properties:
+          spec:
+            description: A pool of shards serving one region. The operator opens and closes shards as demand changes.
+            properties:
+              build:
+                description: Game build these shards serve. It is part of each shard id.
+                type: string
+              image:
+                description: PU frontend image.
+                type: string
+              maxShards:
+                description: Upper limit on shards.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              nodePortBase:
+                description: First Kubernetes node port. Shard N uses this port plus N. Clusters need separate ranges.
+                format: uint16
+                maximum: 65535.0
+                minimum: 0.0
+                type: integer
+              playersPerShard:
+                description: Players a shard takes before another is needed.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              publicAddress:
+                description: Address clients use to reach the shards.
+                type: string
+              publicPortBase:
+                description: First public UDP port. Shard N uses this port plus N.
+                format: uint16
+                maximum: 65535.0
+                minimum: 0.0
+                type: integer
+              region:
+                description: |-
+                  Region this cluster serves. The Hub allocates by region, and it names the ShardRegion whose game data the
+                  shards use.
+                type: string
+              scaleDownDelaySeconds:
+                default: 300
+                description: How long a surplus shard must stay empty before it closes.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              shardTemplate:
+                default: default
+                description: ShardTemplate new shards use. A running shard keeps the one it opened with.
+                type: string
+              warmShards:
+                default: 1
+                description: Empty shards kept ready beyond what current players need.
+                format: uint32
+                minimum: 0.0
+                type: integer
+            required:
+            - build
+            - image
+            - maxShards
+            - nodePortBase
+            - playersPerShard
+            - publicAddress
+            - publicPortBase
+            - region
+            type: object
+          status:
+            nullable: true
+            properties:
+              desiredShards:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              players:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              readyShards:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              shards:
+                items:
+                  properties:
+                    id:
+                      description: '`pub_<shard cluster>_<build>_<shard number>`, the id the game sees.'
+                      type: string
+                    name:
+                      description: Random name of the shard's pod and service.
+                      type: string
+                    players:
+                      format: uint32
+                      minimum: 0.0
+                      type: integer
+                    publicPort:
+                      format: uint16
+                      maximum: 65535.0
+                      minimum: 0.0
+                      type: integer
+                    ready:
+                      type: boolean
+                  required:
+                  - id
+                  - name
+                  - players
+                  - publicPort
+                  - ready
+                  type: object
+                type: array
+            required:
+            - desiredShards
+            - players
+            - readyShards
+            - shards
+            type: object
+        required:
+        - spec
+        title: ShardCluster
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

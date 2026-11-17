@@ -1,0 +1,36 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.solar_system_shop.v1;
+
+import "sc/external/services/solar_system_shop/v1/types.proto";
+import "scbackend/internal/common/v1/common.proto";
+
+message RentalPrice {
+  string id = 1;  // entity class GUID
+  repeated sc.external.services.solar_system_shop.v1.RentalOffering offerings = 2;
+}
+
+message SeedRentalPricesRequest {
+  repeated RentalPrice prices = 1;
+}
+
+// An item the game's shops sell, from the shop inventories in the archive.
+message ShopItem {
+  string id = 1;  // entity class GUID
+  double buy_price = 2;
+  double sell_price = 3;
+  int32 current_inventory = 4;
+  int32 max_inventory = 5;
+}
+
+message SeedShopItemsRequest {
+  repeated ShopItem items = 1;
+}
+
+// Answered by sc-solar-system-shop, which owns `shop_inventory`. The items come from the seed bundle and only new ids
+// are added, so an item an operator changed keeps its prices. sc-admin supplies the rental price list here.
+service SolarSystemShopInternal {
+  rpc SeedShopItems(SeedShopItemsRequest) returns (common.v1.SeedResponse);
+  rpc SeedRentalPrices(SeedRentalPricesRequest) returns (common.v1.SeedResponse);
+}

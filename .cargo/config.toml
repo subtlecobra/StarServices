@@ -1,0 +1,9 @@
+[build]
+target = "x86_64-unknown-linux-musl"
+
+[env]
+# ring compiles a little C and assembly; the host compiler handles it without a musl cross toolchain.
+CC_x86_64_unknown_linux_musl = "gcc"
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]

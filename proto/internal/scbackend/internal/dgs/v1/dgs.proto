@@ -1,0 +1,407 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.dgs.v1;
+
+import "scbackend/internal/common/v1/disconnect.proto";
+import "scbackend/internal/common/v1/ships.proto";
+
+message DgsStatusRequest {}
+
+// Frame times of the DGS's tick over its last full window, in 100 ns ticks, as the overlay's `DebugServerInfo` wants them.
+message DgsFrames {
+  int64 fastest = 1;
+  int64 slowest = 2;
+  int64 average = 3;
+  int64 last = 4;
+  uint32 hitches = 5;
+}
+
+message DgsStatusResponse {
+  string shard_id = 1;
+  string name = 2;
+  string system = 3;
+  repeated string roots = 4;
+  uint64 governed_containers = 5;
+  uint64 governed_entities = 6;
+  DgsFrames frames = 7;
+  // Players this DGS holds entities for.
+  uint32 players = 8;
+  // The entities of those players.
+  uint64 player_entities = 9;
+  // Its solar system, quantum grid and planets, which belong to no player.
+  uint64 shard_entities = 10;
+  // Differs after a restart, which loses what the DGS held. See `JoinPlayer`.
+  uint64 boot_id = 11;
+}
+
+// A `QuatTS` with a scale of 1, relative to the entity's parent. A rotation of `0 0 0 1` is none.
+message EntityTransform {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double qx = 4;
+  double qy = 5;
+  double qz = 6;
+  double qw = 7;
+}
+
+// One variable of a bind: see `Bind` in docs/PROTOCOL.md.
+message EntitySnapshot {
+  fixed32 key = 1;
+  fixed32 type_id = 2;
+  bytes value = 3;
+}
+
+// An entity as a DGS decides it. The replicant adds the batch and what the wire needs, and changes nothing here.
+message EntityBind {
+  fixed64 entity_id = 1;
+  fixed32 class_crc = 2;
+  uint32 flags = 3;
+  EntityTransform transform = 4;
+  fixed64 parent_id = 5;
+  fixed32 parent_attach_id = 6;
+  repeated fixed32 components = 7;
+  repeated EntitySnapshot snapshots = 8;
+}
+
+message LocateHomeRequest {
+  // Absent when the session names none, and the DGS picks the default.
+  optional uint32 location_id = 1;
+}
+
+// What governs a home, for `SCBACKEND_DGS_AREAS` to turn into a DGS. A location without a hangar answers with where such
+// a player goes instead.
+message LocateHomeResponse {
+  string system = 1;
+  // The `name` of the planet's container. Empty for a place under no planet, which the `<system>system` root takes.
+  string planet = 2;
+}
+
+message ShardEntitiesRequest {}
+
+message ShardEntitiesResponse {
+  // The game rules and the game mode, which all go first. Every DGS with a `<system>system` root builds the same ones, as
+  // no system owns them.
+  repeated EntityBind universe = 1;
+  // Unset unless this DGS has the `<system>system` root.
+  EntityBind solar_system = 2;
+  EntityBind quantum_grid = 3;
+  // Where this system goes among the others, as the client's bind order is not the template's.
+  uint32 order = 4;
+}
+
+message JoinPlayerRequest {
+  // Differs each time the replicant starts. A DGS frees what it held for an earlier value.
+  uint64 replicant = 1;
+  // One connection. A later session of the same account takes over its entities.
+  uint64 session = 2;
+  uint64 account_id = 3;
+  optional uint32 location_id = 4;
+  // The player's handle, which the client shows as the player's name (`playerName`). Empty when unknown.
+  string nickname = 5;
+  // The size of the player's home hangar (`player_residence`); unspecified for none chosen, which the DGS reads as the default.
+  scbackend.internal.common.v1.HangarSize hangar_size = 6;
+}
+
+message JoinPlayerResponse {
+  // Unset for a location with no planet, or with the planet zone off. Goes in the solar systems' batch.
+  EntityBind planet = 1;
+  // Unset for a location with no hangar.
+  EntityBind hangar = 2;
+  EntityBind player = 3;
+  DgsStatusResponse status = 4;
+  // The containers inside the hangar, under it. Bound in a batch of their own, after the hangar's. Empty with no hangar.
+  repeated EntityBind hangar_content = 5;
+  // What the player wears: its body, head, clothes and items, each under the item whose port holds it (the body under the
+  // player), parents first. The replicant binds them after the player's batch has ended, a batch per depth. See "Body and
+  // loadout" in docs/PROTOCOL.md.
+  repeated EntityBind player_items = 6;
+}
+
+message LeavePlayerRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // Why the connection ended, and the client's own cause code (30016 for a quit). A REPLACED leave changes nothing of the
+  // player's persistent state. See docs/DISCONNECT.md.
+  common.v1.DisconnectReason reason = 3;
+  uint32 client_code = 4;
+  uint64 at_ms = 5;
+}
+
+message LeavePlayerResponse {
+  // Entities freed. 0 for a session the DGS does not hold, which is not an error.
+  uint32 released = 1;
+}
+
+// A rotation as `x y z w`.
+message Rotation {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+// One frame of the client's action stream (EntityRemoteMethod 7 on its player), with only what the replicant decodes.
+// A frame without a button mask means no movement button is held. See "Player movement" in docs/PROTOCOL.md.
+message InputFrame {
+  // The client's time at the end of the frame, in 100 ns ticks.
+  fixed64 time = 1;
+  // `SMoveButtonMask`: 1 forward, 2 back, 4 left, 8 right.
+  uint32 move_buttons = 2;
+  bool sprint = 3;
+  // `SDeltaRotation` (0x36): the view's aim at the start of the frame, `m_originAimRotation`, absolute in the zone's
+  // frame. Unset when the view did not turn.
+  Rotation aim_rotation = 4;
+  // The frame held an action the replicant cannot read the length of, so what came after it is missing: the buttons
+  // and sprint of a partial frame with none read are those of the frame before.
+  bool partial = 5;
+  // Jump actions in the frame: 1 start (0x9c), 2 `SJumpHold` (0x9d), 4 `SJumpRelease` (0x9e).
+  uint32 jump = 6;
+  // `SStance`: 1 stand, 2 crouch, 3 prone (assumed). Unset when the frame did not change it.
+  optional uint32 stance = 7;
+  // `SClientAuthoritativePosition` (0x32), sent while the player has `m_clientAuthoritative` set: where the client put
+  // its actor at the end of the frame. Unset otherwise.
+  ClientPosition client_position = 8;
+  // The item actions of the frame (take, swap, drop), in order. They are input-frame actions of the player's method 7,
+  // not inventory requests.
+  repeated ItemAction item_actions = 9;
+  // `SMobiGlas` (0x56), when the frame asked for it: 0 opens the mobiGlas, 1 closes it.
+  optional uint32 mobiglas = 10;
+  // `SUnholster` (0x76) draws a weapon and `SHolster` (0x4d) puts it away: the pose they ask for, `ESCActorResultPoseState`
+  // (1 no weapon, 2 weapon). Unset when the frame had neither.
+  optional uint32 pose = 11;
+  // The weapon `SHolster` names (`m_heldEntityId`); 0 for none.
+  fixed64 holstered_item = 12;
+  // The entity `SUnholster` names as the owner of the port the weapon sits in, and the port's index in it; 0 for none.
+  fixed64 unholster_owner = 13;
+  uint32 unholster_port = 14;
+  // `SReload` (0x60): the reload target (`EReloadTarget`, 0 the weapon's main magazine, 1 the secondary), when the frame
+  // asked for one.
+  optional uint32 reload = 15;
+  // The magazine the client chose to load (`m_suitMagId`); 0 when it found none to load.
+  fixed64 reload_magazine = 16;
+  // The rounds and the capacity of the magazine `SReload` reports (`ammoCount`, `ammoCapacity`), read only when the whole
+  // action was; they describe the inventory magazine the client found, and are 0 for an attached one.
+  optional int32 reload_ammo_count = 17;
+  int32 reload_ammo_capacity = 18;
+  // `SFire` (0x45): what the fire input asked, `EInputIntention` (0 start, 1 stop, 2 toggle), when the frame had one; the
+  // client sends it on press and on release, not every frame.
+  optional uint32 fire = 19;
+  // `SFire`'s `EFireMethod`: 0 the primary fire, 1 the secondary.
+  uint32 fire_method = 20;
+  // `SConsume` (0x7b), the use of a consumable such as a medical pen: the item, the entity it is used on (the player
+  // itself for a self use) and `EConsumeActivationState` (1 press, 2 release). `consume_state` is unset without one.
+  fixed64 consume_item = 21;
+  fixed64 consume_target = 22;
+  optional uint32 consume_state = 23;
+  // `SChangeMode` (0x31), the fire mode key: the activation mode as a byte (1 press, taken from CryEngine's
+  // `EActionActivationMode`, unconfirmed on the wire). Unset when the frame had none.
+  optional uint32 change_mode = 24;
+  // `SFlyMode` (0x48), the dev fly request: `ESCActorFlyMode` (0 none, 1 default, 2 no clip). Unset when the frame had none.
+  optional uint32 fly_mode = 25;
+}
+
+// An item action of an input frame: `STake` (0x6c), `SSwap` (0x68) or `SDrop` (0x3a).
+message ItemAction {
+  // The action type: 0x6c, 0x68 or 0x3a.
+  uint32 kind = 1;
+  // The item the action is about, 0 for none (`SDrop` names none: it drops what is held).
+  fixed64 item = 2;
+  // The action: for `STake` and `SSwap` 1 carry, 3 drop (swap), 4 equip, 8 inspect (swap), 0x12 stow; for `SDrop` 1 when all.
+  uint32 action = 3;
+  // `STake`'s preferred hand, 1 normally.
+  uint32 hand = 4;
+}
+
+// The end of a `SClientAuthoritativePosition`: the origin plus the delta, in the frame of the zone host it names.
+message ClientPosition {
+  fixed64 zone_host_id = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  // The base rotation at the end of the frame, `x y z w`.
+  Rotation base_rotation = 5;
+}
+
+message PlayerInputRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The player entity the frames are for.
+  fixed64 entity_id = 3;
+  // In the order the client sent them. May be empty, to read the state.
+  repeated InputFrame frames = 4;
+}
+
+// The server's movement state of a player, in the frame of its zone host: what `SCActorStateDataSynced::SMovement`
+// holds.
+message PlayerMovement {
+  fixed64 entity_id = 1;
+  double x = 2;
+  double y = 3;
+  double z = 4;
+  Rotation base_rotation = 5;
+  Rotation aim_rotation = 6;
+  fixed64 zone_host_id = 7;
+  fixed64 parent_id = 8;
+  // Changes whenever anything above does.
+  uint64 revision = 9;
+  // The client's time at the end of the last input frame this state includes, in 100 ns ticks. 0 before the first.
+  fixed64 frame_time = 10;
+  // The mobiGlas is open, as the client asked in its last `SMobiGlas` action. The client closes its own mobiGlas when the
+  // replicated actor state does not say open (the client's mobiGlas check).
+  bool mobiglas_open = 11;
+  // The pose the client asked for last, `ESCActorResultPoseState`; 0 before it asked.
+  uint32 pose = 12;
+  // The fly mode the client asked for and the DGS allows, `ESCActorFlyMode`; 0 for none. The actor's result state is `kFly`
+  // while it is not 0 (the client's fly check puts the client back otherwise).
+  uint32 fly_mode = 13;
+}
+
+message PlayerInputResponse {
+  PlayerMovement movement = 1;
+}
+
+// A client's call of a remote method (`EntityRemoteMethod`) of an entity other than its player, as the client sent it.
+message EntityMethodRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The caller's player entity.
+  fixed64 player_id = 3;
+  fixed64 entity_id = 4;
+  // The method's index on the entity, in the order the entity's components registered their remote methods.
+  uint32 method = 5;
+  // The arguments, as serialized by the client.
+  bytes args = 6;
+}
+
+// A remote method call for the replicant to send to a client, as `EntityRemoteMethod`.
+message EntityMethodCall {
+  fixed64 entity_id = 1;
+  uint32 method = 2;
+  bytes args = 3;
+}
+
+message EntityMethodResponse {
+  // What to send back to the caller alone, in order. Empty when the call has no answer, as a refused interaction has none.
+  repeated EntityMethodCall to_caller = 1;
+}
+
+// A client's request for a token of an entity (`EntityTokenRequest`), such as the access token of an inventory container
+// (`CInventoryContainerComponent::m_userToken`) it asks for before it uses a nested inventory.
+message EntityTokenRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+  // The caller's player entity.
+  fixed64 player_id = 3;
+  fixed64 entity_id = 4;
+  // The token's index in the entity's serialized component list, as the client names it.
+  uint32 token = 5;
+  // The client's request number for that token, as it sent it. The answer names the same.
+  uint32 request = 6;
+  // The byte after the request in the client's message: 0xce for the arbitrated tokens a client asks for as an entity
+  // binds, 0xcf for a user token such as an inventory's.
+  uint32 flags = 7;
+}
+
+// What the DGS decided for an `EntityTokenRequest`, to be sent to the client as `EntityTokenEvent`.
+message EntityTokenResponse {
+  enum Decision {
+    // No answer: the DGS does not take this request, which the client keeps waiting on.
+    DECISION_UNSPECIFIED = 0;
+    DECISION_GRANTED = 1;
+    DECISION_DENIED = 2;
+  }
+  Decision decision = 1;
+}
+
+message SessionUpdatesRequest {
+  uint64 replicant = 1;
+  uint64 session = 2;
+}
+
+// Entities to bind to a client, as one bind batch in this order. `key` names the batch in the replicant's logs.
+message EntityBinds {
+  string key = 1;
+  repeated EntityBind binds = 2;
+}
+
+// Entities to unbind from a client.
+message EntityUnbinds {
+  repeated fixed64 entity_ids = 1;
+}
+
+// A variable of an entity, by its index in the entity's serialized layout, as `EntitySnapshotUpdate` carries it.
+message EntityVariable {
+  uint32 index = 1;
+  bytes value = 2;
+}
+
+// Changed variables of one entity, for one `EntitySnapshotUpdate`.
+message EntityVariables {
+  fixed64 entity_id = 1;
+  repeated EntityVariable variables = 2;
+}
+
+// Where an already bound entity is now, in its parent's frame, as an `EntitySnapshotUpdate` carries it: only the fields set
+// change, and the entity's parent and attachment stay. Sent about ten times a second for an entity the DGS moves itself, such
+// as a ship that rides the loading platform (the bind has no joint, so the client does not move it with the pad).
+message EntityMoved {
+  fixed64 entity_id = 1;
+  // `x y z` of the new position; unset leaves it.
+  optional EntityPosition position = 2;
+  // The new rotation; unset leaves it.
+  optional EntityRotation rotation = 3;
+}
+
+message EntityPosition {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message EntityRotation {
+  double qx = 1;
+  double qy = 2;
+  double qz = 3;
+  double qw = 4;
+}
+
+// Something a DGS has for a client of its own accord, such as a carriage of the client's hangar elevator.
+message SessionUpdate {
+  oneof update {
+    EntityBinds binds = 1;
+    EntityUnbinds unbinds = 2;
+    EntityVariables variables = 3;
+    EntityMethodCall call = 4;
+    EntityMoved moved = 5;
+  }
+}
+
+// Answered by each sc-dgs pod, through its own Service of the shard's namespace. Only the replicant reaches it, by the
+// namespace's NetworkPolicy. It has no GRPCRoute.
+service DgsControl {
+  rpc Status(DgsStatusRequest) returns (DgsStatusResponse);
+  // Any DGS answers this, as every DGS has the table of home locations.
+  rpc LocateHome(LocateHomeRequest) returns (LocateHomeResponse);
+  // What this DGS owns that every client gets.
+  rpc ShardEntities(ShardEntitiesRequest) returns (ShardEntitiesResponse);
+  // Asked of the DGS that governs the player's home, which builds the player's entities and holds them. Calling it again
+  // gives the same entities, and is how a replicant restores what a restarted DGS forgot. INVALID_ARGUMENT means this
+  // account has no character, so there is no point in asking again. FAILED_PRECONDITION means another DGS governs it.
+  rpc JoinPlayer(JoinPlayerRequest) returns (JoinPlayerResponse);
+  // Frees a player's entities when its connection ends.
+  rpc LeavePlayer(LeavePlayerRequest) returns (LeavePlayerResponse);
+  // The client's input for a player this DGS holds, and the movement state it has led to. NOT_FOUND for a player it does
+  // not hold.
+  rpc PlayerInput(PlayerInputRequest) returns (PlayerInputResponse);
+  // A client's call of a method of an entity this DGS holds for that client's session, such as an interaction with its
+  // hangar's elevator call panel. NOT_FOUND for an entity it does not hold for that session.
+  rpc EntityMethod(EntityMethodRequest) returns (EntityMethodResponse);
+  // A client's request for a token of an entity this DGS has authority over for that client's session, such as the access
+  // token of an inventory it uses. The DGS decides; the replicant relays the decision as the client's `EntityTokenEvent`.
+  rpc EntityToken(EntityTokenRequest) returns (EntityTokenResponse);
+  // What this DGS has for a session's client from now on, in order, for as long as the session is held. A later call
+  // for the same session takes over from an earlier one, whose stream ends.
+  rpc SessionUpdates(SessionUpdatesRequest) returns (stream SessionUpdate);
+}

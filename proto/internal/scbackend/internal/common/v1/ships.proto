@@ -1,0 +1,89 @@
+// Ship ownership types used by more than one owner: the durable ship record (sc-entity-document) and the ship entity
+// (sc-entitygraph). See docs/SHIPS.md.
+syntax = "proto3";
+
+package scbackend.internal.common.v1;
+
+enum ShipState {
+  SHIP_STATE_UNSPECIFIED = 0;
+  SHIP_STATE_STORED = 1;     // in the hangar bank of its location; can be retrieved
+  SHIP_STATE_DEPLOYED = 2;   // retrieved, live on a shard
+  SHIP_STATE_DESTROYED = 3;  // lost; a claim brings it back
+  SHIP_STATE_CLAIMING = 4;   // a claim is running; becomes STORED when claim.ready_at_ms passes
+  SHIP_STATE_EXPIRED = 5;    // a rental that ended, or an entitlement revoked; kept, never listed as usable
+}
+
+enum ShipPolicy {
+  SHIP_POLICY_UNSPECIFIED = 0;  // no insurance: only the default claim
+  SHIP_POLICY_LIFETIME = 1;
+  SHIP_POLICY_DURATION = 2;  // until ShipInsurance.expires_at_ms
+}
+
+enum ShipClaimKind {
+  SHIP_CLAIM_KIND_UNSPECIFIED = 0;
+  SHIP_CLAIM_KIND_DEFAULT = 1;  // the ship as the game defines it (entitlement snapshot slot DEFAULT)
+  SHIP_CLAIM_KIND_INSURED = 2;  // the player's customized loadout (snapshot slot CUSTOMIZED); needs a live policy
+}
+
+// The landing pad classes of the game data (`LandingPadSize` records: id 1 to 6, `shipSize` the box a ship must fit).
+enum PadSize {
+  PAD_SIZE_UNSPECIFIED = 0;
+  PAD_SIZE_TINY = 1;
+  PAD_SIZE_XSMALL = 2;
+  PAD_SIZE_SMALL = 3;
+  PAD_SIZE_MEDIUM = 4;
+  PAD_SIZE_LARGE = 5;
+  PAD_SIZE_XLARGE = 6;
+}
+
+// The size of a hangar (`InstancedInteriorSizeEnum`; the class name `Hangar_<Small|Medium|Large|XL><Front|Top>_<place>`).
+enum HangarSize {
+  HANGAR_SIZE_UNSPECIFIED = 0;
+  HANGAR_SIZE_SMALL = 3;   // the pad class of the hangar's landing area, so a fit is a number comparison
+  HANGAR_SIZE_MEDIUM = 4;
+  HANGAR_SIZE_LARGE = 5;
+  HANGAR_SIZE_XLARGE = 6;
+}
+
+message ShipInsurance {
+  ShipPolicy policy = 1;
+  int64 expires_at_ms = 2;          // for DURATION
+  // The class's `shipInsuranceParams` in the game data.
+  double base_wait_minutes = 3;
+  double mandatory_wait_minutes = 4;
+  uint32 expedite_fee_auec = 5;
+}
+
+message ShipClaim {
+  ShipClaimKind kind = 1;
+  int64 started_at_ms = 2;
+  int64 ready_at_ms = 3;
+  int64 expedite_after_ms = 4;      // the mandatory wait ends: from here the claim can be paid to finish now
+  uint64 cost_auec = 5;
+  uint32 chain = 6;                 // claims in a row on this ship (escalating claims)
+  string command_id = 7;
+}
+
+// The durable record of one ship a player owns. sc-entity-document keeps it from the acquisition on (the source of
+// truth); sc-entitygraph keeps the ship's entity and a copy of the fields the in-game queries filter on.
+message ShipRecord {
+  string ship_uid = 1;              // chosen by the acquirer, stable across retries
+  uint64 owner_id = 2;
+  string entity_class_guid = 3;
+  string entitlement_urn = 4;       // the entitlement that gave the ship, if any
+  string name = 5;
+  ShipState state = 6;
+  ShipInsurance insurance = 7;
+  PadSize pad_size = 8;             // the smallest pad class the ship fits; UNSPECIFIED when the class has no size seeded
+  uint32 location_id = 9;           // the StarMapObject class CRC of the location whose hangar bank holds it
+  uint64 geid = 10;                 // the ship entity in sc-entitygraph; 0 until it was made there
+  bool graph_synced = 11;           // the graph holds the state of this revision
+  ShipClaim claim = 12;
+  uint64 revision = 13;             // sc-entity-document's, increased by every write
+  int64 created_at_ms = 14;
+  int64 updated_at_ms = 15;
+  string command_id = 16;           // the acquisition's, for idempotence
+  uint64 price_auec = 17;           // what a claim cost is a fraction of; 0 for free
+  string last_command_id = 18;      // the last state change, so a repeat of it changes nothing
+  uint64 shard_id_hint = 19;        // reserved for the shard a deployed ship lives on
+}

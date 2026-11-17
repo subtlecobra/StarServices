@@ -1,0 +1,24 @@
+{{- if or .Values.grpcRoute.services .Values.grpcRoute.catchAll }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "sc-service.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.grpcRoute.gateway }}
+      sectionName: {{ .Values.grpcRoute.listener }}
+  rules:
+    - backendRefs:
+        - name: {{ .Release.Name }}
+          port: {{ (index .Values.ports 0).port }}
+      {{- with .Values.grpcRoute.services }}
+      matches:
+        {{- range . }}
+        - method:
+            type: Exact
+            service: {{ . }}
+        {{- end }}
+      {{- end }}
+{{- end }}

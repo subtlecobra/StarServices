@@ -1,0 +1,20 @@
+[package]
+name = "sc-entity-document"
+version = "0.4.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+prost.workspace = true
+sc-db.workspace = true
+sc-api.workspace = true
+sc-proto.workspace = true
+sc-runtime.workspace = true
+tonic.workspace = true
+tracing.workspace = true
+prost-reflect = "0.16"
+
+[dev-dependencies]
+tokio.workspace = true

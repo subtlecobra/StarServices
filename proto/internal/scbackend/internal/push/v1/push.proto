@@ -1,0 +1,24 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.push.v1;
+
+message PublishRequest {
+  uint32 account_id = 1;
+  string topic = 2;
+  string type_name = 3;  // full protobuf type name of `value`
+  bytes value = 4;
+  // How long to wait for a subscriber to `topic` before publishing. 0 publishes at once.
+  uint32 wait_for_subscriber_ms = 5;
+}
+
+message PublishResponse {
+  uint32 delivered = 1;
+}
+
+service PushPublisher {
+  // Reaches subscribers on every replica.
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  // Reaches subscribers on this replica only. Replicas call it on each other.
+  rpc PublishLocal(PublishRequest) returns (PublishResponse);
+}

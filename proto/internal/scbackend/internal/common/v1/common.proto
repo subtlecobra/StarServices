@@ -1,0 +1,9 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.common.v1;
+
+// Answered by every seed RPC. A seed replaces rows by key, so repeating it changes nothing.
+message SeedResponse {
+  uint64 rows = 1;
+}

@@ -1,0 +1,586 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.entitygraph.v1;
+
+import "sc/external/services/entitygraph/v1/types.proto";
+import "scbackend/internal/common/v1/common.proto";
+import "scbackend/internal/common/v1/disconnect.proto";
+
+message LoadAreaRequest {
+  // As `system` in `containers`.
+  string system = 1;
+  // The names of the containers the DGS has authority over, with everything under them.
+  repeated string roots = 2;
+  // The roots of the other DGSs of the system, which the walk does not enter.
+  repeated string excluded_roots = 3;
+  // Put before the collection names, to read a test copy. Letters, digits and `_` only.
+  string collection_prefix = 4;
+}
+
+// One container of an area. Its entities are the ids from `start_id`, `entities` of them.
+message AreaContainer {
+  fixed64 start_id = 1;
+  uint64 entities = 2;
+}
+
+message LoadAreaResponse {
+  repeated AreaContainer containers = 1;
+}
+
+message GetOwnersRequest {
+  repeated fixed64 entities = 1;
+}
+
+message EntityOwner {
+  fixed64 entity = 1;
+  fixed64 owner = 2;
+}
+
+message GetOwnersResponse {
+  // Entities that exist and have an owner, in no set order.
+  repeated EntityOwner owners = 1;
+}
+
+message AdminInventoryTreeRequest {
+  uint64 owner_id = 1;
+  // Levels of containers below the player's own inventories. 0: no limit.
+  uint32 max_depth = 2;
+  // Items listed per inventory. 0: 500, at most 2000.
+  uint32 max_items = 3;
+}
+
+message AdminInventoryItem {
+  uint64 geid = 1;
+  uint32 class_guid_crc = 2;
+  string class_name = 3;  // empty when the class is not seeded
+  uint32 stack_size = 4;
+  uint64 owner_id = 5;
+  string inventory_id = 6;                 // where it is stowed
+  repeated string held_inventory_ids = 7;  // the inventories it holds: a crate's, a backpack's
+  string class_guid = 8;
+  string display_name = 9;  // the class's English name
+  // Unstowed onto a shard, where the DGS has it: listed, but not changed.
+  bool on_shard = 10;
+  string shard_id = 11;
+}
+
+message AdminInventory {
+  sc.external.services.entitygraph.v1.InventoryNodeProperties inventory = 1;
+  // The nearest inventory up the holder chain: where its holder is stowed. Empty at the top.
+  string parent_inventory_id = 2;
+  repeated AdminInventoryItem items = 3;  // at most `max_items`, by GEID
+  uint64 holder_id = 4;                   // the entity that holds it: the player, a crate, a cargo grid
+  string holder_class_name = 5;
+  uint32 item_count = 6;  // every item stowed in it, also those left out of `items`
+  uint32 depth = 7;       // 0 at the top
+  bool live = 8;          // an entity up its holder chain is on a shard: changes are refused
+}
+
+message AdminInventoryTreeResponse {
+  repeated AdminInventory inventories = 1;  // parents before children
+}
+
+message AdminMoveItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  string from_inventory_id = 4;  // where the item is
+  string to_inventory_id = 5;    // a player inventory its id says the player owns is created on first use
+  uint32 quantity = 6;           // 0 or the whole stack moves the item; less splits it into a new item
+  string actor = 7;
+  string reason = 8;
+}
+
+message AdminMoveItemResponse {
+  uint64 moved_geid = 1;  // the item, or the new one a split made
+  bool replayed = 2;
+}
+
+message AdminAddItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  string inventory_id = 3;
+  string entity_class_guid = 4;  // a seeded entity class
+  uint32 stack_size = 5;         // 0 is 1
+  string actor = 6;
+  string reason = 7;
+}
+
+message AdminAddItemResponse {
+  uint64 geid = 1;  // the same GEID for a repeated command id
+  bool replayed = 2;
+}
+
+message AdminRemoveItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;
+  string actor = 4;
+  string reason = 5;
+}
+
+message AdminRemoveItemResponse {
+  bool removed = 1;
+  uint32 erased = 2;  // entities erased: the item and everything it held
+  bool replayed = 3;
+}
+
+message AdminSearchEntityClassesRequest {
+  // Part of a class name or of an English name, case ignored, or a GUID.
+  string query = 1;
+  uint32 limit = 2;  // 50 when 0, at most 200
+  // Only classes of one of these item types, and, when it lists sub types, one of those (the DataCore names, as
+  // `AdminEntityClass` has them); none: any.
+  repeated ItemTypeFilter any_of = 3;
+  // Only classes with one of these sub types, whatever their type.
+  repeated string item_sub_types = 4;
+  // Leave out the classes with no English name, which are no items a person would look for.
+  bool named_only = 5;
+  // Not the classes of any of these item types (and sub types, when it lists some).
+  repeated ItemTypeFilter none_of = 6;
+}
+
+message AdminEntityClass {
+  string guid = 1;
+  uint32 guid_hash_crc = 2;
+  string class_name = 3;
+  string display_name = 4;
+  string item_type = 5;
+  string item_sub_type = 6;
+  uint64 occupancy_micro_scu = 7;
+  uint64 capacity_micro_scu = 8;  // of its inventory container, 0 with none or no limit
+  bool container = 9;             // it gets an inventory of its own
+  bool stackable = 10;            // the game lets it stack: it carries the tag Item.Inventory.Stackable
+}
+
+message AdminSearchEntityClassesResponse {
+  repeated AdminEntityClass classes = 1;  // by class name
+}
+
+// ---- Admin equipment (begin), see docs/INVENTORY.md "Equipping" ----
+message AdminEquipmentRequest {
+  uint64 owner_id = 1;
+}
+
+// An item the player wears: attached to a port of a worn item, or the body to the player.
+message AdminWornItem {
+  uint64 geid = 1;
+  string class_name = 2;
+  string display_name = 3;
+  string item_type = 4;
+  string item_sub_type = 5;
+  uint64 parent_geid = 6;  // the player for the body
+  string port = 7;         // the port's name on the parent; its CRC in hex when the parent's class does not list it
+  uint32 depth = 8;        // 1 for the body
+  bool removable = 9;      // it sits in a port equipping reaches: not the body or the head, which are the character
+}
+
+// A port of a worn item that items can be equipped to.
+message AdminEquipPort {
+  uint64 parent_geid = 1;
+  string parent_name = 2;
+  string port = 3;
+  uint64 occupant_geid = 4;  // 0 when free
+  string occupant_name = 5;
+  // The player's stowed items that fit it (by type, size and tags), up to the first 2000 stowed.
+  repeated uint64 candidates = 6;
+}
+
+message AdminEquipmentResponse {
+  repeated AdminWornItem worn = 1;  // parents before children
+  repeated AdminEquipPort ports = 2;
+}
+
+message AdminEquipItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;         // a stowed item of the player
+  uint64 parent_geid = 4;  // a worn item (the body, the undersuit, armor ...)
+  string port = 5;         // a port of the parent's class
+  string actor = 6;
+  string reason = 7;
+}
+
+message AdminEquipItemResponse {
+  bool replayed = 1;
+  // What hangs from the item that was equipped (a weapon's magazine and attachments, the items on a piece of armor), parents
+  // before children, as they stay attached to it. The DGS binds them with the item.
+  repeated EquippedItem attached = 2;
+}
+
+// A worn item goes to another free port that takes it, chosen by sc-entitygraph: from a hook to the port it is worn in, or back
+// (the helmet's toggle). What hangs from it goes with it.
+message AdminRelocateItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;               // a worn item
+  string actor = 4;
+  string reason = 5;
+}
+
+message AdminRelocateItemResponse {
+  bool replayed = 1;
+  uint64 parent_geid = 2;        // where the item is now worn
+  uint32 port_crc = 3;
+  string port = 4;
+}
+
+message AdminUnequipItemRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  uint64 geid = 3;               // a worn item
+  string to_inventory_id = 4;    // where it is stowed, with what hangs from it
+  string actor = 5;
+  string reason = 6;
+}
+
+message AdminUnequipItemResponse {
+  bool replayed = 1;
+}
+
+message FindStowedItemRequest {
+  uint64 owner_id = 1;
+  // The inventory the item is stowed in.
+  string inventory_id = 2;
+  // The item, when it is known (then class_guid_crc is ignored).
+  uint64 geid = 3;
+  // The class to find an item of, when geid is 0.
+  uint32 class_guid_crc = 4;
+  // By class: an item that is not a stack first, else the lowest GEID.
+  bool prefer_single = 5;
+}
+
+message FindStowedItemResponse {
+  bool found = 1;
+  uint64 geid = 2;
+  uint32 class_guid_crc = 3;
+  // 0 for an item that does not stack.
+  uint32 stack_size = 4;
+}
+// ---- Admin equipment (end) ----
+
+// ---- Inventory operations of a live player (begin), see docs/INVENTORY.md "Live inventory operations" ----
+// The requests a player's client makes of its DGS that are not an equip, a take-off or a move. Each is one transaction,
+// applied once per command id, for the player `owner_id`, with the checks of every other command (ownership, capacity,
+// loops). The DGS has authority while the player is live and calls this before it answers its client.
+message InventoryOperationRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  string actor = 3;
+  string reason = 4;
+  oneof operation {
+    StackOperation stack = 10;
+    StackAllOperation stack_all = 11;
+    SplitOperation split = 12;
+    SwapOperation swap = 13;
+    RepoolAmmoOperation repool_ammo = 14;
+    DropOperation drop = 15;
+    PickupOperation pickup = 16;
+  }
+}
+
+// Puts a stowed stack into another stack of the same class (and owner) in `inventory_id`, up to the class's stack limit.
+// What does not fit stays in the first stack; an emptied stack is erased.
+message StackOperation {
+  uint64 geid = 1;           // the stack that gives
+  string inventory_id = 2;   // where the other stack is; empty: where `geid` is
+  uint32 amount = 3;         // 0: all of it
+}
+
+// Merges the stacks of an inventory into as few as the limit allows, of one class or (class_crc 0) of every class.
+message StackAllOperation {
+  string inventory_id = 1;
+  uint32 class_crc = 2;
+}
+
+// A new item takes `amount` from a stack, stowed in `to_inventory_id` (empty: the stack's own inventory).
+message SplitOperation {
+  uint64 geid = 1;
+  uint32 amount = 2;  // below the stack
+  string to_inventory_id = 3;
+}
+
+// Two items trade places: each is where the other was, in a port of a worn item or in an inventory. What hangs from an
+// item goes with it.
+message SwapOperation {
+  uint64 geid = 1;
+  uint64 other_geid = 2;
+}
+
+// Redistributes the rounds of the magazines of one class stowed in an inventory so that as few as possible are partly
+// filled. A magazine with no round count is left as it is.
+message RepoolAmmoOperation {
+  string inventory_id = 1;
+  uint32 class_crc = 2;
+}
+
+// An item leaves its inventory for the world: unstowed on `shard_id` at a place in the zone `zone_id`, owned by no one.
+message DropOperation {
+  uint64 geid = 1;
+  uint32 amount = 2;  // below a stack drops that many from it; 0 or all: the item
+  string shard_id = 3;
+  uint64 zone_id = 4;
+  double x = 5;
+  double y = 6;
+  double z = 7;
+  double qx = 8;
+  double qy = 9;
+  double qz = 10;
+  double qw = 11;
+}
+
+// An item lying in the world of `shard_id` (dropped, owned by no one or by the player) is stowed in the player's inventory.
+message PickupOperation {
+  uint64 geid = 1;
+  string shard_id = 2;
+  string to_inventory_id = 3;  // empty: the player's personal inventory
+}
+
+message PlacedItem {
+  uint64 geid = 1;
+  uint32 class_crc = 2;
+  uint64 parent_geid = 3;
+  uint32 port_crc = 4;
+}
+
+message InventoryOperationResponse {
+  uint64 geid = 1;       // the item the request ends in: the stack that took, the new one, the one dropped or picked up
+  uint32 class_crc = 2;  // of `geid`
+  bool replayed = 3;
+  repeated uint64 erased = 4;       // stacks emptied and erased
+  repeated PlacedItem placed = 5;   // items now worn that were not where they are, parents before children
+}
+// ---- Inventory operations of a live player (end) ----
+
+// ---- Admin inventories (end) ----
+
+message LoadoutItem {
+  uint32 class_crc = 1;  // guidHashCrc of a seeded entity class
+  uint32 port_crc = 2;   // the port of the parent it goes in: CRC-32C of the lowercased name
+  int32 parent = 3;      // the index of its parent in the same list, before it, or -1 for the player
+}
+
+message RevokeItemsRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;
+  repeated uint64 geids = 3;
+  string reason = 4;
+}
+
+message RevokeItemsResponse {
+  uint32 erased = 1;  // entities erased, the items and what they held
+  bool replayed = 2;
+}
+
+message GrantedItem {
+  string entity_class_guid = 1;  // a seeded entity class
+  uint32 stack_size = 2;         // 0 is 1
+}
+
+message GrantItemsRequest {
+  string command_id = 1;
+  uint64 owner_id = 2;           // the player the items are for
+  string inventory_id = 3;       // where they are stowed: <holder>:<context>:<subject>
+  repeated GrantedItem items = 4;
+  string reason = 5;             // for the log, such as the entitlement or delivery
+  // Skip the classes that take no room in an inventory (ships, vehicles) instead of stowing them. Their GEID in the answer
+  // is 0.
+  bool items_only = 6;
+}
+
+message GrantItemsResponse {
+  repeated uint64 geids = 1;  // one per item, in the order of the request; 0 for one skipped
+  bool replayed = 2;
+}
+
+message EnsureLoadoutRequest {
+  string command_id = 1;
+  uint64 player_id = 2;
+  repeated LoadoutItem items = 3;
+}
+
+message EnsureLoadoutResponse {
+  // One per item, in the order of the request; 0 for an item of the loadout that is no longer worn (it was unequipped).
+  repeated uint64 geids = 1;
+  bool replayed = 2;
+  // What else the player wears: items equipped on the loadout's, parents before children (see "Equipping" in
+  // docs/INVENTORY.md). The DGS binds them as it binds the loadout's.
+  repeated EquippedItem equipped = 3;
+}
+
+message EquippedItem {
+  uint64 geid = 1;
+  uint32 class_crc = 2;
+  uint32 port_crc = 3;      // the port of the parent it is attached to
+  uint64 parent_geid = 4;
+}
+
+// Answered by sc-entitygraph, which owns entities and the container tree. It shares that service's port, so no GRPCRoute
+// may list it.
+service EntityGraphInternal {
+  // Erases items a service granted, and everything they hold, once per command id (a rental that ended). An item that is
+  // already gone counts as erased. FAILED_PRECONDITION for an item that is not stowed or is live on a shard.
+  rpc RevokeItems(RevokeItemsRequest) returns (RevokeItemsResponse);
+  // New items of seeded classes, with GEIDs sc-entitygraph allocates, stowed in an inventory of a player that is not live
+  // on a shard (an entitlement claimed, a delivery, a rental). All or none, once per command id: a repeat returns the
+  // GEIDs of the first. A container class gets its inventory with it. NOT_FOUND for a class that is not seeded or an
+  // inventory that does not exist; FAILED_PRECONDITION when the inventory is live or over capacity.
+  rpc GrantItems(GrantItemsRequest) returns (GrantItemsResponse);
+  // The items a player wears, as entities of their own with the GEIDs sc-entitygraph allocates, each attached to the port
+  // of its parent (the player for a root). Applied once per command id: a repeat returns the GEIDs of the first, in the
+  // order of the request. Sent by a DGS when a player joins. NOT_FOUND names classes that are not seeded.
+  rpc EnsureLoadout(EnsureLoadoutRequest) returns (EnsureLoadoutResponse);
+  // What a DGS governs: the roots and everything under them, down to the roots of other DGSs. NOT_FOUND names the roots
+  // the tree lacks, before anything is sent. A container is sent once, parents before children, in chunks.
+  rpc LoadArea(LoadAreaRequest) returns (stream LoadAreaResponse);
+  // Who owns these entities, for sc-entity-subscription.
+  rpc GetOwners(GetOwnersRequest) returns (GetOwnersResponse);
+  // ---- Admin inventories (begin) ----
+  // Every inventory of a player: its own (personal, location, hangar, ...), the containers of the entities it owns (a
+  // ship's holds, crates, backpacks), and every container nested in those, with the items of each.
+  rpc AdminInventoryTree(AdminInventoryTreeRequest) returns (AdminInventoryTreeResponse);
+  rpc AdminMoveItem(AdminMoveItemRequest) returns (AdminMoveItemResponse);
+  // A new item of a seeded class, with a GEID sc-entitygraph allocates, stowed in the inventory. A container class
+  // gets its inventory with it.
+  rpc AdminAddItem(AdminAddItemRequest) returns (AdminAddItemResponse);
+  // Erases a stowed item and everything it holds.
+  rpc AdminRemoveItem(AdminRemoveItemRequest) returns (AdminRemoveItemResponse);
+  // The seeded entity classes, for picking what to add.
+  rpc AdminSearchEntityClasses(AdminSearchEntityClassesRequest) returns (AdminSearchEntityClassesResponse);
+  // What the player wears and the ports items can be equipped to, each with the stowed items that fit.
+  rpc AdminEquipment(AdminEquipmentRequest) returns (AdminEquipmentResponse);
+  // Attaches a stowed item of the player to a port of a worn item, if its type, size and tags fit and the port is free.
+  rpc AdminEquipItem(AdminEquipItemRequest) returns (AdminEquipItemResponse);
+  // Takes a worn item off, with what hangs from it, into an inventory.
+  rpc AdminRelocateItem(AdminRelocateItemRequest) returns (AdminRelocateItemResponse);
+  rpc AdminUnequipItem(AdminUnequipItemRequest) returns (AdminUnequipItemResponse);
+  // One stowed item of an inventory, by GEID or by class (one indexed lookup, where AdminInventoryTree reads the whole
+  // tree): what a live player's equip needs to know before it is applied.
+  rpc FindStowedItem(FindStowedItemRequest) returns (FindStowedItemResponse);
+  // A live player's stack, split, swap, ammo repool, drop and pickup (see InventoryOperationRequest).
+  rpc InventoryOperation(InventoryOperationRequest) returns (InventoryOperationResponse);
+  // ---- Admin inventories (end) ----
+  // A player left a shard (see docs/DISCONNECT.md): clears the live markers (unstowed with a shard id) of the entities the
+  // player owns that were on `shard_id`, so changes to them are no longer refused. A DGS sends it for the entities it held
+  // and the Hub as a backstop. Repeating it, or sending it for a player with no markers, changes nothing.
+  rpc ReleasePlayer(ReleasePlayerRequest) returns (ReleasePlayerResponse);
+  // ---- Game data seed (begin). Sent by sc-seeder and sc-admin seed, once per region. ----
+  // The entity classes of a game build, replaced by GUID. Classes the build no longer has are kept, as items may still
+  // be of them. Messages of at most 4 MiB; the answer counts the classes written.
+  rpc SeedEntityClasses(stream SeedEntityClassesRequest) returns (common.v1.SeedResponse);
+  // The whole object container tree of a game build. Written once the stream ends, which leaves exactly these nodes and
+  // their edges to the parents: a node the build no longer has goes. INVALID_ARGUMENT for an empty tree, a GEID sent
+  // twice or a parent that is not in it, before anything is written. The answer counts the nodes.
+  rpc SeedContainers(stream SeedContainersRequest) returns (common.v1.SeedResponse);
+  // ---- Game data seed (end) ----
+}
+
+// ---- Game data seed of sc-entitygraph (begin). Read from the game archive, see docs/DATA.md. ----
+// An item type, or some of its subtypes (all of them when none are listed).
+message ItemTypeFilter {
+  string item_type = 1;
+  repeated string item_sub_types = 2;
+}
+
+message EntityClassInventory {
+  int64 capacity_micro_scu = 1;
+  bool closed = 2;
+  repeated ItemTypeFilter excluded = 3;  // items of these types are refused
+  repeated ItemTypeFilter only = 4;      // when present, only items of these types are taken
+}
+
+// A localization token and its English text, empty when the game has none.
+message LocalizedText {
+  string token = 1;
+  string en = 2;
+}
+
+message EntityClassSeed {
+  string guid = 1;
+  uint32 guid_hash_crc = 2;
+  string class_name = 3;
+  string item_type = 4;
+  string item_sub_type = 5;
+  LocalizedText name = 6;
+  LocalizedText description = 7;
+  optional int64 occupancy_micro_scu = 8;  // absent when the class has no inventory occupancy
+  EntityClassInventory inventory = 9;      // absent when the class holds no inventory
+  // The DataCore `EItemType` and `EItemSubType` numbers of item_type and item_sub_type, which the client checks an item's
+  // entity against; 0 when the seed carries none.
+  int32 item_type_enum = 10;
+  int32 item_sub_type_enum = 11;
+  // Whether the class carries the game's tag Item.Inventory.Stackable, which lets its items stack.
+  bool stackable = 12;
+  // The AttachDef of the item: its Size (a port takes sizes from its MinSize to its MaxSize), and its Tags and RequiredTags
+  // as the game writes them, separated by spaces. Absent / empty when the class has no AttachDef.
+  optional int32 attach_size = 13;
+  string attach_tags = 14;
+  string required_tags = 15;
+  // The item ports of a personal-gear class (a body, armor, clothing, a personal weapon, see docs/INVENTORY.md "Equipping"):
+  // where other items go on it. Empty for any other class.
+  repeated ItemPortSeed ports = 16;
+  // A vehicle class's size and insurance, which ship acquisition and the ASOP kiosk read; absent for any other class.
+  optional VehicleSeed vehicle = 17;
+  // A personal weapon's own manual loadout magazine: the GUID of the magazine class it comes with in its `magazine_attach`
+  // port. Absent for any other class.
+  optional string default_magazine_guid = 18;
+  // A magazine class's capacity (`maxAmmoCount` of its AmmoContainerComponent params), in rounds. Absent for any other class.
+  optional int32 ammo_capacity = 19;
+}
+
+// What a ship class says about its size and its insurance (VehicleComponentParams, ShipInsuranceParams).
+message VehicleSeed {
+  repeated double max_bounding_box = 1;  // maxBoundingBoxSize in metres: x width, y length, z height; empty when unknown
+  optional ShipInsuranceSeed insurance = 2;
+}
+
+message ShipInsuranceSeed {
+  double base_wait_time_minutes = 1;
+  double mandatory_wait_time_minutes = 2;
+  uint32 base_expediting_fee = 3;
+}
+
+// An SItemPortDef of an item's SItemPortContainerComponentParams.
+message ItemPortSeed {
+  string name = 1;
+  int32 min_size = 2;
+  int32 max_size = 3;
+  repeated ItemTypeFilter types = 4;  // what the port takes: an item type, or some of its sub types
+  string required_port_tags = 5;      // tags the item must carry (RequiredPortTags)
+  string port_tags = 6;               // tags the port offers to items that require some (PortTags)
+  string flags = 7;                   // the game's Flags, space separated
+}
+
+message SeedEntityClassesRequest {
+  repeated EntityClassSeed classes = 1;
+}
+
+// A node of the object container tree; see docs/DATA.md, Object container tree, for each field.
+message ContainerSeed {
+  uint64 geid = 1;
+  optional uint64 parent = 2;  // absent on the universe root
+  string guid = 3;
+  repeated uint32 labels = 4;
+  uint32 socpak_content_hash = 5;
+  uint32 socpak_file_path_hash = 6;
+  uint64 start_id = 7;
+  bool has_planet = 8;
+  uint32 streaming_immovable_count = 9;
+  uint32 streaming_movable_count = 10;
+  string name = 11;
+  string system = 12;
+}
+
+message SeedContainersRequest {
+  repeated ContainerSeed containers = 1;
+}
+
+message ReleasePlayerRequest {
+  common.v1.PlayerDisconnect event = 1;
+}
+
+message ReleasePlayerResponse {
+  // Entities whose live marker this call cleared. 0 for a repeat.
+  uint32 released = 1;
+}

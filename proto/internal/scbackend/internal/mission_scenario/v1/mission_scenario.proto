@@ -1,0 +1,20 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.mission_scenario.v1;
+
+import "scbackend/internal/common/v1/common.proto";
+
+message ScenarioSeed {
+  string template_id = 1;
+  int32 status = 2;  // a ScenarioStatus
+}
+
+message SeedScenariosRequest {
+  repeated ScenarioSeed scenarios = 1;
+}
+
+// Answered by sc-mission-scenario, which owns `scenarios`. Only adds, as an operator may have started one.
+service MissionScenarioInternal {
+  rpc SeedScenarios(SeedScenariosRequest) returns (common.v1.SeedResponse);
+}

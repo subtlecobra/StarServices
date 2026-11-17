@@ -1,0 +1,23 @@
+# Buf workspace (https://buf.build): the services' internal API (internal/) is linted and checked for breaking changes;
+# the game's protocol (sc/, generated from the game, and scbackend/, the Hub's wire protocol) and the vendored Google
+# protos are only there so the internal files compile. scripts/proto-check.sh runs it.
+version: v2
+modules:
+  - path: .
+    excludes: [internal, vendor]
+  - path: vendor
+  - path: internal
+    lint:
+      use:
+        - STANDARD
+      # The internal API's names predate the lint: services named `<Owner>Internal`, and requests and responses named
+      # for what they carry, some shared by several RPCs (SeedResponse). Renaming them changes every service's code and
+      # the gRPC paths on the wire, so it is a deliberate API change of its own, not part of a lint.
+      except:
+        - SERVICE_SUFFIX
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
+        - RPC_REQUEST_RESPONSE_UNIQUE
+    breaking:
+      use:
+        - FILE

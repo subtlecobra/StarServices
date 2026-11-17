@@ -1,0 +1,21 @@
+// Generated once from the former proto/scbackend/internal.proto; edit freely.
+syntax = "proto3";
+
+package scbackend.internal.character_customizer.v1;
+
+import "sc/external/common/types/v1/customization.proto";
+
+message GetCustomizationRequest {
+  uint64 geid = 1;  // the character
+}
+
+message GetCustomizationResponse {
+  // As the client saved it. Unset when the character has saved none.
+  sc.external.common.types.v1.CharacterCustomization customization = 1;
+}
+
+// Answered by sc-character-customizer, which owns saved characters. It shares that service's port, so no GRPCRoute may
+// list it. A DGS asks it for a joining player's appearance.
+service CharacterCustomizerInternal {
+  rpc GetCustomization(GetCustomizationRequest) returns (GetCustomizationResponse);
+}

@@ -1,0 +1,88 @@
+{{- /*
+What kube-arangodb's operator may do in each ShardRegion's namespace, where the shard operator runs one per region:
+its deployment operator only watches the namespace it is in. These are the rules of kube-arangodb 1.4.7's chart
+(deployment-operator role, cluster-role and default-role), as ClusterRoles the shard operator binds per region: with
+a RoleBinding in the region's namespace, and a ClusterRoleBinding for the reads outside it. Check them against the
+chart when entityDb.operatorImage changes version.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sc-shard-operator.arangoRole" . }}
+  labels:
+    app.kubernetes.io/part-of: scbackend
+rules:
+  - apiGroups: ["database.arangodb.com"]
+    resources:
+      - arangodeployments
+      - arangodeployments/status
+      - arangomembers
+      - arangomembers/status
+      - arangoclustersynchronizations
+      - arangoclustersynchronizations/status
+      - arangotasks
+      - arangotasks/status
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "persistentvolumeclaims", "events", "secrets", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+  - apiGroups: ["backup.arangodb.com"]
+    resources: ["arangobackuppolicies", "arangobackups"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.arangodb.com"]
+    resources: ["arangoroutes", "arangoroutes/status"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["platform.arangodb.com"]
+    resources:
+      - arangoplatformstorages
+      - arangoplatformstorages/status
+      - arangoplatformcharts
+      - arangoplatformcharts/status
+      - arangoplatformservices
+      - arangoplatformservices/status
+      - arangoplatformlinks
+      - arangoplatformlinks/status
+      - arangoplatformworkflows
+      - arangoplatformworkflows/status
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors"]
+    verbs: ["get", "list", "create", "update", "patch", "delete", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sc-shard-operator.arangoRole" . }}-cluster
+  labels:
+    app.kubernetes.io/part-of: scbackend
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+---
+# The ArangoDB members, which run as the namespace's default ServiceAccount, read their own pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sc-shard-operator.arangoRole" . }}-member
+  labels:
+    app.kubernetes.io/part-of: scbackend
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
